@@ -17,5 +17,8 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+# Prefer the versioned linker installed by the workflow, then fall back to ld.lld.
+ld=${LD_LLD:-$(command -v ld.lld-18 || command -v ld.lld)}
+[ -x "$ld" ] || { echo "configure-ld: ld.lld not found" >&2; exit 1; }
 # shellcheck disable=SC2086
-exec ld.lld -m elf_x86_64 -pie --script "$OO_PS4_TOOLCHAIN/link.x" -o "$out" $objs -L"$OO_PS4_TOOLCHAIN/lib" -lc -lkernel "$OO_PS4_TOOLCHAIN/lib/crt1.o"
+exec "$ld" -m elf_x86_64 -pie --script "$OO_PS4_TOOLCHAIN/link.x" -o "$out" $objs -L"$OO_PS4_TOOLCHAIN/lib" -lc -lkernel "$OO_PS4_TOOLCHAIN/lib/crt1.o"
