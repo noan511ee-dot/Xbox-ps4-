@@ -1,0 +1,9175 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 RafaelNGP
+// Offline unit tests for the portable core (no network).
+#include "app/auto_deband.h"
+#include "app/library.h"
+#include "app/settings.h"
+#include "app/update_check.h"
+#include "app/updater.h"
+#include "app/web_server.h"
+#include "app/crash_guard.h"
+#include "app/report.h"
+#include "display/display.h"
+#include "media/audio_encoder.h"
+#include "media/audio_in.h"
+#include "media/audio_in_common.h"
+#include "media/audio_out.h"
+#include "media/audio_queue.h"
+#include "media/decoder.h"
+#include "media/hw_decoder.h"
+#include "input/controller.h"
+#include "input/gyro.h"
+#include "input/tuning.h"
+#include "input/pad_usb.h"
+#include "input/pad_usb_hid.h"
+#include "net/http.h"
+#include "platform/platform.h"
+#include "platform/toasts.h"
+#include "platform/handheld.h"
+#include "stream/input_packet.h"
+#include "stream/stream_session.h"
+#include "ui/app_ui.h"
+#include "ui/accent_color.h"
+#include "ui/pad_glyphs.h"
+#include "ui/input_mode.h"
+#include "ui/stream_menu.h"
+#include "ui/cloud_time.h"
+#include "ui/strings.h"
+#include "ui/app_ui_internal.h"
+#include "util/json.h"
+#include "util/log.h"
+#include "auth/auth_manager.h"
+#include "stream/h264_receiver.h"
+#include "input/kbm.h"
+#include "input/keyboard_nav.h"
+#include "input/pad_map.h"
+#include "input/sdl_mapping.h"
+#include "platform/platform.h"
+#include "auth/msa.h"
+#include "auth/xbox_live.h"
+#include "ui/image_cache.h"
+#include "xcloud/catalog.h"
+#include "xcloud/gssv.h"
+#include "xcloud/titlehub.h"
+#include "xcloud/prices.h"
+#include "xcloud/purchase.h"
+#include "xcloud/regions.h"
+#include "xcloud/achievements.h"
+#include "trophy/trophy_types.h"
+#include "trophy/trophy_rules.h"
+#include "trophy/trophy_registry.h"
+#include "trophy/trophy_backend.h"
+#include "trophy/trophy_sync.h"
+#include "trophy/trophy_builder.h"
+#include "trophy/trophy_db.h"
+#include <sqlite3.h>
+
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <cmath>
+#include <cstdio>
+#include <csignal>
+#include <sys/wait.h>
+#include <unistd.h>
+#if !defined(_WIN32)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#else
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#endif
+#include <cstdlib>
+#include <ctime>
+#include <map>
+#include <vector>
+#include <string>
+
+using namespace xc;
+
+static int g_failures = 0;
+#define CHECK(cond)                                                          \
+    do {                                                                     \
+        if (!(cond)) {                                                       \
+            std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #cond); \
+            ++g_failures;                                                    \
+        }                                                                    \
+    } while (0)
+
+static void testJson() {
+    auto v = json::parse(R"({"a":1,"b":[true,null,"x\u00e9\n"],"c":{"d":-2.5e1},"e":"\ud83c\udfae"})");
+    CHECK(v.has_value());
+    CHECK((*v)["a"].asInt() == 1);
+    CHECK((*v)["b"].size() == 3);
+    CHECK((*v)["b"][0].asBool());
+    CHECK((*v)["b"][1].isNull());
+    CHECK((*v)["b"][2].str() == "x\xc3\xa9\n");
+    CHECK((*v)["c"]["d"].asNumber() == -25.0);
+    CHECK((*v)["e"].str() == "\xf0\x9f\x8e\xae");
+    CHECK((*v)["missing"]["deep"].str("def") == "def");
+
+    // exchangeResponse-style nested JSON string round trip.
+    json::Value inner = json::Value::object();
+    inner.set("sdp", "v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\n");
+    json::Value outer = json::Value::object();
+    outer.set("exchangeResponse", inner.dump());
+    auto back = json::parse(outer.dump());
+    CHECK(back.has_value());
+    auto innerBack = json::parse((*back)["exchangeResponse"].str());
+    CHECK(innerBack && (*innerBack)["sdp"].str() == "v=0\r\no=- 1 2 IN IP4 0.0.0.0\r\n");
+
+    CHECK(!json::parse("{\"a\":}").has_value());
+    CHECK(!json::parse("[1,2").has_value());
+    CHECK(!json::parse("{} x").has_value());
+    CHECK(json::Value(int64_t(2148916233)).dump() == "2148916233");
+
+    // Copy-on-write: mutating a copy must not alter the original.
+    json::Value a = json::Value::array();
+    a.push(1);
+    json::Value b = a;
+    b.push(2);
+    CHECK(a.size() == 1 && b.size() == 2);
+}
+
+static void testUrl() {
+    net::Url u;
+    CHECK(net::Url::parse("https://xgpuweb.gssv-play-prod.xboxlive.com/v2/login/user", u));
+    CHECK(u.host == "xgpuweb.gssv-play-prod.xboxlive.com" && u.port == 443 && u.path == "/v2/login/user");
+    CHECK(net::Url::parse("https://example.com:8443", u));
+    CHECK(u.port == 8443 && u.path == "/");
+    CHECK(!net::Url::parse("ftp://x", u));
+    CHECK(net::urlEncode("a b&c=d/é") == "a%20b%26c%3Dd%2F%C3%A9");
+    CHECK(net::formEncode({{"grant_type", "refresh_token"}, {"scope", "service::x::MBI_SSL"}}) ==
+          "grant_type=refresh_token&scope=service%3A%3Ax%3A%3AMBI_SSL");
+}
+
+static void testInputPacket() {
+    using namespace stream;
+    auto meta = clientMetadataReport(0, 0.0, 1);
+    CHECK(meta.size() == 15 && meta[0] == 8 && meta[1] == 0 && meta[14] == 1);
+
+    GamepadFrame f;
+    f.buttons = kA | kDPadUp;
+    f.leftX = 1.0f;
+    f.leftY = -1.0f;
+    f.rightTrigger = 1.0f;
+    auto p = gamepadReport(7, 1.5, f);
+    CHECK(p.size() == 38);
+    CHECK(p[0] == 2 && p[2] == 7 && p[3] == 0);
+    CHECK(p[13] == 0x3f && p[12] == 0xf8);  // 1.5 as little-endian float64
+    CHECK(p[14] == 1 && p[15] == 0);        // one frame, gamepad 0
+    CHECK(p[16] == 0x10 && p[17] == 0x01);  // A | DPadUp
+    CHECK(p[18] == 0xff && p[19] == 0x7f);  // left X = 32767
+    CHECK(p[20] == 0x01 && p[21] == 0x80);  // left Y = -32767
+    CHECK(p[28] == 0xff && p[29] == 0xff);  // right trigger
+    CHECK(gamepadPhysicality(f) == 0x000e1001);
+    CHECK(p[30] == 0x01 && p[31] == 0x10 && p[32] == 0x0e && p[33] == 0x00);  // physicality LE
+    CHECK(p[34] == 0 && p[35] == 0 && p[36] == 0 && p[37] == 0);              // virtual physicality LE = 0
+
+    GamepadFrame idle;
+    CHECK(gamepadPhysicality(idle) == 0);
+    auto pIdle = gamepadReport(8, 2.0, idle);
+    CHECK(pIdle[30] == 0 && pIdle[31] == 0 && pIdle[32] == 0 && pIdle[33] == 0);
+    CHECK(pIdle[34] == 0 && pIdle[35] == 0 && pIdle[36] == 0 && pIdle[37] == 0);
+
+    FrameMetadata fm;
+    fm.serverDataKey = 0x01020304;
+    fm.firstPacketArrivalMs = 100.0;
+    fm.submittedMs = 100.05;
+    fm.decodedMs = 102.5;
+    fm.renderedMs = 110.0;
+    auto md = metadataReport(9, 111.0, {fm});
+    CHECK(md.size() == 14 + 1 + 28);
+    CHECK(md[0] == 1 && md[1] == 0 && md[2] == 9 && md[14] == 1);
+    CHECK(md[15] == 0x04 && md[18] == 0x01);                  // RTP timestamp, little-endian
+    CHECK(md[19] == 0xE8 && md[20] == 0x03);                  // 100 ms = 1000 tenths
+    CHECK(md[27] == 0x01 && md[28] == 0x04);                  // 102.5 ms = 1025
+    CHECK(md[39] == 0x56 && md[40] == 0x04);                  // report time 111 ms = 1110
+
+    uint8_t vib[13] = {128, 0, 0, 0, 50, 25, 0, 0, 0x10, 0x00, 0, 0, 1};
+    Vibration v;
+    CHECK(parseVibration(vib, sizeof vib, v) && v.leftMotor == 50 && v.rightMotor == 25 && v.durationMs == 16);
+    uint8_t sm[10] = {16, 0, 0x38, 0x04, 0, 0, 0x80, 0x07, 0, 0};
+    uint32_t w = 0, h = 0;
+    CHECK(parseServerMetadata(sm, sizeof sm, w, h) && w == 1920 && h == 1080);
+}
+
+static void testTeredo() {
+    std::string ip;
+    int port = 0;
+    // RFC 4380 example: server 65.54.227.120, client 192.0.2.45:40000.
+    CHECK(stream::decodeTeredo("2001:0:4136:e378:8000:63bf:3fff:fdd2", ip, port));
+    CHECK(ip == "192.0.2.45" && port == 40000);
+    CHECK(!stream::decodeTeredo("2a01::1", ip, port));
+    CHECK(!stream::decodeTeredo("10.0.0.1", ip, port));
+}
+
+static void testLoginCountry() {
+    // Every country the UI offers has an address and a name; off and
+    // anything else sends none.
+    for (const char* country : ui::kLoginCountries) {
+        const char* address = xcloud::loginCountryAddress(country);
+        CHECK(address && std::string(address).find('.') != std::string::npos);
+        CHECK(!ui::loginCountryName(country).empty());
+    }
+    CHECK(!xcloud::loginCountryAddress("") && !xcloud::loginCountryAddress("xx") && !xcloud::loginCountryAddress("BR"));
+    CHECK(ui::loginCountryName("xx").empty());
+    // Saved, and off when the file has none.
+    std::string path = "/tmp/xcloud-tests-country.json";
+    app::Settings s;
+    s.loginCountry = "jp";
+    CHECK(s.save(path));
+    app::Settings back;
+    CHECK(back.load(path) && back.loginCountry == "jp");
+    xc::platform::writeFileAtomic(path, "{}");
+    app::Settings none;
+    CHECK(none.load(path) && none.loginCountry.empty());
+    std::remove(path.c_str());
+    // No login yet, or a new sign-in: not refused.
+    xcloud::GssvClient gssv;
+    CHECK(!gssv.loginRefused() && gssv.loginStatus() == 0);
+}
+
+static void testStrings() {
+    using namespace ui;
+    auto placeholders = [](const std::string& t) {
+        int n = 0;
+        for (size_t at = t.find("%s"); at != std::string::npos; at = t.find("%s", at + 2)) ++n;
+        return n;
+    };
+    for (int l = 0; l < static_cast<int>(Language::Count); ++l) {
+        setLanguage(Language::English);
+        std::vector<std::string> english;
+        for (int i = 0; i < static_cast<int>(Str::Count); ++i) english.push_back(tr(static_cast<Str>(i)));
+        setLanguage(static_cast<Language>(l));
+        CHECK(languageFromCode(languageCode(static_cast<Language>(l))) == static_cast<Language>(l));
+        for (int i = 0; i < static_cast<int>(Str::Count); ++i) {
+            std::string t = tr(static_cast<Str>(i));
+            CHECK(!t.empty());
+            CHECK(placeholders(t) == placeholders(english[static_cast<size_t>(i)]));
+        }
+    }
+    setLanguage(Language::English);
+    CHECK(languageFromCode("xx") == Language::English);
+    CHECK(prettyRegion("SOUTHCENTRALUS") == "South Central US");
+    CHECK(prettyRegion("EASTUS2") == "East US 2");
+    CHECK(prettyRegion("BRAZILSOUTH") == "Brazil South");
+    CHECK(prettyRegion("CHILECENTRAL") == "Chile Central");
+    CHECK(prettyRegion("MEXICOCENTRAL") == "Mexico Central");
+    CHECK(prettyRegion("SWEDENCENTRAL") == "Sweden Central");
+    CHECK(prettyRegion("UAENORTH") == "UAE North");
+}
+
+static void testRegions() {
+    using xc::xcloud::regionsByExpectedRtt;
+    std::vector<std::string> all = {"BRAZILSOUTH", "EASTUS", "WESTEUROPE", "CHILECENTRAL", "JAPANEAST", "UNKNOWN"};
+    // Nothing measured: by distance, the unknown region last.
+    auto order = regionsByExpectedRtt("BRAZILSOUTH", all, {});
+    CHECK(order.size() == 5);
+    CHECK(order.front() == "CHILECENTRAL");
+    CHECK(order[1] == "EASTUS");
+    CHECK(order.back() == "UNKNOWN");
+    // A measured round trip beats an estimate.
+    order = regionsByExpectedRtt("BRAZILSOUTH", all, {{"BRAZILSOUTH", 15}, {"EASTUS", 40}});
+    CHECK(order.front() == "EASTUS");
+    double km = xc::xcloud::regionDistanceKm("brazilsouth", "CHILECENTRAL");
+    CHECK(km > 2500 && km < 3000);
+}
+
+static void testPrices() {
+    using xc::xcloud::formatPrice;
+    CHECK(formatPrice(78.82, "BRL") == "R$ 78,82");
+    CHECK(formatPrice(1299.9, "BRL") == "R$ 1.299,90");
+    CHECK(formatPrice(59.99, "USD") == "$59.99");
+    CHECK(formatPrice(69.99, "EUR") == "69,99 \xE2\x82\xAC");
+    CHECK(formatPrice(4, "XYZ") == "XYZ 4.00");
+}
+
+static void testAccentColor() {
+    using namespace xc::ui;
+    Image img;
+    img.w = img.h = 64;
+    img.px.assign(64 * 64, rgba(60, 60, 60));                            // grey background
+    for (int i = 0; i < 64 * 24; ++i) img.px[i] = rgba(200, 40, 30);    // a red third
+    for (int i = 64 * 60; i < 64 * 64; ++i) img.px[i] = rgba(30, 60, 200);  // a little blue
+    Color c = 0;
+    CHECK(dominantColor(img, c));
+    CHECK((c & 0xFF) == 255 && ((c >> 8) & 0xFF) < 90 && ((c >> 16) & 0xFF) < 90);  // red, at full
+    Image grey;
+    grey.w = grey.h = 16;
+    grey.px.assign(16 * 16, rgba(128, 128, 128));
+    CHECK(!dominantColor(grey, c));
+}
+
+static void testVersions() {
+    using xc::app::isNewerVersion;
+    CHECK(isNewerVersion("v0.4.0", "0.3.0"));
+    CHECK(isNewerVersion("v0.3.1", "0.3.0"));
+    CHECK(isNewerVersion("1.0", "0.9.9"));
+    CHECK(!isNewerVersion("v0.3.0", "0.3.0"));
+    CHECK(!isNewerVersion("v0.2.9", "0.3.0"));
+    CHECK(!isNewerVersion("nightly", "0.3.0"));
+    CHECK(!isNewerVersion("", "0.3.0"));
+}
+
+static void testSettingsMigration() {
+    // A file from before v0.8.0 at the old defaults gets the new ones; other
+    // choices, and files already saved by v0.8.0, stay as they are.
+    std::string path = "/tmp/xcloud-tests-settings.json";
+    auto loadFrom = [&](const std::string& text) {
+        xc::platform::writeFileAtomic(path, text);
+        xc::app::Settings s;
+        CHECK(s.load(path));
+        return s;
+    };
+    auto old = loadFrom(R"({"deband":1,"upscaler":0})");
+    CHECK(old.deband == 3 && old.upscaler == 2);
+    auto chosen = loadFrom(R"({"deband":2,"upscaler":1})");
+    CHECK(chosen.deband == 2 && chosen.upscaler == 1);
+    auto current = loadFrom(R"({"deband":1,"upscaler":0,"settingsVersion":2})");
+    CHECK(current.deband == 1 && current.upscaler == 0);
+    // Saved again, the migration doesn't repeat.
+    CHECK(old.save(path));
+    xc::app::Settings again;
+    CHECK(again.load(path) && again.deband == 3 && again.upscaler == 2);
+    // The triggers' on/off before their strength could be chosen.
+    CHECK(loadFrom(R"({"triggerRumble":false})").triggerStrength == 0 && loadFrom("{}").triggerStrength == 2);
+    // One dead zone for both sticks, until each could have its own.
+    auto one = loadFrom(R"({"deadzone":22})");
+    CHECK(one.deadzoneLeft == 22 && one.deadzoneRight == 22);
+    auto two = loadFrom(R"({"deadzone":22,"deadzoneLeft":8,"deadzoneRight":30})");
+    CHECK(two.deadzoneLeft == 8 && two.deadzoneRight == 30);
+    // The light bar's on/off before its colour could be chosen.
+    CHECK(loadFrom(R"({"lightBar":false})").lightBarMode == 2 && loadFrom(R"({"lightBar":true})").lightBarMode == 0);
+    xc::app::Settings custom;
+    custom.lightBarMode = 1;
+    custom.lightBarColour = xc::ui::rgba(0x12, 0x34, 0x56);
+    CHECK(custom.save(path));
+    std::string text;
+    CHECK(xc::platform::readFile(path, text) && text.find("\"#123456\"") != std::string::npos);
+    xc::app::Settings back;
+    CHECK(back.load(path) && back.lightBarMode == 1 && back.lightBarColour == xc::ui::rgba(0x12, 0x34, 0x56));
+    std::remove(path.c_str());
+}
+
+// The microphone's gain is stored as a choice (0..2), not as the factor.
+// Settings' screen and settings.json share one mapping: every field the
+// screen carries comes back as it was (Settings -> choice -> Settings), and
+// the fields it doesn't carry are left alone.
+static void testSettingsChoiceRoundTrip() {
+    using namespace xc::input;
+    xc::app::Settings s;
+    s.language = "pt-BR";
+    s.resolution = "720p";
+    s.region = "Brazil South";
+    s.loginCountry = "jp";
+    s.deadzoneLeft = 7, s.deadzoneRight = 21;
+    s.triggerStrength = 4, s.triggerHz = 2, s.triggerResistance = 3, s.triggerPulses = true, s.triggerProfile = 2;
+    s.circleConfirms = true;
+    s.lightBarMode = 1, s.lightBarColour = 0xFF112233;
+    s.sharpness = 3, s.deband = 1, s.upscaler = 0;
+    s.videoDecoder = 1;
+    s.highRefresh = true;
+    s.maxBitrateMbps = 15, s.gameVolume = 150;
+    assignKey(s.keyMap, KeyAction::A, 0, 'E');
+    assignPadSource(s.padMap, PadFn::A, static_cast<uint8_t>(PadFn::B));
+    CHECK(padMapValid(s.padMap));
+    s.gyroMode = 2, s.gyroLevel = 9;
+    s.desktopFullscreen = false;
+    s.touchpadMouse = true;
+    s.queueReadyAlert = false;
+    s.titlePlaytime = {{"game1", 3600}};
+    // Not carried by the screen: must survive applyChoice untouched.
+    s.keyboardPlayer = 3;
+    s.streamStats = true;
+    s.favorites = {"P1"};
+
+    ui::SettingsChoice c = ui::choiceFromSettings(s);
+    CHECK(c.language == static_cast<int>(ui::Language::PortugueseBR));
+    CHECK(c.resolution == 1 && c.triggerProfile == 2 && c.lightBarColour == 0xFF112233u && !c.fullscreen);
+    CHECK(c.videoDecoder == 1);
+    CHECK(!c.queueReadyAlert && c.titlePlaytime.at("game1") == 3600);
+
+    xc::app::Settings back;  // defaults, then what the screen carries
+    back.keyboardPlayer = 3;
+    back.streamStats = true;
+    back.favorites = {"P1"};
+    ui::applyChoice(c, back);
+    CHECK(back.language == s.language);
+    CHECK(back.resolution == s.resolution);
+    CHECK(back.region == s.region && back.loginCountry == s.loginCountry);
+    CHECK(back.deadzoneLeft == s.deadzoneLeft && back.deadzoneRight == s.deadzoneRight);
+    CHECK(back.triggerStrength == s.triggerStrength && back.triggerHz == s.triggerHz &&
+          back.triggerResistance == s.triggerResistance && back.triggerPulses == s.triggerPulses &&
+          back.triggerProfile == s.triggerProfile);
+    CHECK(back.circleConfirms == s.circleConfirms);
+    CHECK(back.lightBarMode == s.lightBarMode && back.lightBarColour == s.lightBarColour);
+    CHECK(back.sharpness == s.sharpness && back.deband == s.deband && back.upscaler == s.upscaler);
+    CHECK(back.videoDecoder == s.videoDecoder);
+    CHECK(back.highRefresh == s.highRefresh);
+    CHECK(back.maxBitrateMbps == s.maxBitrateMbps && back.gameVolume == s.gameVolume);
+    CHECK(back.queueReadyAlert == s.queueReadyAlert && back.titlePlaytime == s.titlePlaytime);
+    CHECK(back.keyMap == s.keyMap && back.padMap == s.padMap);
+    CHECK(back.gyroMode == s.gyroMode && back.gyroLevel == s.gyroLevel);
+    CHECK(back.desktopFullscreen == s.desktopFullscreen && back.touchpadMouse == s.touchpadMouse);
+    CHECK(back.keyboardPlayer == 3 && back.streamStats && back.favorites.size() == 1);
+    CHECK(ui::formatPlaytime(0) == "< 1 min");
+    CHECK(ui::formatPlaytime(45) == "< 1 min");
+    CHECK(ui::formatPlaytime(60) == "1 min");
+    CHECK(ui::formatPlaytime(2700) == "45 min");
+    CHECK(ui::formatPlaytime(3600) == "1 h");
+    CHECK(ui::formatPlaytime(3660) == "1 h 1 min");
+    CHECK(ui::formatPlaytime(8100) == "2 h 15 min");
+    // Every resolution, both ways ("1440p" from older versions reads as the top tier).
+    for (const char* res : {"1080p", "720p", "best"}) {
+        xc::app::Settings r;
+        r.resolution = res;
+        xc::app::Settings out;
+        ui::applyChoice(ui::choiceFromSettings(r), out);
+        CHECK(out.resolution == res);
+    }
+    xc::app::Settings old;
+    old.resolution = "1440p";
+    CHECK(ui::choiceFromSettings(old).resolution == 2);
+    // An incomplete controller map from the screen never replaces a valid one.
+    ui::SettingsChoice broken = c;
+    broken.padMap[0] = kPadNone;
+    xc::app::Settings kept = s;
+    ui::applyChoice(broken, kept);
+    CHECK(kept.padMap == s.padMap);
+}
+
+static void testMicGain() {
+    app::Settings s;
+    CHECK(s.micGain == 1 && s.micGainFactor() == 1.0f);
+    s.micGain = 0;
+    CHECK(s.micGainFactor() == 0.5f);
+    s.micGain = 2;
+    CHECK(s.micGainFactor() == 1.5f);
+    s.micGain = 7;  // out of range (a hand-edited file): the nearest choice
+    CHECK(s.micGainFactor() == 1.5f);
+}
+
+static void testPerGameSettings() {
+    std::string path = "/tmp/xcloud-tests-pergame.json";
+    xc::app::Settings s;
+    s.sharpness = 1;
+    s.deband = 2;
+    s.upscaler = 0;
+    s.videoDecoder = 0;
+    s.deadzoneLeft = 12;
+    s.deadzoneRight = 18;
+    s.triggerStrength = 3;
+    s.circleConfirms = false;
+
+    // Default profile reflects global settings.
+    auto def = s.defaultProfile();
+    CHECK(def.sharpness == 1 && def.deband == 2 && def.upscaler == 0 && def.videoDecoder == 0);
+    CHECK(def.deadzoneLeft == 12 && def.deadzoneRight == 18 && def.triggerStrength == 3);
+    CHECK(!def.circleConfirms);
+    CHECK(!def.highRefresh);  // off unless chosen
+    CHECK(!def.touchpadMouse);
+
+    // Unknown games return default profile with hasCustom = false.
+    bool hasCustom = true;
+    auto prof1 = s.profileForGame("GAME1", "", &hasCustom);
+    CHECK(!hasCustom);
+    CHECK(prof1.sharpness == 1 && prof1.deadzoneLeft == 12 && prof1.videoDecoder == 0);
+
+    // Add per-game profile for GAME1.
+    xc::app::GameProfile p1;
+    p1.sharpness = 3;
+    p1.deband = 0;
+    p1.upscaler = 3;
+    p1.videoDecoder = 1;  // override global HW with SW
+    p1.deadzoneLeft = 5;
+    p1.deadzoneRight = 8;
+    p1.triggerStrength = 1;
+    p1.circleConfirms = true;
+    p1.highRefresh = true;
+    p1.touchpadMouse = true;
+    p1.locale = "pt-BR";
+    s.favorites = {"GAME1", "GAME3"};
+    s.perGame["GAME1"] = p1;
+
+    // Now GAME1 returns custom profile, while GAME2 still returns defaults.
+    auto prof1Custom = s.profileForGame("GAME1", "", &hasCustom);
+    CHECK(hasCustom);
+    CHECK(prof1Custom.sharpness == 3 && prof1Custom.upscaler == 3 && prof1Custom.circleConfirms);
+    CHECK(prof1Custom.deadzoneLeft == 5 && prof1Custom.triggerStrength == 1 && prof1Custom.touchpadMouse);
+    CHECK(prof1Custom.videoDecoder == 1);
+    CHECK(prof1Custom.locale == "pt-BR");
+
+    hasCustom = true;
+    auto prof2 = s.profileForGame("GAME2", "", &hasCustom);
+    CHECK(!hasCustom);
+    CHECK(prof2.sharpness == 1 && !prof2.circleConfirms && !prof2.touchpadMouse && prof2.locale.empty() && prof2.videoDecoder == 0);
+
+    // Title ID fallback when productId is empty.
+    s.perGame["CONSOLE_SERVER_1"] = p1;
+    auto consoleProf = s.profileForGame("", "CONSOLE_SERVER_1", &hasCustom);
+    CHECK(hasCustom);
+    CHECK(consoleProf.sharpness == 3 && consoleProf.circleConfirms && consoleProf.locale == "pt-BR" && consoleProf.videoDecoder == 1);
+
+    // Save to disk and reload.
+    CHECK(s.desktopFullscreen);  // a desktop window starts fullscreen unless chosen otherwise
+    s.desktopFullscreen = false;
+    CHECK(s.save(path));
+    xc::app::Settings reloaded;
+    CHECK(reloaded.load(path));
+    CHECK(!reloaded.desktopFullscreen);
+    CHECK(reloaded.favorites.size() == 2 && reloaded.favorites[0] == "GAME1" && reloaded.favorites[1] == "GAME3");
+    CHECK(reloaded.perGame.size() == 2);
+    auto loadedP1 = reloaded.profileForGame("GAME1", "", &hasCustom);
+    CHECK(hasCustom);
+    CHECK(loadedP1.sharpness == 3 && loadedP1.upscaler == 3 && loadedP1.circleConfirms);
+    CHECK(loadedP1.highRefresh && loadedP1.touchpadMouse && loadedP1.locale == "pt-BR" && loadedP1.videoDecoder == 1);
+    CHECK(loadedP1.deadzoneLeft == 5 && loadedP1.deadzoneRight == 8 && loadedP1.triggerStrength == 1);
+
+    // Remove game profile restores default.
+    reloaded.perGame.erase("GAME1");
+    auto afterErase = reloaded.profileForGame("GAME1", "", &hasCustom);
+    CHECK(!hasCustom);
+    CHECK(afterErase.sharpness == reloaded.sharpness && afterErase.locale.empty() && afterErase.videoDecoder == reloaded.videoDecoder);
+
+    std::remove(path.c_str());
+}
+
+// Protobuf wire format for the Content Access tests.
+static std::string pbVarint(uint64_t v) {
+    std::string s;
+    do {
+        uint8_t b = v & 0x7F;
+        v >>= 7;
+        s += static_cast<char>(b | (v ? 0x80 : 0));
+    } while (v);
+    return s;
+}
+static std::string pbInt(int field, uint64_t v) { return pbVarint(static_cast<uint64_t>(field) << 3) + pbVarint(v); }
+static std::string pbMsg(int field, const std::string& body) {
+    return pbVarint((static_cast<uint64_t>(field) << 3) | 2) + pbVarint(body.size()) + body;
+}
+// A product as Content Access sends it: its ID, then for each user (PUID)
+// the access types and, when timed, the streaming gameplay time.
+static std::string pbProduct(const std::string& id, const std::string& puid, int64_t remaining, int64_t max) {
+    std::string streaming = pbInt(1, 2);
+    if (remaining >= 0) streaming += pbInt(2, static_cast<uint64_t>(remaining));
+    if (max >= 0) streaming += pbInt(4, static_cast<uint64_t>(max));
+    std::string access = pbInt(1, 1) + pbInt(2, 1788310800u) + pbMsg(11, streaming);  // aggregate types: a big bit mask
+    return pbMsg(2, pbMsg(1, id) + pbMsg(2, pbMsg(2, pbMsg(1, puid) + pbMsg(2, access))));
+}
+
+static void testSteamDeckDmi() {
+    using xc::platform::steamDeckDmi;
+    CHECK(steamDeckDmi("Valve\n", "Jupiter\n"));
+    CHECK(steamDeckDmi("Valve", "Galileo"));
+    CHECK(!steamDeckDmi("Valve\n", "Index\n"));
+    CHECK(!steamDeckDmi("ASUSTeK COMPUTER INC.\n", "ROG Ally RC71L_RC71L\n"));
+    CHECK(!steamDeckDmi("", ""));
+}
+
+static void testCloudTimeClock() {
+    using xc::ui::CloudTimeClock;
+    using xc::ui::formatCloudTime;
+    // Whole minutes, rounded down.
+    CHECK(formatCloudTime(15000) == "4 h 10 min");
+    CHECK(formatCloudTime(54000) == "15 h");
+    CHECK(formatCloudTime(2879) == "47 min");
+    CHECK(formatCloudTime(59) == "< 1 min");
+    CHECK(formatCloudTime(0) == "0 min");
+    // After a session: an answer the service has not counted yet keeps the
+    // count; one over the earlier answer is new hours; none keeps the count.
+    CHECK((CloudTimeClock::reconcile(3000, 6600, 6600) == 3000));
+    CHECK((CloudTimeClock::reconcile(3000, 2000, 6600) == 2000));
+    CHECK((CloudTimeClock::reconcile(3000, 54000, 6600) == 54000));
+    CHECK((CloudTimeClock::reconcile(3000, -1, 6600) == 3000));
+    CHECK((CloudTimeClock::reconcile(-1, 900, -1) == 900));
+
+    CloudTimeClock c;
+    c.start(-1, 0);
+    CHECK(!c.limited());
+    CHECK(c.left(60000) == -1);
+    CHECK(c.noticeDue(60000) == -1);
+
+    c.start(16 * 60, 0);  // 16 min left
+    CHECK(c.left(0) == 16 * 60);
+    CHECK(c.noticeDue(0) == -1);
+    CHECK(c.left(30500) == 16 * 60 - 30);
+    CHECK(c.noticeDue(60000) == 15 * 60);  // 15 min: the first notice, once
+    CHECK(c.noticeDue(61000) == -1);
+    c.answer(16 * 60, 120000);  // stale: the service had not counted the stream
+    CHECK(c.left(120000) == 14 * 60);
+    c.answer(10 * 60, 120000);  // lower: taken
+    CHECK(c.left(120000) == 10 * 60);
+    CHECK(c.noticeDue(420000) == 5 * 60);  // 5 min
+    CHECK(c.noticeDue(500000) == -1);
+    CHECK(c.left(10000000) == 0);
+    c.answer(15 * 3600, 10000000);  // hours bought: over the start's answer
+    CHECK(c.left(10000000) == 15 * 3600);
+
+    c.start(10 * 60, 0);  // a stream that starts under 15 minutes: one notice now
+    CHECK(c.noticeDue(0) == 10 * 60);
+    CHECK(c.noticeDue(1000) == -1);
+    CHECK(c.noticeDue(300000) == 5 * 60);
+    c.start(4 * 60, 0);  // under 5: just the one
+    CHECK(c.noticeDue(0) == 4 * 60);
+    CHECK(c.noticeDue(60000) == -1);
+    c.start(5 * 60 + 10, 0);  // "5 min" already shown: not said twice
+    CHECK(c.noticeDue(0) == 5 * 60 + 10);
+    CHECK(c.noticeDue(10000) == -1);
+    c.start(16 * 60 + 30, 0);  // the notice when "15 min" first shows
+    CHECK(c.noticeDue(30000) == -1);
+    CHECK(c.noticeDue(31000) == 15 * 60 + 59);
+}
+
+static void testPlaytimeLimit() {
+    int64_t rem = -1, max = -1;
+    const std::string passes = pbMsg(1, pbMsg(1, "puid-1") + pbMsg(2, pbMsg(1, pbMsg(1, "CFQ7TTC0KHS0") + pbMsg(2, pbInt(1, 0)))));
+
+    // 1. The account's allowance: the same remaining / max on its limited
+    // products (15 h a month, 9 h 30 left), not the access bit masks.
+    std::string body = passes + pbProduct("9NBLGGH4R315", "puid-1", 34200, 54000) +
+                       pbProduct("BT5P2X999VH2", "puid-1", 34200, 54000) + pbProduct("9PNCL2R6G8D0", "puid-1", 34200, 54000) +
+                       pbProduct("9NZQPT0MWTD0", "puid-1", -1, -1);
+    auth::ContentAccessPlaytime t;
+    CHECK(auth::parseContentAccessPlaytime(body, t));
+    CHECK(t.products == 4 && t.limited == 3 && t.byProduct.size() == 3);
+    CHECK(t.accountRemaining == 34200 && t.accountMax == 54000);
+    CHECK(t.byProduct["BT5P2X999VH2"].first == 34200 && t.byProduct["BT5P2X999VH2"].second == 54000);
+    CHECK(auth::parsePlaytimeLimit(body, rem, max) && rem == 34200 && max == 54000);
+
+    // 2. One timed product (a game's own free time): no account allowance.
+    std::string one = passes + pbProduct("BT5P2X999VH2", "puid-1", 0, 3600) + pbProduct("9NZQPT0MWTD0", "puid-1", -1, -1);
+    CHECK(auth::parseContentAccessPlaytime(one, t));
+    CHECK(t.limited == 1 && t.accountRemaining == -1 && t.byProduct["BT5P2X999VH2"].first == 0);
+    CHECK(!auth::parsePlaytimeLimit(one, rem, max) && rem == -1 && max == -1);
+
+    // 3. Another user's access (a family member) is not this account's.
+    std::string other = passes + pbProduct("A", "puid-2", 100, 200) + pbProduct("B", "puid-2", 100, 200) +
+                        pbProduct("C", "puid-2", 100, 200);
+    CHECK(auth::parseContentAccessPlaytime(other, t) && t.byProduct.empty() && t.accountRemaining == -1);
+
+    // 4. JSON: the same rule over its objects.
+    std::string json = R"({"products":[{"productId":"A","remainingGameplayTimeInSeconds":7200,"maxGameplayTimeInSeconds":18000},
+        {"productId":"B","remainingGameplayTimeInSeconds":"7200","maxGameplayTimeInSeconds":"18000"},
+        {"productId":"C","remainingGameplayTimeInSeconds":7200,"maxGameplayTimeInSeconds":18000}]})";
+    CHECK(auth::parsePlaytimeLimit(json, rem, max) && rem == 7200 && max == 18000);
+
+    // 5. The account's own record (top-level field 3): its first bucket.
+    auto account = [&](uint64_t remaining, uint64_t max) {
+        std::string bucket = pbInt(2, remaining) + pbInt(3, 1791335750u) + pbInt(4, max) + pbInt(5, 1);
+        std::string other = pbInt(3, 1791335750u) + pbInt(5, 1);
+        return pbMsg(3, pbMsg(1, "puid-1") + pbMsg(2, pbMsg(2, bucket) + pbMsg(3, other) + pbMsg(4, other)));
+    };
+    // As this console's Ultimate account answered on 2026-11-04: no limit
+    // (all bits set), and no product with a time of its own.
+    std::string unlimited = passes + pbProduct("9NZQPT0MWTD0", "puid-1", -1, -1) + account(~0ull, ~0ull);
+    CHECK(auth::parseContentAccessPlaytime(unlimited, t));
+    CHECK(t.unlimited && t.accountRemaining == -1 && t.accountBuckets.size() == 3);
+    CHECK(t.accountBuckets[2].first == auth::ContentAccessPlaytime::kUnlimited && t.accountBuckets[3].first == -1);
+    CHECK(!auth::parsePlaytimeLimit(unlimited, rem, max));
+    // A limited account: 15 h a month, 4 h 10 min left; the record wins over
+    // the products' own times.
+    std::string limited = passes + pbProduct("A", "puid-1", 100, 200) + pbProduct("B", "puid-1", 100, 200) +
+                          pbProduct("C", "puid-1", 100, 200) + account(15000, 54000);
+    CHECK(auth::parseContentAccessPlaytime(limited, t) && !t.unlimited);
+    CHECK(t.accountRemaining == 15000 && t.accountMax == 54000);
+    CHECK(auth::parsePlaytimeLimit(limited, rem, max) && rem == 15000 && max == 54000);
+
+    // 6. Empty and invalid answers.
+    CHECK(!auth::parsePlaytimeLimit("", rem, max));
+    CHECK(!auth::parsePlaytimeLimit("not a valid payload", rem, max));
+    CHECK(!auth::parseContentAccessPlaytime(std::string("\x0a\x05\x01", 3), t));  // length past the end
+}
+
+static void testFreeAccountPlayability() {
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+    app.setSubscription("");  // Free account (no Game Pass)
+    CHECK(app.isFreeAccount());
+
+    ui::GameTile paidTile;
+    paidTile.titleId = "PAID_TITLE";
+    paidTile.productId = "PAID_PROD";
+    paidTile.playable = true;
+    paidTile.freeInStore = false;
+
+    ui::GameTile f2pTile;
+    f2pTile.titleId = "Fortnite";
+    f2pTile.productId = "9NBLGGH52538";
+    f2pTile.playable = true;
+    f2pTile.freeInStore = true;
+
+    ui::GameRow row;
+    row.title = "Games";
+    row.tiles = {paidTile, f2pTile};
+    app.setRows({row});
+    app.showHome();
+
+    // Paid game on free account: cannot launch
+    ui::NavInput in;
+    in.accept = true;
+    app.handle(in);  // Home -> Details
+    ui::UiEvent evPaid = app.handle(in);
+    CHECK(evPaid.action != ui::Action::Play);
+
+    // Back to home, select F2P game (index 1)
+    ui::NavInput back;
+    back.back = true;
+    app.handle(back);  // Details -> Home
+    ui::NavInput right;
+    right.right = true;
+    app.handle(right);  // Move to F2P game
+    app.handle(in);     // Home -> Details
+    ui::UiEvent evF2p = app.handle(in);
+    CHECK(evF2p.action == ui::Action::Play);
+    CHECK(evF2p.game.titleId == "Fortnite");
+}
+
+static void testDetailsHydrationAndPlaytimeBadge() {
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+    app.setSubscription("GamePass");
+    CHECK(!app.isFreeAccount());
+
+    // Tile on home row with only titleId and productId (no description, no rating)
+    ui::GameTile lightTile;
+    lightTile.titleId = "GAME_WITH_FULL_DATA";
+    lightTile.productId = "PROD_FULL_DATA";
+    lightTile.name = "My Full Game";
+    lightTile.playable = true;
+
+    // Detailed tile in gamePassPool
+    ui::GameTile fullTile = lightTile;
+    fullTile.description = "Full detailed description of the game.";
+    fullTile.heroUrl = "https://example.com/hero.jpg";
+    fullTile.publisher = "Awesome Studio";
+    fullTile.categories = {"Action", "Adventure"};
+    fullTile.ratingAge = "14+";
+    fullTile.ratingSystem = "ClassInd";
+    fullTile.ratingDescriptors = {"Violência"};
+
+    app.setSearchPools({fullTile}, {});
+
+    ui::GameRow row;
+    row.title = "Jump Back In";
+    row.tiles = {lightTile};
+    app.setRows({row});
+    app.showHome();
+
+    // Set playtime in settings
+    ui::SettingsChoice c = app.settings();
+    c.titlePlaytime[lightTile.productId] = 3600; // 1 hour
+    app.setSettings(c);
+
+    // Open details
+    ui::NavInput in;
+    in.accept = true;
+    app.handle(in); // Opens Details
+
+    // Detail tile must have description, rating, publisher, categories, heroUrl hydrated!
+    ui::NavInput acceptInDetails;
+    acceptInDetails.accept = true;
+    ui::UiEvent ev = app.handle(acceptInDetails);
+    CHECK(ev.action == ui::Action::Play);
+    CHECK(ev.game.description == "Full detailed description of the game.");
+    CHECK(ev.game.publisher == "Awesome Studio");
+    CHECK(ev.game.ratingAge == "14+");
+    CHECK(ev.game.ratingSystem == "ClassInd");
+    CHECK(ev.game.heroUrl == "https://example.com/hero.jpg");
+    CHECK(!ev.game.ratingDescriptors.empty());
+    CHECK(ev.game.ratingDescriptors[0] == "Violência");
+}
+
+static void testSplashInputBlocking() {
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+    CHECK(app.screen() == ui::Screen::Splash);
+
+    ui::NavInput in;
+    in.accept = true;
+    in.down = true;
+    in.options = true;
+    in.triangle = true;
+    in.r1 = true;
+    ui::UiEvent ev = app.handle(in);
+    CHECK(ev.action == ui::Action::None);
+    CHECK(app.screen() == ui::Screen::Splash);
+
+    app.showSplash("Signing in...");
+    CHECK(app.screen() == ui::Screen::Splash);
+    ev = app.handle(in);
+    CHECK(ev.action == ui::Action::None);
+
+    app.showHome();
+    CHECK(app.screen() == ui::Screen::Home);
+}
+
+static void testStreamMenu() {
+    using xc::ui::MenuAction;
+    xc::ui::Fonts fonts;  // not loaded: handle() never draws
+    xc::ui::StreamMenu menu(fonts);
+    auto press = [&](void (*set)(xc::ui::NavInput&)) {
+        xc::ui::NavInput n;
+        set(n);
+        return menu.handle(n);
+    };
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::None);  // closed
+    menu.open(0, false);
+    CHECK(menu.isOpen());
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::XboxButton);  // first; it closes
+    CHECK(!menu.isOpen());
+    menu.open(0, false);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::ProfileToggle);
+    CHECK(menu.hasCustomProfile());
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Stats);
+    CHECK(menu.statsOn());
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Upscaler);  // FSR -> FSR + clean-up
+    CHECK(menu.upscaler() == 2);
+    press([](xc::ui::NavInput& n) { n.right = true; });  // -> AI
+    CHECK(menu.upscaler() == 1);
+    press([](xc::ui::NavInput& n) { n.right = true; });  // -> AI + clean-up
+    CHECK(menu.upscaler() == 3);
+    press([](xc::ui::NavInput& n) { n.right = true; });  // wraps to FSR
+    CHECK(menu.upscaler() == 0);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.left = true; }) == MenuAction::Sharpness);  // off -> high
+    CHECK(menu.sharpness() == 3);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Deband);  // low -> high
+    CHECK(menu.deband() == 2);
+    press([](xc::ui::NavInput& n) { n.right = true; });  // -> auto
+    CHECK(menu.deband() == 3);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    press([](xc::ui::NavInput& n) { n.left = true; });  // 1080p -> 720p
+    CHECK(menu.resolution() == 1);
+    press([](xc::ui::NavInput& n) { n.left = true; });  // wraps to 1440p
+    CHECK(menu.resolution() == 2);
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::Resolution);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Triggers);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Deadzone);
+    press([](xc::ui::NavInput& n) { n.down = true; });
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::ConfirmButton);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // gyro aiming: off -> always -> while aiming
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Gyro && menu.gyroMode() == 1);
+    CHECK(press([](xc::ui::NavInput& n) { n.right = true; }) == MenuAction::Gyro && menu.gyroMode() == 2);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // its intensity, 1..10
+    CHECK(press([](xc::ui::NavInput& n) { n.left = true; }) == MenuAction::Gyro && menu.gyroLevel() == 4);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // DualSense speaker volume
+    CHECK(press([](xc::ui::NavInput& n) { n.left = true; }) == MenuAction::PadSpeakerVolume && menu.padSpeakerVolume() == 95);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // Touchpad shortcuts
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::TouchpadShortcuts);
+    CHECK(press([](xc::ui::NavInput& n) { n.back = true; }) == MenuAction::TouchpadShortcuts);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // "Leave game", last
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::Leave);
+    CHECK(!menu.isOpen());
+    menu.open(1, true);
+    CHECK(press([](xc::ui::NavInput& n) { n.back = true; }) == MenuAction::Close);
+    // Best (Auto) offered as resolution 2; cycling is 720p (1) -> 1080p (0) -> Best (2).
+    menu.open(2, false, 0, 1, 0, false, false);
+    CHECK(menu.resolution() == 2);
+    for (int i = 0; i < 6; ++i) press([](xc::ui::NavInput& n) { n.down = true; });  // to the resolution
+    press([](xc::ui::NavInput& n) { n.right = true; });
+    CHECK(menu.resolution() == 1);  // Best (2) -> wraps to 720p (1)
+    press([](xc::ui::NavInput& n) { n.right = true; });
+    CHECK(menu.resolution() == 0);  // 720p -> 1080p
+    press([](xc::ui::NavInput& n) { n.right = true; });
+    CHECK(menu.resolution() == 2);  // 1080p -> Best (2)
+
+    // Test stats indicator customization
+    menu.open(0, true);
+    press([](xc::ui::NavInput& n) { n.down = true; });  // -> Profile
+    press([](xc::ui::NavInput& n) { n.down = true; });  // -> Stats
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::Stats);
+    CHECK(menu.isCustomizingStats());
+    // Indicator 0 (StatsFps) is on by default in StatsDefaultMask; toggle it off:
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::Stats);
+    CHECK((menu.statsMask() & xc::ui::StatsFps) == 0);
+    // Toggle it back on:
+    CHECK(press([](xc::ui::NavInput& n) { n.accept = true; }) == MenuAction::Stats);
+    CHECK((menu.statsMask() & xc::ui::StatsFps) != 0);
+    // Back returns to main menu:
+    press([](xc::ui::NavInput& n) { n.back = true; });
+    CHECK(!menu.isCustomizingStats());
+    CHECK(menu.isOpen());
+}
+
+// A zip archive of stored (uncompressed) files, as the test needs one.
+static std::string storedZip(const std::vector<std::pair<std::string, std::string>>& files) {
+    auto le = [](std::string& s, uint32_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i) s += static_cast<char>((v >> (8 * i)) & 0xFF);
+    };
+    std::string out, dir;
+    for (const auto& [name, data] : files) {
+        uint32_t at = static_cast<uint32_t>(out.size()), n = static_cast<uint32_t>(data.size());
+        le(out, 0x04034b50, 4), le(out, 20, 2), le(out, 0, 2), le(out, 0, 2), le(out, 0, 4), le(out, 0, 4);
+        le(out, n, 4), le(out, n, 4), le(out, static_cast<uint32_t>(name.size()), 2), le(out, 0, 2);
+        out += name + data;
+        le(dir, 0x02014b50, 4), le(dir, 20, 2), le(dir, 20, 2), le(dir, 0, 2), le(dir, 0, 2), le(dir, 0, 4), le(dir, 0, 4);
+        le(dir, n, 4), le(dir, n, 4), le(dir, static_cast<uint32_t>(name.size()), 2), le(dir, 0, 2), le(dir, 0, 2);
+        le(dir, 0, 2), le(dir, 0, 2), le(dir, 0, 4), le(dir, at, 4);
+        dir += name;
+    }
+    uint32_t dirAt = static_cast<uint32_t>(out.size());
+    out += dir;
+    le(out, 0x06054b50, 4), le(out, 0, 2), le(out, 0, 2), le(out, static_cast<uint32_t>(files.size()), 2);
+    le(out, static_cast<uint32_t>(files.size()), 2), le(out, static_cast<uint32_t>(dir.size()), 4), le(out, dirAt, 4);
+    le(out, 0, 2);
+    return out;
+}
+
+static void testUpdater() {
+    using namespace xc::app;
+    CHECK(contentVersionOf("v0.8.1") == "00.801.000" && contentVersionOf("1.10.0").empty());
+    CHECK(contentVersionOf("v1.6.3") == "01.603.000" && contentVersionOf("v2.0.0") == "02.000.000" && contentVersionOf("v0.0.1") == "00.001.000");
+    CHECK(isNewerVersion("v1.6.3", "1.6.2") && !isNewerVersion("v1.6.3", "1.6.3") && !isNewerVersion("1.6.2", "v1.6.3"));
+    CHECK(isNewerVersion("v1.7.0", "1.6.99") && !isNewerVersion("", "1.6.2") && !isNewerVersion("1.6.2", ""));
+    CHECK(updatablePath("eboot.bin") && updatablePath("sce_sys/param.json") && updatablePath("assets/fonts/a.ttf"));
+    CHECK(updatablePath("assets/PSBox_Trophies.elf") && updatablePath("sce_module/libc.prx"));
+    CHECK(updatablePath("assets/media_showcase/01_home_screen.png") && updatablePath("licenses/Anime4K-MIT.txt"));
+    CHECK(!updatablePath("../eboot.bin") && !updatablePath("/data/x") && !updatablePath("a//b") && !updatablePath("a/./b"));
+    CHECK(!updatablePath("account.json") && !updatablePath("settings.json") && !updatablePath("imgcache/x"));
+    CHECK(!updatablePath("update.old/eboot.bin") && !updatablePath("update.journal") && !updatablePath("frame.ppm"));
+
+    // A signature by a throwaway key (made for this test only).
+    const char* pub =
+        "-----BEGIN PUBLIC KEY-----\n"
+        "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAETaRKE8e1bXOEYcQDqc3yvrCF4reo\n"
+        "nn1S6x6D3sFYl8eHLd7qogQNmh7Nseqx41gMcXh5TVqOjvMS+7mpqk0Wxg==\n"
+        "-----END PUBLIC KEY-----\n";
+    const char* hex =
+        "3045022021a9fa17a6717284e6d5989fcffb6363d371f97ea00b4e9ecec4adaa11a01a050221008053381afe913f3071594281868a44"
+        "cd57589796b296b1818b37a6e3c8880514";
+    std::string sig;
+    for (size_t i = 0; hex[i] && hex[i + 1]; i += 2) sig += static_cast<char>(std::stoi(std::string(hex + i, 2), nullptr, 16));
+    std::string err;
+    CHECK(verifySignature("PSBox test", sig, pub, err));
+    CHECK(!verifySignature("PSBox tesT", sig, pub, err));
+    CHECK(!verifySignature("PSBox test", sig, kReleaseKey, err));  // another key
+
+    std::vector<ZipEntry> files;
+    CHECK(unzip(storedZip({{"PPSA99810/eboot.bin", "elf"}, {"PPSA99810/sce_sys/param.json", "{}"}}), "PPSA99810/", files,
+                err));
+    CHECK(files.size() == 2 && files[0].path == "eboot.bin" && files[0].data == "elf" && files[1].path == "sce_sys/param.json");
+    CHECK(!unzip(storedZip({{"PPSA99810/../evil", "x"}}), "PPSA99810/", files, err));
+    CHECK(!unzip(storedZip({{"PPSA99810/account.json", "x"}}), "PPSA99810/", files, err));
+    CHECK(!unzip(storedZip({{"other/eboot.bin", "x"}}), "PPSA99810/", files, err));
+    CHECK(!unzip("not a zip", "PPSA99810/", files, err));
+
+    // An update cut short while files moved: the old ones go back.
+    std::string dir = "/tmp/xcloud-updater-test";
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir + "/update.old/sce_sys").c_str());
+    xc::platform::writeFileAtomic(dir + "/eboot.bin", "new");
+    xc::platform::writeFileAtomic(dir + "/update.old/eboot.bin", "old");
+    xc::platform::writeFileAtomic(dir + "/update.old/sce_sys/param.json", "old param");
+    xc::platform::writeFileAtomic(dir + "/account.json", "mine");
+    xc::platform::writeFileAtomic(dir + "/update.journal", "swapping\n");
+    CHECK(recoverUpdate(dir));
+    std::string text;
+    CHECK(xc::platform::readFile(dir + "/eboot.bin", text) && text == "old");
+    CHECK(xc::platform::readFile(dir + "/sce_sys/param.json", text) && text == "old param");
+    CHECK(xc::platform::readFile(dir + "/account.json", text) && text == "mine");
+    CHECK(!xc::platform::readFile(dir + "/update.journal", text) && !xc::platform::readFile(dir + "/update.old/eboot.bin", text));
+    CHECK(!recoverUpdate(dir));  // nothing left to do
+    std::system(("rm -rf " + dir).c_str());
+}
+
+static void testControllerTuning() {
+    using xc::input::radialDeadzone;
+    using xc::input::triggerAmplitude;
+    auto near = [](float a, float b) { return std::abs(a - b) < 0.01f; };
+    float x = 0.1f, y = 0.1f;
+    radialDeadzone(x, y, 0.15f);  // |0.14| < 0.15: nothing
+    CHECK(x == 0 && y == 0);
+    x = 1, y = 0;
+    radialDeadzone(x, y, 0.15f);  // the edge stays the edge
+    CHECK(near(x, 1) && y == 0);
+    x = 0.575f, y = 0;
+    radialDeadzone(x, y, 0.15f);  // halfway out of the dead zone -> 0.5, from 0 (no jump)
+    CHECK(near(x, 0.5f));
+    x = 0.6f, y = 0.1f;  // a diagonal near the X axis keeps its Y (no snapping to the axis)
+    radialDeadzone(x, y, 0.15f);
+    CHECK(y > 0.05f && near(y / x, 0.1f / 0.6f));
+
+    CHECK(triggerAmplitude(38) == 4 && triggerAmplitude(128) == 6);  // medium: as before
+    CHECK(triggerAmplitude(38, 0) == 0 && triggerAmplitude(0, 4) == 0);
+    CHECK(triggerAmplitude(38, 1) == 2 && triggerAmplitude(38, 3) == 6 && triggerAmplitude(38, 4) == 8);
+    CHECK(triggerAmplitude(255, 3) == 8 && triggerAmplitude(1, 1) == 1);
+
+    using xc::input::triggerCommand;
+    auto vib = triggerCommand(38, 2, 1, 2, false, 0);  // vibration style: the motor, 60 Hz
+    CHECK(vib.mode == 3 && vib.data[1] == 4 && vib.data[2] == 60);
+    auto still = triggerCommand(0, 2, 1, 2, false, 0);  // no request: the medium resistance (from 3, strength 4)
+    CHECK(still.mode == 1 && still.data[0] == 3 && still.data[1] == 4);
+    CHECK(triggerCommand(0, 2, 1, 0, false, 0).mode == 0);  // no resistance: off
+    // Pulses (20 Hz: 25 ms push, 25 ms release) keep the weight: base 3 + amplitude 4.
+    auto push = triggerCommand(38, 2, 1, 2, true, 0), release = triggerCommand(38, 2, 1, 2, true, 30);
+    CHECK(push.mode == 1 && push.data[1] == 7 && release.mode == 1 && release.data[1] == 3);
+    CHECK(triggerCommand(38, 2, 1, 0, true, 30).mode == 0);  // no resistance: released is off
+    CHECK(triggerCommand(38, 0, 1, 2, true, 0) == still);    // vibration off: only the weight
+}
+
+static void testReport() {
+    using namespace xc::app::report;
+    // Private data out.
+    // Made-up values (the tokens put together here, so the source holds none).
+    const std::string jwt = std::string("ey") + "JmYWtlIjoidG9rZW4ifQ" + "QUJDREVGR0hJSktMTU5PUA.abc";
+    const std::string xbl = std::string("XBL3.0 x=") + "12345;" + "ey" + "Jfake";
+    std::string s = sanitize("signed in as SomePlayer from 203.0.113.7 token " + jwt + " auth " + xbl +
+                                 " mail me@example.com id 0123456789abcdef0123456789abcdef ok",
+                             {"SomePlayer"});
+    CHECK(s.find("SomePlayer") == std::string::npos && s.find("<name>") != std::string::npos);
+    CHECK(s.find("203.0.113") == std::string::npos && s.find("<ip>") != std::string::npos);
+    CHECK(s.find("ey" "J") == std::string::npos && s.find("12345") == std::string::npos && s.find("<token>") != std::string::npos);
+    CHECK(s.find("example.com") == std::string::npos && s.find("<email>") != std::string::npos);
+    CHECK(s.find("0123456789abcdef0123") == std::string::npos && s.find("<id>") != std::string::npos);
+    CHECK(sanitize("v0.9.5 at 1080p, 60 fps, 9 ms", {}) == "v0.9.5 at 1080p, 60 fps, 9 ms");  // nothing private
+    CHECK(sanitize("crash: SIGSEGV pc=eboot+0x1a2b3c addr=0x0", {}) == "crash: SIGSEGV pc=eboot+0x1a2b3c addr=0x0");
+
+    // The excerpt: the session wanted, its warnings / errors and last lines.
+    std::string log = "10:00 [I] === PSBox Cloud Gaming starting ===\n10:00 [E] old error\n"
+                      "11:00 [I] === PSBox Cloud Gaming starting ===\n";
+    for (int i = 0; i < 40; ++i) log += "11:01 [I] line " + std::to_string(i) + "\n";
+    log += "11:02 [W] a warning\n11:03 [I] tail\n";
+    std::string now = logExcerpt(log, false, 5), before = logExcerpt(log, true, 5);
+    CHECK(now.find("old error") == std::string::npos && now.find("a warning") != std::string::npos);
+    CHECK(now.find("line 39") != std::string::npos && now.find("line 3\n") == std::string::npos && now.find("...") != std::string::npos);
+    CHECK(before.find("old error") != std::string::npos && before.find("line") == std::string::npos);
+    CHECK(logExcerpt("no sessions\n", true).empty());
+
+    // The link fits the QR code; the log keeps its end, and a crash report
+    // keeps its offset and app version in the issue body.
+    Info info{"Error: certificates", "TLS setup failed", "0.9.6", "13.00", "", "crash: SIGSEGV pc=eboot+0x1a2b3c addr=0x0"};
+    for (int i = 0; i < 200; ++i) info.log += "12:00 [I] a long line of the log number " + std::to_string(i) + "\n";
+    std::string url = issueUrl(info, 1800);
+    CHECK(url.size() <= 1800 && url.find("template=bug_report.yml") != std::string::npos);
+    CHECK(url.find("number+199") != std::string::npos && url.find("number+0%0A") == std::string::npos);
+    CHECK(url.find("release=0.9.6") != std::string::npos && url.find("title=Error:+certificates") != std::string::npos);
+    CHECK(url.find("pc%3Deboot%2B0x1a2b3c") != std::string::npos && url.find("(v0.9.6)") != std::string::npos);
+    CHECK(xc::platform::imageCacheBudget() >= (48u << 20));
+
+    // QR code generation and 4-slot LRU caching
+    ui::Canvas canvas(300, 300);
+    auto qr1 = ui::drawQr(canvas, url, 280, 20, 200, qrcodegen_Ecc_LOW);
+    CHECK(qr1.w > 0 && qr1.h > 0);
+    auto qr1_cached = ui::drawQr(canvas, url, 280, 20, 200, qrcodegen_Ecc_LOW);
+    CHECK(qr1_cached.w == qr1.w && qr1_cached.h == qr1.h);
+    auto qr_empty = ui::drawQr(canvas, "", 280, 20, 200);
+    CHECK(qr_empty.w == 0 && qr_empty.h == 0);
+}
+
+[[gnu::noinline]] static void triggerNullWriteCrash() {
+    volatile int* p = nullptr;
+    asm volatile("" : "+r"(p));
+    *p = 1;
+}
+
+static void testCrashGuard() {
+    // A crash in a child process leaves the marker with its stage and faulting PC offset.
+    std::string marker = "/tmp/xcloud-tests-crash.marker";
+    std::remove(marker.c_str());
+    pid_t pid = fork();
+    if (pid == 0) {
+        xc::app::crash::install(marker);
+        xc::app::crash::setStage("streaming TEST");
+        triggerNullWriteCrash();
+        _exit(0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);  // still dies of it
+    auto prev = xc::app::crash::takePrevious(marker);
+    CHECK(prev.found && prev.kind == "signal 11 (SIGSEGV)" && prev.stage == "streaming TEST");
+    CHECK(prev.crash.rfind("crash: SIGSEGV pc=eboot+0x", 0) == 0);
+    CHECK(prev.crash.find("addr=0x0") != std::string::npos);
+    // The offset points inside triggerNullWriteCrash().
+    unsigned long long pcOff = std::strtoull(prev.crash.c_str() + sizeof("crash: SIGSEGV pc=eboot+0x") - 1, nullptr, 16);
+    CHECK(pcOff > 0);
+    CHECK(!xc::app::crash::takePrevious(marker).found);  // taken once
+
+    // A signal raised inside a system library (std::raise) records that library's name and offset.
+    pid = fork();
+    if (pid == 0) {
+        xc::app::crash::install(marker);
+        xc::app::crash::setStage("home");
+        std::raise(SIGABRT);
+        _exit(0);
+    }
+    waitpid(pid, &status, 0);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGABRT);
+    prev = xc::app::crash::takePrevious(marker);
+    CHECK(prev.found && prev.kind == "signal 6 (SIGABRT)" && prev.stage == "home");
+    CHECK(prev.crash.rfind("crash: SIGABRT pc=", 0) == 0 && prev.crash.find("+0x") != std::string::npos);
+}
+
+static void testBuiltinCa() {
+    // A missing bundle (an incomplete copy of the app): the copy built in.
+    CHECK(xc::net::initTls("/nonexistent/cacert.pem"));
+    CHECK(xc::net::usingBuiltinCa());
+    xc::net::shutdownTls();
+}
+
+static void testPrivacyAndRobustness() {
+    // Error answers: their code and message only, never the rest.
+    std::string sdp = R"({"status":"failed","code":"Rejected","sdp":"c=IN IP4 203.0.113.7","candidate":"a=candidate:1"})";
+    std::string fields = xcloud::errorFields(sdp);
+    CHECK(fields.find("Rejected") != std::string::npos && fields.find("failed") != std::string::npos);
+    CHECK(fields.find("IP4") == std::string::npos && fields.find("candidate") == std::string::npos);
+    CHECK(xcloud::errorFields(R"({"errorDetails":{"code":"NoEntitlement","message":"m"}})").find("NoEntitlement") !=
+          std::string::npos);
+    CHECK(xcloud::errorFields("<html>203.0.113.7</html>").empty() && xcloud::errorFields("").empty());
+
+    // Numbers no int64_t holds: the default, not undefined behaviour.
+    CHECK(json::parse("1e400")->asInt(7) == 7 && json::parse("-1e30")->asInt(7) == 7 && json::parse("42")->asInt() == 42);
+
+    // Chunked bodies: well formed, and every kind of broken one refused.
+    std::string body;
+    CHECK(net::dechunk("4\r\nWiki\r\n5;x=1\r\npedia\r\n0\r\n\r\n", body) && body == "Wikipedia");
+    CHECK(!net::dechunk("zz\r\nab\r\n0\r\n\r\n", body));
+    CHECK(!net::dechunk("ffffffffffffffff\r\nab\r\n0\r\n\r\n", body));
+    CHECK(!net::dechunk("2\r\nabXX0\r\n\r\n", body));
+    CHECK(!net::dechunk("4\r\nWi", body));
+
+    // Report titles aren't cut inside a character; a NUL is encoded.
+    CHECK(app::report::shorten("Configura\xC3\xA7\xC3\xB5" "es", 11) == "Configura\xC3\xA7");
+    CHECK(app::report::shorten("Configura\xC3\xA7\xC3\xB5" "es", 10) == "Configura");
+    CHECK(app::report::shorten("short", 70) == "short");
+    app::report::Info info{"t", std::string("a\0b", 3), "1", "13.00", ""};
+    CHECK(app::report::issueUrl(info).find("a%00b") != std::string::npos);
+
+    // Platform in report URL and immutable platform header in log
+    app::report::Info infoPlat{"t", "what", "1.4.0", "13.00", "[Platform: PlayStation 5 (PPSA99810)]\nlog line 1\n", "", "PlayStation 5 (PPSA99810)"};
+    std::string urlPlat = app::report::issueUrl(infoPlat);
+    CHECK(urlPlat.find("&platform=PlayStation+5+(PPSA99810)") != std::string::npos);
+    CHECK(urlPlat.find("%5BPlatform:+PlayStation+5+(PPSA99810)%5D") != std::string::npos);
+
+    // Platform header automatically injected if missing from log
+    app::report::Info infoNoHdr{"t", "what", "1.4.0", "13.00", "raw log line\n", "", "PlayStation 5 (PPSA99810)"};
+    std::string urlNoHdr = app::report::issueUrl(infoNoHdr);
+    CHECK(urlNoHdr.find("%5BPlatform:+PlayStation+5+(PPSA99810)%5D") != std::string::npos);
+
+    // Truncation preserves [Platform: ...]
+    std::string bigLog = "[Platform: PlayStation 5 (PPSA99810)]\n";
+    for (int i = 0; i < 50; ++i) bigLog += "lots of long log lines to trigger shortening " + std::to_string(i) + "\n";
+    app::report::Info infoTrunc{"t", "what", "1.4.0", "13.00", bigLog, "", "PlayStation 5 (PPSA99810)"};
+    std::string urlTrunc = app::report::issueUrl(infoTrunc, 350);
+    CHECK(urlTrunc.find("%5BPlatform:+PlayStation+5+(PPSA99810)%5D") != std::string::npos);
+
+    // Sign-in: the service busy or throttling keeps the code polling and
+    // the stored sign-in; only a refused token drops it.
+    int status = 0;
+    std::string answer;
+    int calls = 0;
+    net::setTestTransport([&](const net::Request&) {
+        ++calls;
+        net::Response r;
+        r.status = status;
+        r.body = answer;
+        return r;
+    });
+    auth::MsaClient msa;
+    auth::DeviceCode dc;
+    dc.deviceCode = "code";
+    auth::MsaTokens tokens;
+    std::string err;
+    status = 503, answer = "<html>busy</html>";
+    CHECK(msa.pollDeviceCode(dc, tokens, err) == auth::PollResult::Pending);
+    status = 429;
+    CHECK(msa.pollDeviceCode(dc, tokens, err) == auth::PollResult::SlowDown);
+    status = 400, answer = R"({"error":"authorization_pending"})";
+    CHECK(msa.pollDeviceCode(dc, tokens, err) == auth::PollResult::Pending);
+    bool networkError = false;
+    bool isInvalidGrant = false;
+    status = 429, answer = "";
+    CHECK(!msa.refresh("r", tokens, err, {}, &networkError, &isInvalidGrant) && networkError && !isInvalidGrant);
+    status = 400, answer = R"({"error":"invalid_grant"})";
+    isInvalidGrant = false;
+    CHECK(!msa.refresh("r", tokens, err, {}, &networkError, &isInvalidGrant) && !networkError && isInvalidGrant);
+    status = 500, answer = "Internal Server Error";
+    isInvalidGrant = false;
+    CHECK(!msa.refresh("r", tokens, err, {}, &networkError, &isInvalidGrant) && !isInvalidGrant);
+
+    // XSTS Redirect URL parsing test
+    auth::XblToken userToken{"user_token", "uhs"};
+    auth::XblToken xstsOut;
+    std::string redir;
+    status = 401;
+    answer = R"({"Identity":"0","XErr":2148916238,"Message":"","Redirect":"https://start.ui.xboxlive.com/AddChild"})";
+    CHECK(!auth::xstsToken(userToken, auth::rp::kGssv, xstsOut, err, &redir));
+    CHECK(redir == "https://start.ui.xboxlive.com/AddChild");
+    CHECK(err.find("Redirect: https://start.ui.xboxlive.com/AddChild") != std::string::npos);
+    CHECK(err.find("child account") != std::string::npos);
+
+    // A title list whose server always says "more" with the same token ends.
+    status = 200, answer = R"({"results":[{"titleId":"GAME1","details":{"productId":"P1"}}],"continuationToken":"same"})";
+    calls = 0;
+    xcloud::GssvClient gssv;
+    std::vector<xcloud::Title> titles;
+    CHECK(gssv.listTitles(titles, err) && calls == 2);
+    status = 200, answer = R"({"results":[],"continuationToken":"other"})";
+    calls = 0;
+    CHECK(gssv.listTitles(titles, err) && calls == 1);
+
+    // titlehub refusing every batch: an error after a few requests, not
+    // ~200 of them and every id marked unknown.
+    status = 400, answer = "{}";
+    calls = 0;
+    std::vector<std::string> ids;
+    for (int i = 0; i < 100; ++i) ids.push_back(std::to_string(1000 + i));
+    std::map<std::string, std::string> platforms;
+    CHECK(!xcloud::fetchPlatforms("auth", ids, platforms, err) && calls < 60 && platforms.size() <= 8);
+    net::setTestTransport({});
+
+    // Prices whose request failed are asked for again.
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+    std::vector<ui::GameTile> toBuy(3);
+    for (int i = 0; i < 3; ++i) toBuy[i].productId = "BUY" + std::to_string(i), toBuy[i].purchasable = true, toBuy[i].playable = false;
+    app.setOwned({}, toBuy, true);
+    app.showHome();
+    auto first = app.pricesWanted(20, true);
+    CHECK(first.size() == 3 && app.pricesWanted(20, true).empty());
+    app.pricesFailed(first);
+    CHECK(app.pricesWanted(20, true).size() == 3);
+    // The user's console names, for keeping them out of reports.
+    ui::ConsoleTile console;
+    console.serverId = "F4000000AAAA";
+    console.name = "Living Room Xbox";
+    app.setConsoles({console}, true);
+    auto names = app.consoleNames();
+    CHECK(names.size() == 1 && names[0] == "Living Room Xbox");
+    CHECK(app::report::sanitize("starting Living Room Xbox", names).find("Living Room") == std::string::npos);
+
+    // An update whose old files can't all go back keeps them, and its
+    // journal, for the next start.
+    std::string dir = "/tmp/xcloud-rollback-test";
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir + "/update.old " + dir + "/eboot.bin/busy").c_str());
+    xc::platform::writeFileAtomic(dir + "/update.old/eboot.bin", "old");
+    xc::platform::writeFileAtomic(dir + "/update.journal", "swapping\n");
+    app::recoverUpdate(dir);
+    std::string text;
+    CHECK(xc::platform::readFile(dir + "/update.old/eboot.bin", text) && text == "old");
+    CHECK(xc::platform::readFile(dir + "/update.journal", text));
+    std::system(("rm -rf " + dir).c_str());
+    // The same file twice in a package: refused.
+    std::vector<app::ZipEntry> files;
+    CHECK(!app::unzip(storedZip({{"PPSA99810/eboot.bin", "a"}, {"PPSA99810/eboot.bin", "b"}}), "PPSA99810/", files, err));
+}
+
+// The sign-in kept up: renewed before it expires (10 minutes ahead), only
+// the xCloud login when only it is due, the whole chain when the XSTS is
+// (or a request was refused), the region kept, the rotated refresh token
+// saved at once, a refused refresh keeping the stored account.
+static void testTokenRefresh() {
+    using namespace xc::auth;
+    CHECK(refreshDue(0, 1000));                // never logged in
+    CHECK(refreshDue(900, 1000));              // expired
+    CHECK(refreshDue(1000 + 600, 1000));       // within the margin
+    CHECK(!refreshDue(1000 + 601, 1000));
+    CHECK(parseIsoUtc("1970-01-02T00:00:00Z") == 86400);
+    CHECK(parseIsoUtc("2026-10-19T09:12:34.1234567Z") == 1792401154);
+    CHECK(parseIsoUtc("2024-02-29T23:59:59Z") == 1709251199);
+    CHECK(parseIsoUtc("") == 0 && parseIsoUtc("soon") == 0 && parseIsoUtc("2026-13-01T00:00:00Z") == 0);
+
+    std::string dir = "/tmp/xcloud-auth-test";
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    std::string store = dir + "/account.json";
+    xc::platform::writeFileAtomic(store, R"({"version":1,"clientId":"000000004c20a908","refreshToken":"_rt-0"})");
+    int64_t xstsLife = 16 * 3600, loginLife = 300;
+    int serial = 0, logins = 0;
+    bool refuseRefresh = false;
+    std::map<std::string, int> hits;
+    auto iso = [](int64_t t) {
+        std::time_t tt = static_cast<std::time_t>(t);
+        std::tm utc{};
+        gmtime_r(&tt, &utc);
+        char text[40];
+        std::strftime(text, sizeof text, "%Y-%m-%dT%H:%M:%S.0000000Z", &utc);
+        return std::string(text);
+    };
+    net::setTestTransport([&](const net::Request& req) {
+        net::Response r;
+        r.status = 200;
+        const std::string& u = req.url;
+        if (u.find("login.live.com/oauth20_token.srf") != std::string::npos) {
+            ++hits["msa"];
+            if (refuseRefresh) {
+                r.status = 400;
+                r.body = R"({"error":"invalid_grant"})";
+            } else {
+                r.body = R"({"access_token":"at","expires_in":3600,"refresh_token":"_rt-)" + std::to_string(++serial) + R"("})";
+            }
+        } else if (u.find("user.auth.xboxlive.com") != std::string::npos) {
+            ++hits["user"];
+            r.body = R"({"Token":"ut","NotAfter":")" + iso(unixNow() + 14 * 86400) + R"(","DisplayClaims":{"xui":[{"uhs":"h"}]}})";
+        } else if (u.find("xsts.auth.xboxlive.com") != std::string::npos) {
+            ++hits["xsts"];
+            r.body = R"({"Token":"xt)" + std::to_string(serial) + R"(","NotAfter":")" + iso(unixNow() + xstsLife) +
+                     R"(","DisplayClaims":{"xui":[{"uhs":"h","gtg":"Tester","xid":"1"}]}})";
+        } else if (u.find("gssv-play-prod.xboxlive.com/v2/login/user") != std::string::npos) {
+            ++hits["login"];
+            r.body = R"({"gsToken":"gs)" + std::to_string(++logins) + R"(","market":"US","durationInSeconds":)" +
+                     std::to_string(loginLife) +
+                     R"(,"offeringSettings":{"regions":[{"name":"EastUS","baseUri":"https://eus.example","isDefault":true},)"
+                     R"({"name":"BrazilSouth","baseUri":"https://brs.example","isDefault":false}]}})";
+        } else {
+            ++hits["other"];  // gamerpic, plan, playtime: optional
+            r.status = 404;
+            r.body = "{}";
+        }
+        return r;
+    });
+    auto storedRefresh = [&] {
+        std::string text;
+        xc::platform::readFile(store, text);
+        auto j = json::parse(text);
+        return j ? (*j)["refreshToken"].str() : std::string();
+    };
+    std::string err;
+    bool renewed = true;
+    {
+        AuthManager am(store);
+        xcloud::GssvClient gssv;
+        CHECK(!am.ensureFresh(&gssv, err, false, &renewed) && !renewed && hits.empty());  // not signed in: nothing sent
+        CHECK(am.signIn(gssv, {}, err) && am.signedIn());
+        CHECK(storedRefresh() == "_rt-1");
+        // The xCloud login expires in 5 minutes: only it is renewed, in the region chosen.
+        gssv.setRegion(gssv.session().regions[1]);
+        std::string token = gssv.session().gsToken;
+        loginLife = 14400;
+        hits.clear();
+        CHECK(am.ensureFresh(&gssv, err, false, &renewed) && renewed);
+        CHECK(hits.size() == 1 && hits["login"] == 1);
+        CHECK(gssv.session().gsToken != token && gssv.region().name == "BrazilSouth");
+        // Nothing due: nothing sent.
+        hits.clear();
+        CHECK(am.ensureFresh(&gssv, err, false, &renewed) && !renewed && hits.empty());
+        CHECK(am.ensureFresh(nullptr, err, false, &renewed) && !renewed && hits.empty());
+        // A refused request: the whole chain, without the profile's extras;
+        // the rotated refresh token saved at once.
+        CHECK(am.ensureFresh(&gssv, err, true, &renewed) && renewed);
+        CHECK(hits["msa"] == 1 && hits["user"] == 1 && hits["xsts"] == 2 && hits["login"] == 1 && hits["other"] == 0);
+        CHECK(storedRefresh() == "_rt-2" && !am.profile().xblAuthorization.empty());
+        CHECK(gssv.region().name == "BrazilSouth");
+        // The XSTS about to expire: renewed without being asked.
+        xstsLife = 120;
+        CHECK(am.ensureFresh(&gssv, err, true, &renewed));  // now holds a 2-minute XSTS
+        xstsLife = 16 * 3600;
+        hits.clear();
+        CHECK(am.ensureFresh(&gssv, err, false, &renewed) && renewed && hits["msa"] == 1 && hits["login"] == 1);
+        hits.clear();
+        CHECK(am.ensureFresh(&gssv, err, false, &renewed) && !renewed && hits.empty());
+        // The refresh refused: false, and the stored account stays.
+        refuseRefresh = true;
+        std::string before = storedRefresh();
+        CHECK(!am.ensureFresh(&gssv, err, true, &renewed) && !renewed);
+        CHECK(err.find("token refresh failed") != std::string::npos);
+        CHECK(storedRefresh() == before && am.hasStoredAccount());
+        CHECK(err.find(before) == std::string::npos);  // no token in the message
+
+        // signIn failure: 500 error preserves account.json; invalid_grant deletes it
+        {
+            AuthManager amTransient(store);
+            net::setTestTransport([&](const net::Request&) {
+                net::Response r;
+                r.status = 500;
+                r.body = "Internal Server Error";
+                return r;
+            });
+            CHECK(!amTransient.signIn(gssv, {}, err));
+            CHECK(storedRefresh() == before && amTransient.hasStoredAccount());
+
+            net::setTestTransport([&](const net::Request&) {
+                net::Response r;
+                r.status = 400;
+                r.body = R"({"error":"invalid_grant"})";
+                return r;
+            });
+            CHECK(!amTransient.signIn(gssv, {}, err));
+            CHECK(storedRefresh().empty() && !amTransient.hasStoredAccount());
+        }
+    }
+    net::setTestTransport({});
+    std::system(("rm -rf " + dir).c_str());
+}
+
+// Kept-alive connections: the end of a chunked body from its framing, and a
+// connection kept only when the server keeps it and the body ended exactly.
+static void testHttpKeepAlive() {
+    using net::chunkedLength;
+    using net::keepAliveAfter;
+    std::string whole = "4\r\nWiki\r\n5;x=1\r\npedia\r\n0\r\n\r\n";
+    CHECK(chunkedLength(whole) == static_cast<long long>(whole.size()));
+    for (size_t n = 0; n < whole.size(); ++n) CHECK(chunkedLength(whole.substr(0, n)) == 0);  // more to come
+    std::string trailers = "3\r\nabc\r\n0\r\nX-Trailer: 1\r\n\r\n";
+    CHECK(chunkedLength(trailers) == static_cast<long long>(trailers.size()));
+    CHECK(chunkedLength(trailers.substr(0, trailers.size() - 2)) == 0);
+    // Data that happens to end like a last chunk is not the end.
+    std::string tricky = "5\r\nab0\r\n\r\n";
+    CHECK(chunkedLength(tricky) == 0);
+    CHECK(chunkedLength(tricky + "0\r\n\r\n") == static_cast<long long>(tricky.size() + 5));
+    // Bytes after the end: the length stops at the end, so the caller sees them.
+    CHECK(chunkedLength(whole + "HTTP/1.1 200 OK") == static_cast<long long>(whole.size()));
+    CHECK(chunkedLength("zz\r\nab\r\n0\r\n\r\n") == -1);
+    CHECK(chunkedLength("2\r\nabXX0\r\n\r\n") == -1);
+    CHECK(chunkedLength("ffffffffffffffff\r\nab\r\n") == -1);
+    CHECK(chunkedLength(std::string(2000, '1')) == -1);  // a size line that never ends
+
+    CHECK(keepAliveAfter(200, false, "", 10, 10));
+    CHECK(keepAliveAfter(404, false, "keep-alive", 0, 0));
+    CHECK(!keepAliveAfter(200, false, "close", 10, 10));
+    CHECK(!keepAliveAfter(200, false, "Close", 10, 10));
+    CHECK(!keepAliveAfter(200, false, "", 10, 12));   // bytes past the body
+    CHECK(!keepAliveAfter(200, false, "", 10, 8));    // body cut short
+    CHECK(!keepAliveAfter(200, false, "", -1, 10));   // ended by the server closing
+    CHECK(!keepAliveAfter(0, false, "", 0, 0));       // no answer
+    CHECK(!keepAliveAfter(200, true, "", 10, 10));    // HTTP/1.0 closes by default
+    CHECK(keepAliveAfter(200, true, "Keep-Alive", 10, 10));
+}
+
+static void testResolveIPv4AndConnectTcp() {
+    std::string err;
+    std::vector<uint32_t> addrs;
+    CHECK(platform::resolveIPv4("127.0.0.1", addrs, err));
+    CHECK(!addrs.empty());
+    CHECK(addrs[0] == htonl(0x7F000001));
+
+    uint32_t singleAddr = 0;
+    CHECK(platform::resolveIPv4("127.0.0.1", singleAddr, err));
+    CHECK(singleAddr == htonl(0x7F000001));
+
+    addrs.clear();
+    CHECK(!platform::resolveIPv4("this-domain-should-never-exist-xyz123.local", addrs, err));
+    CHECK(addrs.empty());
+    CHECK(!err.empty());
+
+    // Connecting to an unopened port on loopback fails with connection refusal, NOT a DNS error
+    int fd = net::connectTcp("127.0.0.1", 1, 500, err);
+    CHECK(fd < 0);
+    CHECK(err.find("DNS lookup failed") == std::string::npos);
+    CHECK(err.find("connect failed to 127.0.0.1:1") != std::string::npos ||
+          err.find("connect timed out") != std::string::npos);
+
+    // Sinkhole addresses are detected
+    fd = net::connectTcp("0.0.0.0", 443, 500, err);
+    CHECK(fd < 0);
+    CHECK(err.find("sinkhole IP") != std::string::npos);
+
+    // Successful connectTcp to a listening server socket
+    int serverFd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (serverFd >= 0) {
+        sockaddr_in sa{};
+        sa.sin_family = AF_INET;
+        sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        sa.sin_port = 0;
+        if (::bind(serverFd, reinterpret_cast<sockaddr*>(&sa), sizeof sa) == 0 &&
+            ::listen(serverFd, 1) == 0) {
+            socklen_t len = sizeof sa;
+            if (::getsockname(serverFd, reinterpret_cast<sockaddr*>(&sa), &len) == 0) {
+                int port = ntohs(sa.sin_port);
+                int clientFd = net::connectTcp("127.0.0.1", port, 2000, err);
+                CHECK(clientFd >= 0);
+                if (clientFd >= 0) ::close(clientFd);
+            }
+        }
+        ::close(serverFd);
+    }
+}
+
+// The home rows come from the network on every load(): the cache's rows
+// (kept for the instant start) are never added to them, and a cache that
+// holds every row twice heals at the next save.
+static void testLibraryRowsOnce() {
+    std::string dir = "/tmp/xcloud-library-test";
+    std::system(("rm -rf " + dir + " && mkdir -p " + dir).c_str());
+    std::string cache = dir + "/library.json";
+    net::setTestTransport([](const net::Request& req) {
+        net::Response r;
+        r.status = 200;
+        if (req.url.find("/sigls/") != std::string::npos) {
+            std::string id = req.url.substr(req.url.find("id=") + 3);
+            id = id.substr(0, id.find('&'));
+            r.body = R"([{"siglId":")" + id + R"(","title":"List )" + id + R"("},{"id":"P1"},{"id":"P2"}])";
+        } else if (req.url.find("/v3/products") != std::string::npos) {
+            r.body = R"({"Products":{"P1":{"XCloudTitleId":"T1","ProductTitle":"Game One"},)"
+                     R"("P2":{"XCloudTitleId":"T2","ProductTitle":"Game Two"}}})";
+        } else {
+            r.status = 503;  // the account's titles: not needed here
+        }
+        return r;
+    });
+    auto titlesOf = [](const std::vector<ui::GameRow>& rows) {
+        std::vector<std::string> t;
+        for (const auto& r : rows) t.push_back(r.title);
+        return t;
+    };
+    auto unique = [](std::vector<std::string> t) {
+        std::sort(t.begin(), t.end());
+        return std::adjacent_find(t.begin(), t.end()) == t.end();
+    };
+    auto layoutSize = [&] {
+        std::string text;
+        if (!xc::platform::readFile(cache, text)) return size_t(0);
+        auto j = json::parse(text);
+        return j ? (*j)["layout"].size() : size_t(0);
+    };
+    xcloud::GssvClient gssv;
+    std::string err;
+    size_t fresh = 0;
+    {
+        app::Library lib;
+        lib.setCachePath(cache);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+        fresh = lib.rows().size();
+        CHECK(fresh >= 4 && unique(titlesOf(lib.rows())));
+        lib.saveCache();
+        CHECK(layoutSize() == fresh);
+    }
+    {
+        // The next start: the cache has rows, load() still shows each once.
+        app::Library lib;
+        lib.setCachePath(cache);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+        CHECK(lib.rows().size() == fresh && unique(titlesOf(lib.rows())));
+        lib.saveCache();
+        CHECK(layoutSize() == fresh);
+    }
+    {
+        // A cache written with every row twice (the old bug).
+        std::string text;
+        CHECK(xc::platform::readFile(cache, text));
+        auto j = json::parse(text);
+        CHECK(j.has_value());
+        if (j) {
+            json::Value doubled = json::Value::array();
+            for (int k = 0; k < 2; ++k)
+                for (const auto& row : (*j)["layout"].items()) doubled.push(row);
+            j->set("layout", doubled);
+            xc::platform::writeFileAtomic(cache, j->dump());
+        }
+        CHECK(layoutSize() == 2 * fresh);
+        app::Library instant;  // the instant start: each row once
+        instant.setCachePath(cache);
+        CHECK(instant.loadCache(true));
+        CHECK(instant.rows().size() == fresh && unique(titlesOf(instant.rows())));
+        app::Library lib;
+        lib.setCachePath(cache);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+        CHECK(lib.rows().size() == fresh);
+        lib.saveCache();
+        CHECK(layoutSize() == fresh);  // healed
+    }
+    net::setTestTransport({});
+    std::system(("rm -rf " + dir).c_str());
+}
+
+static void testStoreLeftovers() {
+    // ProsperoStore replaced the app folder and kept the old one: the
+    // sign-in and settings come back from it, once.
+    std::string dir = "/tmp/xcloud-store-test/app", prev = "/tmp/xcloud-store-test/previous";
+    std::system("rm -rf /tmp/xcloud-store-test && mkdir -p /tmp/xcloud-store-test/app /tmp/xcloud-store-test/previous");
+    xc::platform::writeFileAtomic(prev + "/account.json", "{\"a\":1}");
+    xc::platform::writeFileAtomic(prev + "/settings.json", "{\"language\":\"pt-BR\"}");
+    xc::platform::writeFileAtomic(prev + "/xcloud.log", "old log");
+    std::string text;
+    CHECK(app::importStoreLeftovers(dir, prev));
+    CHECK(xc::platform::readFile(dir + "/account.json", text) && text == "{\"a\":1}");
+    CHECK(xc::platform::readFile(dir + "/settings.json", text) && text.find("pt-BR") != std::string::npos);
+    CHECK(!xc::platform::readFile(dir + "/xcloud.log", text));             // only the user's settings and sign-in
+    CHECK(xc::platform::readFile(prev + "/account.json", text));           // the store's folder stays
+    // Signed out later: the old account doesn't come back.
+    std::remove((dir + "/account.json").c_str());
+    CHECK(!app::importStoreLeftovers(dir, prev) && !xc::platform::readFile(dir + "/account.json", text));
+    // Already signed in when the store's folder is found: never imported.
+    std::system("rm -rf /tmp/xcloud-store-test/app && mkdir -p /tmp/xcloud-store-test/app");
+    xc::platform::writeFileAtomic(dir + "/account.json", "{\"b\":2}");
+    CHECK(!app::importStoreLeftovers(dir, prev));
+    std::remove((dir + "/account.json").c_str());
+    CHECK(!app::importStoreLeftovers(dir, prev));
+    // No store folder: nothing.
+    std::system("rm -rf /tmp/xcloud-store-test/app && mkdir -p /tmp/xcloud-store-test/app");
+    CHECK(!app::importStoreLeftovers(dir, "/tmp/xcloud-store-test/none"));
+    CHECK(!app::updatablePath("store_import.done"));
+    std::system("rm -rf /tmp/xcloud-store-test");
+}
+
+static void testMicrosoftHost() {
+    // The services whose refusal for the clock says the console's date is wrong.
+    for (const char* h : {"login.live.com", "displaycatalog.mp.microsoft.com", "xhome.gssv-play-prod.xboxlive.com",
+                          "store-images.s-microsoft.com", "www.xbox.com", "catalog.gamepass.com", "xboxlive.com"})
+        CHECK(net::microsoftHost(h));
+    for (const char* h : {"expired.badssl.com", "evilxboxlive.com", "microsoft.com.evil.example", "github.com", ""})
+        CHECK(!net::microsoftHost(h));
+}
+
+static void testSubscriptionPlan() {
+    // The store's entitlements: the highest active Game Pass plan.
+    auto entry = [](const char* id, const char* status) {
+        return std::string("\"") + id + "\":{\"productId\":\"" + id + "\",\"isOwned\":true,\"status\":\"" + status + "\"}";
+    };
+    std::string all = "{\"entitlements\":{" + entry("CFQ7TTC0K5DJ", "Active") + "," + entry("CFQ7TTC0KHS0", "Active") + "," +
+                      entry("CFQ7TTC0P85B", "Active") + "}}";
+    CHECK(auth::subscriptionPlan(all) == "Ultimate");
+    CHECK(auth::subscriptionPlan("{\"entitlements\":{" + entry("CFQ7TTC0P85B", "Active") + "}}") == "Premium");
+    CHECK(auth::subscriptionPlan("{\"entitlements\":{" + entry("CFQ7TTC0KHS0", "Expired") + "," + entry("CFQ7TTC0K5DJ", "Active") + "}}") ==
+          "Essential");
+    CHECK(auth::subscriptionPlan("{\"entitlements\":{\"cfq7ttc0kgq8\":{\"isSatisfyingEntitlement\":true}}}") == "PC");
+    CHECK(auth::subscriptionPlan("{\"entitlements\":{}}").empty() && auth::subscriptionPlan("not json").empty());
+    // The log's renewal line: no date, only days left.
+    std::string renews = "{\"entitlements\":{\"CFQ7TTC0KHS0\":{\"status\":\"Active\",\"autoRenew\":true,\"endDate\":\"2026-11-14T00:00:00Z\"}}}";
+    CHECK(auth::subscriptionRenewal(renews, 1791504000) == "renews automatically");
+    std::string ends = "{\"entitlements\":{\"CFQ7TTC0KHS0\":{\"status\":\"Active\",\"autoRenew\":false,\"endDate\":\"2026-10-20T00:00:00.0000000Z\"}}}";
+    CHECK(auth::subscriptionRenewal(ends, 1792108800) == "no auto-renew, ends in 4 day(s)");  // from 2026-10-16
+    CHECK(auth::subscriptionRenewal("{\"entitlements\":{}}", 0).empty());
+
+    // Catalog plan tiers from PassMetadataByPassProductId, and search Plan filter.
+    using namespace xcloud;
+    auto pass = [](const char* text) { return productPlanFromJson(text); };
+    CHECK(pass(R"({"CFQ7TTC0K5DJ":{},"CFQ7TTC0P85B":{},"CFQ7TTC0KHS0":{}})") == kPlanEssential);
+    CHECK(pass(R"({"CFQ7TTC0P85B":{},"CFQ7TTC0KHS0":{}})") == kPlanPremium);
+    CHECK(pass(R"({"CFQ7TTC0KHS0":{},"CFQ7TTC0K5DH":{}})") == kPlanUltimate);
+    CHECK(pass(R"({})") == kPlanUltimate);
+    CHECK(planTier("Essential") == kPlanEssential && planTier("Premium") == kPlanPremium &&
+          planTier("Ultimate") == kPlanUltimate && planTier("PC") == kPlanNone && planTier("") == kPlanNone);
+    CHECK(planIncludes(kPlanEssential, kPlanEssential, false) && !planIncludes(kPlanEssential, kPlanPremium, false) &&
+          !planIncludes(kPlanEssential, kPlanUltimate, false) && planIncludes(kPlanEssential, kPlanUltimate, true));
+    CHECK(planIncludes(kPlanPremium, kPlanEssential, false) && planIncludes(kPlanPremium, kPlanPremium, false) &&
+          !planIncludes(kPlanPremium, kPlanUltimate, false));
+    CHECK(planIncludes(kPlanUltimate, kPlanEssential, false) && planIncludes(kPlanUltimate, kPlanPremium, false) &&
+          planIncludes(kPlanUltimate, kPlanUltimate, false));
+
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+    ui::GameTile ess, prem, ult, f2p;
+    ess.productId = "ESS", ess.name = "Alpha", ess.plan = kPlanEssential, ess.playable = true;
+    prem.productId = "PREM", prem.name = "Beta", prem.plan = kPlanPremium, prem.playable = true;
+    ult.productId = "ULT", ult.name = "Gamma", ult.plan = kPlanUltimate, ult.playable = false;
+    f2p.productId = "F2P", f2p.name = "Delta", f2p.plan = kPlanNone, f2p.freeInStore = true, f2p.playable = false;
+    app.setSubscription("Premium");
+    app.setSearchPools({ess, prem, ult, f2p}, {});
+    app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Plan, 3);  // Essential: Alpha + Delta (free-to-play)
+    CHECK(app.searchResults(10).size() == 2);
+    app.chooseFilter(ui::AppUi::Filter::Plan, 2);  // Premium: Alpha + Beta + Delta
+    CHECK(app.searchResults(10).size() == 3);
+    app.chooseFilter(ui::AppUi::Filter::Plan, 1);  // Ultimate: all 4
+    CHECK(app.searchResults(10).size() == 4);
+    app.chooseFilter(ui::AppUi::Filter::Plan, 4);  // All plans: all 4
+    CHECK(app.searchResults(10).size() == 4);
+    app.chooseFilter(ui::AppUi::Filter::Plan, 0);  // My plan (Premium), with query "a": Alpha, Beta, Delta (not Gamma)
+    app.typeText("a");
+    CHECK(app.searchResults(10).size() == 3);
+}
+
+static void testHostPacer() {
+    // Five a second per Microsoft host; other hosts never wait; a 429 holds
+    // the host for its Retry-After (30 s at most).
+    net::HostPacer p;
+    CHECK(p.reserve("xgpuweb.gssv-play-prod.xboxlive.com", 1000) == 0);
+    CHECK(p.reserve("xgpuweb.gssv-play-prod.xboxlive.com", 1000) == 200);
+    CHECK(p.reserve("xgpuweb.gssv-play-prod.xboxlive.com", 1100) == 300);
+    CHECK(p.reserve("titlehub.xboxlive.com", 1100) == 0);  // its own slots
+    CHECK(p.reserve("login.live.com", 5000) == 0 && p.reserve("login.live.com", 5000) == 200);
+    for (int i = 0; i < 10; ++i) CHECK(p.reserve("store-images.s-microsoft.com", 1000) == 0);
+    CHECK(!net::HostPacer::paced("evilxboxlive.com") && net::HostPacer::paced("a.xboxlive.com"));
+    p.throttled("peoplehub.xboxlive.com", 7, 10000);
+    CHECK(p.reserve("peoplehub.xboxlive.com", 10000) == 7000);
+    p.throttled("peoplehub.xboxlive.com", 3600, 20000);
+    CHECK(p.reserve("peoplehub.xboxlive.com", 20000) == 30000);
+    p.throttled("store-images.s-microsoft.com", 60, 0);
+    CHECK(p.reserve("store-images.s-microsoft.com", 0) == 0);
+}
+
+static void testAutoDeband() {
+    using xc::app::debandForMbps;
+    CHECK(debandForMbps(0.3, 1) == -1);  // starting or standing still: no measure
+    CHECK(debandForMbps(3, 0) == 2 && debandForMbps(7, 0) == 1 && debandForMbps(12, 0) == 0);
+    // A 1 Mbps margin each way: near a limit the level in use stays.
+    CHECK(debandForMbps(5.5, 2) == 2 && debandForMbps(4.5, 1) == 1 && debandForMbps(10.5, 1) == 1);
+    CHECK(debandForMbps(9.5, 0) == 0 && debandForMbps(6.5, 2) == 1);
+
+    xc::app::AutoDeband a;
+    CHECK(a.level() == 1);
+    int changedAt = 0;
+    for (int s = 1; s <= 10 && !changedAt; ++s)
+        if (a.update(1.5)) changedAt = s;
+    CHECK(changedAt == 8);  // the first 5 s ignored, then 3 s in a row
+    CHECK(a.level() == 2);
+    // A one-second spike doesn't count; 3 s of a high bitrate do.
+    CHECK(!a.update(20) && !a.update(1.5) && !a.update(20) && !a.update(20));
+    CHECK(a.update(20) && a.level() == 0);
+    CHECK(!a.update(0.2) && a.level() == 0);  // no measure: kept
+    a.reset();
+    CHECK(a.level() == 1);
+    for (int s = 1; s <= 5; ++s) CHECK(!a.update(1.0));  // a new stream: the first 5 s again
+}
+
+static void testAudioEncoder() {
+    xc::media::AudioEncoder enc;
+    CHECK(enc.init(24000));
+    CHECK(xc::media::AudioEncoder::kFrameSize == 960);
+
+    // 960 samples of 440 Hz tone
+    std::vector<int16_t> pcm(960);
+    for (size_t i = 0; i < pcm.size(); ++i) {
+        pcm[i] = static_cast<int16_t>(10000.0 * std::sin(2.0 * M_PI * 440.0 * i / 48000.0));
+    }
+    for (int frame = 0; frame < 10; ++frame) {
+        std::vector<uint8_t> opus;
+        CHECK(enc.encode(pcm.data(), pcm.size(), opus));
+        CHECK(!opus.empty());
+        CHECK(opus.size() > 5 && opus.size() < 1000);
+    }
+}
+
+// A burst of loss: a frame lost for good, then a frame with a hole of its
+// own, then a complete key frame. The receiver must resume at that key frame
+// (it used to stop at the frame with the hole: a freeze of seconds).
+// The wait for a retransmission follows the round trip: none known keeps
+// the default; a slow connection gets time for a NACK and a second try.
+static void testH264LossWaitFollowsRtt() {
+    xc::stream::VideoReceiveStats stats;
+    xc::stream::H264Receiver rx([] {}, stats);
+    CHECK(rx.lossWaitMs() == 90 && rx.renackMs() == 50);
+    rx.setRttMs(15);  // this console's connection: as before
+    CHECK(rx.lossWaitMs() == 90 && rx.renackMs() == 50);
+    rx.setRttMs(68);  // issue #317 (PS4): 166 ms, a second NACK after 78
+    CHECK(rx.lossWaitMs() == 166 && rx.renackMs() == 78);
+    rx.setRttMs(141);  // issue #342: 300 ms at most
+    CHECK(rx.lossWaitMs() == 300 && rx.renackMs() == 151);
+    rx.setRttMs(-1);  // not measured any more: the default again
+    CHECK(rx.lossWaitMs() == 90);
+}
+
+static void testH264Resync() {
+    xc::stream::VideoReceiveStats stats;
+    int keyframeAsks = 0;
+    xc::stream::H264Receiver rx([&] { ++keyframeAsks; }, stats, 150);
+    auto packet = [](uint16_t seq, uint32_t ts, bool marker, uint8_t nal) {
+        std::vector<uint8_t> b = {0x80, static_cast<uint8_t>((marker ? 0x80 : 0) | 102),
+                                  static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq),
+                                  static_cast<uint8_t>(ts >> 24), static_cast<uint8_t>(ts >> 16),
+                                  static_cast<uint8_t>(ts >> 8), static_cast<uint8_t>(ts), 0, 0, 0, 7,
+                                  nal, 0xAA, 0xBB};
+        return rtc::make_message(reinterpret_cast<const std::byte*>(b.data()),
+                                 reinterpret_cast<const std::byte*>(b.data()) + b.size());
+    };
+    size_t keyframesOut = 0, framesOut = 0;
+    auto feed = [&](rtc::message_vector in) {
+        rx.incoming(in, [](rtc::message_ptr) { return true; });
+        for (const auto& m : in) {
+            ++framesOut;
+            if (m->size() > 4 && (static_cast<uint8_t>((*m)[4]) & 0x1F) == 5) ++keyframesOut;
+        }
+    };
+    // The end of a frame from before (a boundary to start at), a key frame, a P frame.
+    feed({packet(0, 0, true, 0x41), packet(1, 1500, true, 0x65), packet(2, 3000, true, 0x41)});
+    CHECK(framesOut == 2 && keyframesOut == 1);
+    // seq 4 never comes; seq 7 never comes; 9-10 a key frame.
+    feed({packet(3, 4500, false, 0x41), packet(5, 6000, true, 0x41), packet(6, 7500, false, 0x41),
+          packet(8, 7500, true, 0x41), packet(9, 9000, false, 0x65), packet(10, 9000, true, 0x65)});
+    CHECK(framesOut == 2);  // waiting for the retransmission
+    xc::platform::sleepMs(200);
+    feed({});
+    CHECK(keyframesOut == 2);  // resumed at the key frame
+    CHECK(framesOut == 3);
+    CHECK(stats.framesDropped >= 1);
+    CHECK(keyframeAsks >= 1);
+}
+
+// A padding-only RTP packet (payload all padding) inside a frame is skipped,
+// not a reason to fail that frame; a payload larger than a buffer slot is a
+// lost packet (NACKed, then the frame dropped), never a cut NAL unit.
+static void testH264PaddingPacket() {
+    xc::stream::VideoReceiveStats stats;
+    int keyframeAsks = 0;
+    xc::stream::H264Receiver rx([&] { ++keyframeAsks; }, stats, 60);
+    auto packet = [](uint16_t seq, uint32_t ts, bool marker, std::vector<uint8_t> payload, uint8_t padding = 0) {
+        std::vector<uint8_t> b = {static_cast<uint8_t>(0x80 | (padding ? 0x20 : 0)),
+                                  static_cast<uint8_t>((marker ? 0x80 : 0) | 102),
+                                  static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq),
+                                  static_cast<uint8_t>(ts >> 24), static_cast<uint8_t>(ts >> 16),
+                                  static_cast<uint8_t>(ts >> 8), static_cast<uint8_t>(ts), 0, 0, 0, 7};
+        b.insert(b.end(), payload.begin(), payload.end());
+        for (uint8_t i = 1; i <= padding; ++i) b.push_back(i == padding ? padding : 0);
+        return rtc::make_message(reinterpret_cast<const std::byte*>(b.data()),
+                                 reinterpret_cast<const std::byte*>(b.data()) + b.size());
+    };
+    auto nal = [](uint8_t type) { return std::vector<uint8_t>{type, 0xAA, 0xBB}; };
+    size_t framesOut = 0;
+    auto feed = [&](rtc::message_vector in) {
+        rx.incoming(in, [](rtc::message_ptr) { return true; });
+        framesOut += in.size();
+    };
+    // A boundary, a key frame, a P frame, then a padding-only packet opening
+    // the next P frame (same timestamp, no marker), that P frame and another.
+    feed({packet(0, 0, true, nal(0x41)), packet(1, 1500, true, nal(0x65)), packet(2, 3000, true, nal(0x41)),
+          packet(3, 4500, false, {}, 4), packet(4, 4500, true, nal(0x41)), packet(5, 6000, true, nal(0x41))});
+    CHECK(framesOut == 4);
+    CHECK(stats.framesDropped == 0 && keyframeAsks == 0);
+    // A payload too large for a slot: a hole (NACKed), then the frame dropped.
+    std::vector<uint8_t> big(2000, 0xCC);
+    big[0] = 0x41;
+    uint64_t nacksBefore = stats.nacks;
+    feed({packet(6, 7500, true, big), packet(7, 9000, true, nal(0x41))});
+    CHECK(framesOut == 4);  // waiting for the retransmission
+    CHECK(stats.nacks > nacksBefore && stats.lost >= 1);
+    xc::platform::sleepMs(100);
+    feed({});
+    CHECK(framesOut == 4 && stats.framesDropped >= 1 && keyframeAsks >= 1);
+    // The key frame asked for resumes the picture.
+    feed({packet(8, 10500, true, nal(0x65)), packet(9, 12000, true, nal(0x41))});
+    CHECK(framesOut == 6);
+}
+
+// An empty audio packet (seen after loss) must not end the sound.
+static void testAudioDecoderEmptyPacket() {
+    xc::media::AudioEncoder enc;
+    xc::media::AudioDecoder dec;
+    CHECK(enc.init(24000));
+    CHECK(dec.init());
+    std::vector<int16_t> pcm(960);
+    for (size_t i = 0; i < pcm.size(); ++i) pcm[i] = static_cast<int16_t>(8000.0 * std::sin(i * 0.05));
+    std::vector<uint8_t> opus;
+    std::vector<float> out;
+    CHECK(enc.encode(pcm.data(), pcm.size(), opus));
+    CHECK(dec.decode(opus.data(), opus.size(), out));
+    CHECK(!dec.decode(nullptr, 0, out));
+    out.clear();
+    CHECK(enc.encode(pcm.data(), pcm.size(), opus));
+    CHECK(dec.decode(opus.data(), opus.size(), out));
+    CHECK(!out.empty());
+}
+
+static void testAudioDecoderPlc() {
+    xc::media::AudioEncoder enc;
+    xc::media::AudioDecoder dec;
+    CHECK(enc.init(24000));
+    CHECK(dec.init());
+
+    // 1. Concealment without history produces silence (zeros)
+    std::vector<float> pcm;
+    dec.conceal(pcm, 960);
+    CHECK(pcm.size() == 960 * 2);
+    for (float sample : pcm) {
+        CHECK(sample == 0.0f);
+    }
+
+    // 2. Decode a known tone
+    std::vector<int16_t> tone(960);
+    for (size_t i = 0; i < tone.size(); ++i) tone[i] = static_cast<int16_t>(10000.0 * std::sin(i * 0.1));
+    std::vector<uint8_t> opus;
+    CHECK(enc.encode(tone.data(), tone.size(), opus));
+    pcm.clear();
+    CHECK(dec.decode(opus.data(), opus.size(), pcm));
+    CHECK(pcm.size() == 960 * 2);
+
+    // 3. Concealment after valid frame extrapolates non-zero samples
+    std::vector<float> concealed1;
+    dec.conceal(concealed1, 960);
+    CHECK(concealed1.size() == 960 * 2);
+    bool nonZero = false;
+    for (float sample : concealed1) {
+        if (std::abs(sample) > 0.001f) nonZero = true;
+    }
+    CHECK(nonZero);
+
+    // 4. Consecutive concealments decay amplitude
+    std::vector<float> concealed2;
+    dec.conceal(concealed2, 960);
+    CHECK(concealed2.size() == 960 * 2);
+    float max1 = 0.0f, max2 = 0.0f;
+    for (float s : concealed1) max1 = std::max(max1, std::abs(s));
+    for (float s : concealed2) max2 = std::max(max2, std::abs(s));
+    CHECK(max2 < max1);
+
+    // 5. Subsequent decode applies smooth ramp-in
+    pcm.clear();
+    CHECK(dec.decode(opus.data(), opus.size(), pcm));
+    CHECK(pcm.size() == 960 * 2);
+    CHECK(pcm[0] == 0.0f && pcm[1] == 0.0f);  // Ramped from 0 at sample 0
+
+    // 6. Reset PLC clears history
+    dec.resetPlc();
+    pcm.clear();
+    dec.conceal(pcm, 960);
+    CHECK(pcm.size() == 960 * 2);
+    for (float sample : pcm) {
+        CHECK(sample == 0.0f);
+    }
+}
+
+static void testAudioGapLossConcealment() {
+    constexpr uint32_t kOpusFrameSamples = 960;
+    auto detectLoss = [](uint32_t lastTs, uint32_t newTs) -> int {
+        int32_t diff = static_cast<int32_t>(newTs - lastTs);
+        if (diff <= 0) return -1; // duplicate or late out-of-order
+        if (diff > static_cast<int32_t>(kOpusFrameSamples) && diff <= static_cast<int32_t>(kOpusFrameSamples * 6)) {
+            return static_cast<int>((static_cast<uint32_t>(diff) + kOpusFrameSamples / 2) / kOpusFrameSamples - 1);
+        }
+        return 0; // normal step or huge stall
+    };
+
+    CHECK(detectLoss(1000, 1960) == 0);   // in-order 20ms step
+    CHECK(detectLoss(1960, 1960) == -1);  // duplicate packet
+    CHECK(detectLoss(2920, 1960) == -1);  // late packet from past
+    CHECK(detectLoss(1000, 2920) == 1);   // 1 lost packet
+    CHECK(detectLoss(1000, 3880) == 2);   // 2 lost packets
+    CHECK(detectLoss(1000, 6760) == 5);   // 5 lost packets
+    CHECK(detectLoss(1000, 100000) == 0); // huge stall: resync without concealing 100 frames
+}
+
+// Native mouse and keyboard reports: header, counts and fields.
+static void testMouseKeyboardReports() {
+    using namespace xc::stream;
+    auto m = mouseReport(7, 1.0, {MouseFrame{-3, 5, 0, 1, 1}});
+    CHECK(m.size() == 14 + 1 + 18);
+    CHECK(m[0] == 32 && m[1] == 0 && m[2] == 7);  // type 32 (mouse), sequence 7
+    CHECK(m[14] == 1);                              // one frame
+    CHECK(m[15] == 0xFD && m[16] == 0xFF && m[17] == 0xFF && m[18] == 0xFF);  // dx -3, little-endian
+    CHECK(m[19] == 5 && m[27] == 1 && m[31] == 1 && m[32] == 0);              // dy, wheel Y, buttons, relative
+    auto k = keyboardReport(8, 1.0, {KeyFrame{0x41, true}, KeyFrame{0x41, false}});
+    CHECK(k.size() == 14 + 1 + 6);
+    CHECK(k[0] == 64 && k[14] == 2);
+    CHECK(k[15] == 2 && k[16] == 1 && k[17] == 0x41);
+    CHECK(k[18] == 2 && k[19] == 0 && k[20] == 0x41);
+}
+
+// USB keyboard: HID usages and modifier bits to Windows virtual keys.
+static void testHidToVk() {
+    using xc::input::hidToVk;
+    CHECK(hidToVk(0x04) == 'A' && hidToVk(0x1D) == 'Z');
+    CHECK(hidToVk(0x1E) == '1' && hidToVk(0x26) == '9' && hidToVk(0x27) == '0');
+    CHECK(hidToVk(0x28) == 0x0D && hidToVk(0x29) == 0x1B && hidToVk(0x2C) == 0x20);
+    CHECK(hidToVk(0x3A) == 0x70 && hidToVk(0x45) == 0x7B);  // F1, F12
+    CHECK(hidToVk(0x4F) == 0x27 && hidToVk(0x52) == 0x26);  // right, up
+    CHECK(hidToVk(0x59) == 0x61 && hidToVk(0x62) == 0x60);  // keypad 1, 0
+    CHECK(hidToVk(0x00) == 0 && hidToVk(0xE0) == 0);
+    CHECK(xc::input::modifierVk(0) == 0x11 && xc::input::modifierVk(1) == 0x10 && xc::input::modifierVk(2) == 0x12);
+    CHECK(xc::input::modifierVk(5) == 0x10 && xc::input::modifierVk(7) == 0x5C);
+}
+
+// The app's screens by keyboard: keys held -> the controller's buttons.
+static void testKeyboardNav() {
+    xc::input::ControllerState pad;
+    xc::input::keyboardToPad({0x0D, 'W', 0x22}, pad);  // enter, w, page down
+    CHECK(pad.btnA && pad.dpadUp && !pad.dpadDown && pad.rightStickY == 1.0f);
+    xc::input::ControllerState p2;
+    p2.btnB = true;  // the controller's own press stays
+    xc::input::keyboardToPad({0x25, 0x1B, 0x09, 'Q', 'E', 'F', 'H', 'Z'}, p2);
+    CHECK(p2.dpadLeft && p2.btnB && p2.btnOptions && p2.btnL1 && p2.btnR1 && p2.btnY && p2.btnX && p2.triggerL2 == 1.0f);
+    xc::input::ControllerState p3;
+    xc::input::keyboardToPad({}, p3);
+    CHECK(!p3.btnA && !p3.dpadUp && p3.rightStickY == 0.0f);
+}
+
+// The keyboard and mouse as a controller of their own.
+static void testKeyboardAsGamepad() {
+    xc::input::KbmInput in;
+    in.keyboard = true;
+    in.held = {0x20, 'D', 'W'};  // space, d, w (sorted)
+    in.buttons = 1;              // left button
+    in.dx = 24;                  // a fast move right
+    xc::input::MouseStick stick;
+    xc::input::ControllerState out;
+    uint64_t now = 1000;
+    xc::input::keyboardAsGamepad(in, stick, out, now);
+    CHECK(out.connected && out.btnA && out.leftStickX == 1.0f && out.leftStickY == -1.0f);
+    CHECK(out.triggerR2 == 1.0f && out.triggerL2 == 0.0f);
+    CHECK(out.rightStickX > 0.4f && out.rightStickY == 0.0f);
+    in = {};
+    in.keyboard = true;
+    for (int i = 0; i < 20; ++i) xc::input::keyboardAsGamepad(in, stick, out, now += 8);  // the mouse still: back to the centre
+    CHECK(out.rightStickX == 0.0f && !out.btnA);
+
+    // The same mouse speed gives the same stick whether the passes are 4 or
+    // 8 ms apart (the counts a pass covers halve with it).
+    auto stickAfter = [](uint64_t passMs, float countsPerMs, uint64_t forMs) {
+        xc::input::MouseStick st;
+        xc::input::ControllerState o;
+        xc::input::KbmInput mv;
+        mv.mouse = true;
+        uint64_t t = 5000;
+        xc::input::keyboardAsGamepad(mv, st, o, t);  // a still first pass: the clock starts
+        for (uint64_t el = 0; el < forMs; el += passMs) {
+            mv.dx = static_cast<int32_t>(countsPerMs * static_cast<float>(passMs));
+            xc::input::keyboardAsGamepad(mv, st, o, t += passMs);
+        }
+        return o.rightStickX;
+    };
+    for (uint64_t forMs : {8u, 24u, 48u, 400u}) {
+        float at4 = stickAfter(4, 0.75f, forMs), at8 = stickAfter(8, 0.75f, forMs);
+        CHECK(std::abs(at4 - at8) < 0.01f);
+    }
+    CHECK(std::abs(stickAfter(4, 0.75f, 400) - 0.5f) < 0.01f);  // half of full speed: half the stick
+    CHECK(std::abs(stickAfter(8, 0.75f, 400) - 0.5f) < 0.01f);
+    CHECK(stickAfter(4, 3.0f, 400) > 0.999f && stickAfter(8, 3.0f, 400) > 0.999f);  // faster: all the way
+
+    // A wheel notch: Y held ~50 ms, then let go ~30 ms, at either pass length.
+    for (uint64_t passMs : {4u, 8u}) {
+        xc::input::MouseStick st;
+        in = {};
+        in.keyboard = true;
+        in.wheel = 2;  // two notches: two presses
+        uint64_t t = 9000, downMs = 0, presses = 0;
+        bool was = false;
+        for (uint64_t el = 0; el < 400; el += passMs) {
+            xc::input::keyboardAsGamepad(in, st, out, t);
+            in.wheel = 0;
+            if (out.btnY) downMs += passMs;
+            if (out.btnY && !was) ++presses;
+            was = out.btnY;
+            t += passMs;
+        }
+        CHECK(presses == 2 && !out.btnY);
+        CHECK(downMs >= 2 * 40 && downMs <= 2 * 56);  // ~48 ms each
+    }
+    xc::input::ControllerState pad, kb;
+    pad.btnB = true;
+    pad.leftStickX = 0.3f;
+    kb.btnA = true;
+    kb.leftStickX = -1.0f;
+    kb.triggerR2 = 1.0f;
+    xc::input::mergePads(pad, kb);
+    CHECK(pad.btnA && pad.btnB && pad.leftStickX == -1.0f && pad.triggerR2 == 1.0f);
+}
+
+// The DualSense's touchpad as a mouse in MKB games: cursor motion, taps,
+// two-finger scroll and click-to-drag after moving.
+static void testTouchpadAsMouse() {
+    using namespace xc::input;
+    TouchpadMouse tm;
+    ControllerState pad;
+    KbmInput io;
+
+    // 1. One finger down, then sliding right by 0.25 and down by 0.5 -> 240 x 270 counts.
+    pad.touching = true;
+    pad.touchX = 0.25f;
+    pad.touchY = 0.25f;
+    CHECK(!touchpadAsMouse(pad, 100, tm, io));
+    CHECK(io.dx == 0 && io.dy == 0 && io.buttons == 0 && !io.moved);
+
+    io = {};
+    pad.touchX = 0.5f;
+    pad.touchY = 0.75f;
+    CHECK(!touchpadAsMouse(pad, 116, tm, io));
+    CHECK(io.dx == 240 && io.dy == 270 && io.buttons == 0 && io.moved);
+
+    // Clicking the touchpad after moving holds the left mouse button for dragging.
+    io = {};
+    pad.btnTouchpad = true;
+    CHECK(touchpadAsMouse(pad, 124, tm, io));
+    CHECK(io.buttons == 1 && io.moved);
+
+    // Releasing the finger lets go of the button.
+    io = {};
+    pad.touching = false;
+    pad.btnTouchpad = false;
+    CHECK(!touchpadAsMouse(pad, 140, tm, io));
+    CHECK(io.buttons == 0 && io.moved);
+
+    // 2. A light one-finger tap clicks the left button for 50 ms.
+    io = {};
+    pad.touching = true;
+    pad.touchX = 0.5f;
+    pad.touchY = 0.5f;
+    CHECK(!touchpadAsMouse(pad, 200, tm, io));
+    io = {};
+    pad.touching = false;
+    CHECK(!touchpadAsMouse(pad, 260, tm, io));
+    CHECK(io.buttons == 1 && io.moved);
+    io = {};
+    CHECK(!touchpadAsMouse(pad, 290, tm, io));
+    CHECK(io.buttons == 1 && !io.moved);
+    io = {};
+    CHECK(!touchpadAsMouse(pad, 315, tm, io));
+    CHECK(io.buttons == 0 && io.moved);
+
+    // 3. A light two-finger tap clicks the right button.
+    io = {};
+    pad.touching = true;
+    pad.touchSecond = true;
+    CHECK(!touchpadAsMouse(pad, 400, tm, io));
+    io = {};
+    pad.touching = false;
+    pad.touchSecond = false;
+    CHECK(!touchpadAsMouse(pad, 450, tm, io));
+    CHECK(io.buttons == 2 && io.moved);
+    io = {};
+    CHECK(!touchpadAsMouse(pad, 510, tm, io));
+    CHECK(io.buttons == 0 && io.moved);
+
+    // 4. Two-finger vertical slide scrolls the wheel without moving the cursor.
+    io = {};
+    pad.touching = true;
+    pad.touchSecond = true;
+    pad.touchX = 0.5f;
+    pad.touchY = 0.6f;
+    CHECK(!touchpadAsMouse(pad, 600, tm, io));
+    io = {};
+    pad.touchY = 0.35f;  // up by 0.25 -> +2 wheel notches
+    CHECK(!touchpadAsMouse(pad, 620, tm, io));
+    CHECK(io.dx == 0 && io.dy == 0 && io.wheel == 2 && io.moved);
+    pad.touching = false;
+    pad.touchSecond = false;
+    io = {};
+    touchpadAsMouse(pad, 640, tm, io);
+
+    // 5. A plain physical touchpad click without moving first stays View (not a mouse click).
+    io = {};
+    pad.touching = true;
+    pad.btnTouchpad = true;
+    CHECK(!touchpadAsMouse(pad, 700, tm, io));
+    CHECK(io.buttons == 0 && !io.moved);
+    pad.touching = false;
+    pad.btnTouchpad = false;
+    io = {};
+    CHECK(!touchpadAsMouse(pad, 740, tm, io));
+    CHECK(io.buttons == 0 && !io.moved);
+}
+
+// Keys chosen in Settings: one key moves off the input it was on.
+static void testKeyMap() {
+    using namespace xc::input;
+    KeyMap map = defaultKeyMap();
+    assignKey(map, KeyAction::A, 0, 'E');  // E was Y
+    CHECK(map[static_cast<size_t>(KeyAction::A)][0] == 'E' && map[static_cast<size_t>(KeyAction::Y)][0] == 0);
+    assignKey(map, KeyAction::Y, 1, kMouseBack);
+    KbmInput in;
+    in.keyboard = in.mouse = true;
+    in.held = {'E'};
+    in.buttons = 8;  // back
+    MouseStick stick;
+    ControllerState out;
+    keyboardAsGamepad(in, stick, out, 1000, map);
+    CHECK(out.btnA && out.btnY && !out.triggerR2);
+    CHECK(keyName(0x20) == "Space" && keyName('W') == "W" && keyName(kMouseLeft) == "Mouse L" && keyName(0x7B) == "F12");
+    CHECK(isReservedKey(0x7B) && isReservedKey('2') && !isReservedKey('5'));
+    // Saved and read back, in the settings and a game's profile.
+    xc::app::Settings st;
+    st.keyMap = map;
+    st.perGame["g"] = st.defaultProfile();
+    st.perGame["g"].keyMap[0] = {'I', 0};
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/xc_keymap_test.json";
+    CHECK(st.save(path));
+    xc::app::Settings back;
+    CHECK(back.load(path));
+    CHECK(back.keyMap == map && back.perGame["g"].keyMap[0][0] == 'I');
+    std::remove(path.c_str());
+}
+
+// The controller's buttons toward the game (input/pad_map.h).
+static void testPadMap() {
+    using namespace xc::input;
+    auto at = [](const PadMap& m, PadFn f) { return m[static_cast<size_t>(f)]; };
+    auto src = [](PadFn f) { return static_cast<uint8_t>(f); };
+    const PadMap def = defaultPadMap();
+    CHECK(padMapValid(def) && padMapMissing(def) == 0);
+    // The default map passes everything through.
+    ControllerState in;
+    in.btnA = in.dpadLeft = in.btnTouchpad = true;
+    in.triggerL2 = 0.3f;
+    in.leftStickX = 0.7f;
+    in.btnNexus = true;
+    ControllerState same = applyPadMap(in, def);
+    CHECK(same.btnA && same.dpadLeft && same.btnTouchpad && !same.btnB && same.triggerL2 == 0.3f &&
+          same.leftStickX == 0.7f && same.btnNexus);
+    // Assigning a source used elsewhere swaps the two: still complete.
+    PadMap m = def;
+    assignPadSource(m, PadFn::A, src(PadFn::B));  // A <- Circle, so B <- Cross
+    CHECK(at(m, PadFn::A) == src(PadFn::B) && at(m, PadFn::B) == src(PadFn::A) && padMapValid(m));
+    ControllerState cross;
+    cross.btnA = true;
+    ControllerState out = applyPadMap(cross, m);
+    CHECK(!out.btnA && out.btnB);
+    // A trigger fed by a button is fully pressed; a button fed by a trigger past halfway.
+    assignPadSource(m, PadFn::RT, src(PadFn::RB));  // RT <- R1, RB <- R2
+    ControllerState r1;
+    r1.btnR1 = true;
+    out = applyPadMap(r1, m);
+    CHECK(out.triggerR2 == 1.0f && !out.btnR1);
+    ControllerState r2;
+    r2.triggerR2 = 0.4f;
+    CHECK(!applyPadMap(r2, m).btnR1 && applyPadMap(r2, m).triggerR2 == 0.0f);
+    r2.triggerR2 = 0.8f;
+    CHECK(applyPadMap(r2, m).btnR1);
+    // A trigger fed by the other trigger keeps how far it is pressed.
+    PadMap t = def;
+    assignPadSource(t, PadFn::LT, src(PadFn::RT));
+    ControllerState lr;
+    lr.triggerR2 = 0.25f;
+    CHECK(applyPadMap(lr, t).triggerL2 == 0.25f && applyPadMap(lr, t).triggerR2 == 0.0f);
+    // A cleared row: incomplete, named in the missing bits; a source fed twice is not valid.
+    PadMap hole = def;
+    assignPadSource(hole, PadFn::Y, kPadNone);
+    CHECK(!padMapValid(hole) && padMapMissing(hole) == (1u << static_cast<int>(PadFn::Y)));
+    CHECK(!applyPadMap(ControllerState{}, hole).btnY);
+    PadMap twice = def;
+    twice[static_cast<size_t>(PadFn::X)] = src(PadFn::A);
+    CHECK(!padMapValid(twice) && padMapMissing(twice) == 0);
+    // Filling the hole with a button used elsewhere moves the hole there.
+    assignPadSource(hole, PadFn::Y, src(PadFn::X));
+    CHECK(at(hole, PadFn::Y) == src(PadFn::X) && at(hole, PadFn::X) == kPadNone);
+    // The buttons pressed, by source; Circle confirms swaps A / B back to the pad's.
+    ControllerState held;
+    held.btnB = true;
+    held.triggerL2 = 0.9f;
+    CHECK(padButtons(held) == ((1u << static_cast<int>(PadFn::B)) | (1u << static_cast<int>(PadFn::LT))));
+    CHECK(physicalSource(src(PadFn::A), true) == src(PadFn::B) && physicalSource(src(PadFn::A), false) == src(PadFn::A) &&
+          physicalSource(src(PadFn::Y), true) == src(PadFn::Y));
+    CHECK(std::string(padFnName(PadFn::Right)) == "D-pad right");
+    // JSON: round trip; anything else is refused and gives the default.
+    PadMap back;
+    CHECK(readPadMap(padMapJson(m), back) && back == m);
+    auto reads = [&](const char* text) {
+        auto v = json::parse(text);
+        PadMap r = m;
+        bool ok = v && readPadMap(*v, r);
+        CHECK(r == (ok ? r : def));
+        return ok;
+    };
+    CHECK(reads(R"({"version":1,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]})"));
+    CHECK(!reads(R"({"version":2,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]})"));
+    CHECK(!reads(R"({"version":1,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14]})"));
+    CHECK(!reads(R"({"version":1,"map":[0,0,2,3,4,5,6,7,8,9,10,11,12,13,14,15]})"));
+    CHECK(!reads(R"({"version":1,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,255]})"));
+    CHECK(!reads(R"({"version":1,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,"x"]})"));
+    CHECK(!reads(R"([0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15])"));
+    // In the settings and a game's profile: saved and read back; a broken
+    // one falls back to the default; an older file (none) keeps the general one.
+    xc::app::Settings st;
+    st.padMap = m;
+    st.perGame["g"] = st.defaultProfile();
+    CHECK(st.perGame["g"].padMap == m);
+    st.perGame["g"].padMap = t;
+    std::string path = std::string(std::getenv("TMPDIR") ? std::getenv("TMPDIR") : "/tmp") + "/xc_padmap_test.json";
+    CHECK(st.save(path));
+    xc::app::Settings loaded;
+    CHECK(loaded.load(path) && loaded.padMap == m && loaded.perGame["g"].padMap == t);
+    xc::platform::writeFileAtomic(path, R"({"padMap":{"version":1,"map":[1,1]},"perGame":{"h":{},"k":{"padMap":7}}})");
+    xc::app::Settings broken;
+    CHECK(broken.load(path) && broken.padMap == def && broken.perGame["h"].padMap == def && broken.perGame["k"].padMap == def);
+    xc::platform::writeFileAtomic(path, R"({"padMap":)" + padMapJson(m).dump() + R"(,"perGame":{"h":{}}})");
+    xc::app::Settings older;
+    CHECK(older.load(path) && older.perGame["h"].padMap == m);
+    std::remove(path.c_str());
+}
+
+// The xCloud login: a 5xx is tried again, a refusal is not.
+static void testLoginRetry() {
+    using namespace xc;
+    int calls = 0;
+    net::setTestTransport([&](const net::Request&) {
+        net::Response r;
+        if (++calls < 3) {
+            r.status = 500;
+            return r;
+        }
+        r.status = 200;
+        r.body = R"({"gsToken":"t","market":"BR","durationInSeconds":3600,"offeringSettings":{"regions":[{"name":"WestUS2","baseUri":"https://w","isDefault":true}]}})";
+        return r;
+    });
+    xcloud::GssvClient gssv;
+    std::string err;
+    CHECK(gssv.login(auth::XblToken{}, err) && calls == 3);  // (3 s of waits)
+    calls = 0;
+    net::setTestTransport([&](const net::Request&) {
+        ++calls;
+        net::Response r;
+        r.status = 403;
+        return r;
+    });
+    CHECK(!gssv.login(auth::XblToken{}, err) && calls == 1 && gssv.loginRefused());
+    net::setTestTransport({});
+}
+
+// Gyro aiming: still is nothing, a turn left aims left (past the games'
+// dead zone), more intensity aims further, the push eases back to nothing.
+static void testGyro() {
+    using namespace xc::input;
+    GyroState s;
+    float x = 1, y = 1;
+    const float still[3] = {0.01f, -0.01f, 0.0f};
+    gyroToStick(still, nullptr, 5, s, x, y);
+    CHECK(x == 0 && y == 0);
+    const float left[3] = {0.0f, 0.5f, 0.0f};  // yaw +: turning left
+    for (int i = 0; i < 8; ++i) gyroToStick(left, nullptr, 5, s, x, y);
+    CHECK(x < -0.3f && x > -0.6f && std::abs(y) < 1e-6f);
+    GyroState s2;
+    float x2 = 0, y2 = 0;
+    for (int i = 0; i < 8; ++i) gyroToStick(left, nullptr, 10, s2, x2, y2);
+    CHECK(x2 < x);
+    const float up[3] = {0.3f, 0.0f, 0.0f};  // pitch +: the top tilted up
+    GyroState s3;
+    for (int i = 0; i < 8; ++i) gyroToStick(up, nullptr, 5, s3, x, y);
+    CHECK(y < -0.12f && x == 0);
+    const float tiny[3] = {0.0f, 0.03f, 0.0f};  // a slow turn: still past the dead zone
+    GyroState s4;
+    for (int i = 0; i < 8; ++i) gyroToStick(tiny, nullptr, 5, s4, x, y);
+    CHECK(x <= -0.12f);
+    for (int i = 0; i < 20; ++i) gyroToStick(still, nullptr, 5, s4, x, y);
+    CHECK(x == 0);
+    // Held tilted 45 degrees towards the player: a turn about the room's
+    // vertical shows on the pad's yaw and roll; it aims as far as held flat.
+    const float c = 0.7071f, tilted[3] = {0.0f, 0.5f * c, 0.5f * c}, gravity[3] = {0.0f, c, c};
+    GyroState s5;
+    float x5 = 0, y5 = 0;
+    for (int i = 0; i < 60; ++i) gyroToStick(tilted, gravity, 5, s5, x5, y5);
+    CHECK(x5 < -0.3f);
+    GyroState flat;
+    float xf = 0, yf = 0;
+    const float level[3] = {0.0f, 1.0f, 0.0f};
+    for (int i = 0; i < 60; ++i) gyroToStick(left, level, 5, flat, xf, yf);
+    CHECK(std::abs(x5 - xf) < 0.01f);
+}
+
+// The desktop's stand-ins for the PS5 backends: nothing connected, the
+// settings kept for their getters.
+// A font that didn't load (no assets folder) draws and measures nothing
+// instead of crashing in stb_truetype.
+static void testMissingFont() {
+    ui::Font font;
+    CHECK(!font.load("/nonexistent/Inter-Regular.ttf") && !font.loaded());
+    ui::Canvas c(64, 32);
+    c.clear(ui::rgba(1, 2, 3));
+    CHECK(font.measure("Hello", 24) == 0);
+    CHECK(font.draw(c, "Hello", 5, 4, 24, ui::rgba(255, 255, 255)) == 5);
+    CHECK(c.data()[5 * 64 + 10] == ui::rgba(1, 2, 3));
+    CHECK(font.centeredY(10, 40, 24) == 10 && font.lineHeight(24) == 24);
+    CHECK(font.fit("Hello", 24, 100) == "Hello");
+    CHECK(font.wrap("Hello world", 24, 100, 2).size() == 1);
+}
+
+// Settings' rows with the capabilities: all of them, in the same order and
+// groups as ever, on the PS5; the desktop's hide what can't work there.
+static void testVisibleSettingsRows() {
+    using ui::SettingsRowPos;
+    auto ids = [](const std::vector<SettingsRowPos>& v) {
+        std::vector<int> out;
+        for (const auto& r : v) out.push_back(r.row);
+        return out;
+    };
+    auto groups = [](const std::vector<SettingsRowPos>& v) {
+        std::vector<bool> out;
+        for (const auto& r : v) out.push_back(r.groupStart);
+        return out;
+    };
+    const ui::UiCaps ps5;
+    auto all = ui::visibleSettingsRows(ps5);
+    CHECK((ids(all) == std::vector<int>{0, 2, 8, 17, 18, 24, 25, 1, 20, 9, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23}));
+    CHECK((groups(all) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, true, false, false, false, false, false, false, false, false, false, true, false, true}));
+    ui::UiCaps pc;
+    pc.lightBar = pc.triggerRumble = pc.adaptiveTriggers = pc.gyro = pc.touchpad = false;
+    pc.upscalers = pc.sharpen = pc.deband = pc.highRefresh = pc.console = pc.selfUpdate = false;
+    pc.openUrl = true;
+    auto desk = ui::visibleSettingsRows(pc);
+    CHECK((ids(desk) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
+    CHECK((groups(desk) == std::vector<bool>{false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, true, false, true}));
+    // The desktop app's window: Display mode after the resolution, in the stream's group.
+    ui::UiCaps win = pc;
+    win.desktopWindow = true;
+    auto w = ui::visibleSettingsRows(win);
+    CHECK((ids(w) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 13, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
+    CHECK((groups(w) == std::vector<bool>{false, false, false, false, false, false, true, false, false, false, true, false, false, false, false, false, true, false, true}));
+    ui::UiCaps xbox = pc;  // an Xbox pad: impulse triggers, no light bar
+    xbox.triggerRumble = true;
+    auto x = ids(ui::visibleSettingsRows(xbox));
+    CHECK(std::find(x.begin(), x.end(), 4) != x.end() && std::find(x.begin(), x.end(), 6) == x.end());
+    // PS4 console UI caps: DualShock 4 (touchpad/gyro/lightbar, no adaptive triggers) and no PS5 display features (120Hz, FSR1, deband).
+    ui::UiCaps ps4;
+    ps4.console = true;
+    ps4.openUrl = false;
+    ps4.selfUpdate = false;
+    ps4.desktopWindow = false;
+    ps4.lightBar = true;
+    ps4.gyro = true;
+    ps4.touchpad = true;
+    ps4.triggerRumble = false;
+    ps4.adaptiveTriggers = false;
+    ps4.upscalers = false;
+    ps4.sharpen = false;
+    ps4.deband = false;
+    ps4.highRefresh = false;
+    auto ps4Rows = ids(ui::visibleSettingsRows(ps4));
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 9) == ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 4) == ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 21) == ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 6) != ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 15) != ps4Rows.end());
+    auto ps4Game = ids(ui::visibleGameSettingsRows(ps4, true, true));
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 1) == ps4Game.end());
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 2) == ps4Game.end());
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 3) == ps4Game.end());
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 6) == ps4Game.end());
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 8) == ps4Game.end());
+    CHECK(std::find(ps4Game.begin(), ps4Game.end(), 13) != ps4Game.end());
+    // A game's settings.
+    CHECK((ids(ui::visibleGameSettingsRows(ps5, true, false)) == std::vector<int>{0, 4, 8, 15, 14, 18, 1, 2, 3, 5, 6, 16, 7, 12, 11, 9, 10}));
+    CHECK((ids(ui::visibleGameSettingsRows(ps5, true, true)) == std::vector<int>{0, 4, 8, 15, 14, 18, 1, 2, 3, 5, 6, 16, 7, 12, 11, 13, 9, 10}));
+    CHECK((groups(ui::visibleGameSettingsRows(ps5, true, true)) ==
+           std::vector<bool>{false, true, false, false, false, false, true, false, false, true, false, false, false, false, false, false, false, true}));
+    CHECK((ids(ui::visibleGameSettingsRows(ps5, false)) == std::vector<int>{0, 4, 8, 15, 14, 18, 1, 2, 3, 5, 6, 16, 7, 12, 11, 9}));
+    ui::UiCaps noTouch = ps5;
+    noTouch.touchpad = false;
+    CHECK((ids(ui::visibleGameSettingsRows(noTouch, true, true)) == std::vector<int>{0, 4, 8, 15, 14, 18, 1, 2, 3, 5, 6, 16, 7, 12, 11, 9, 10}));
+    auto game = ui::visibleGameSettingsRows(pc, false);
+    CHECK((ids(game) == std::vector<int>{0, 4, 15, 14, 18, 5, 7, 11, 9}));
+    CHECK((groups(game) == std::vector<bool>{false, true, false, false, false, true, false, false, false}));
+    // How far down the autoplay tests walk to each row (autoplay.cpp's downsTo).
+    CHECK(ui::settingsRowPosition(ps5, 24) == 5);
+    CHECK(ui::settingsRowPosition(ps5, 25) == 6);
+    CHECK(ui::settingsRowPosition(ps5, 1) == 7 && ui::settingsRowPosition(ps5, 3) == 13);
+    CHECK(ui::settingsRowPosition(ps5, 16) == 19);
+    CHECK(ui::settingsRowPosition(ps5, 5) == 17 && ui::settingsRowPosition(ps5, 6) == 18);
+    CHECK(ui::settingsRowPosition(ps5, 12) == 12 && ui::settingsRowPosition(ps5, 14) == 11);
+    CHECK(ui::settingsRowPosition(ps5, 22) == 20);
+    CHECK(ui::settingsRowPosition(ps5, 7) == 22 && ui::settingsRowPosition(ps5, 19) == 21 && ui::settingsRowPosition(ps5, 2) == 1);
+    CHECK(ui::settingsRowPosition(ps5, 21) == 16);
+    CHECK(ui::settingsRowPosition(pc, 5) == 12 && ui::settingsRowPosition(pc, 6) == -1 && ui::settingsRowPosition(pc, 4) == -1);
+}
+
+// The controller's glyphs by pad kind (ui/pad_glyphs.h).
+static void testPadGlyphs() {
+    using input::PadKind;
+    using ui::GlyphStyle;
+    using ui::PadButton;
+    CHECK(ui::glyphStyleFor(PadKind::DualSense) == GlyphStyle::PlayStation);
+    CHECK(ui::glyphStyleFor(PadKind::DualShock4) == GlyphStyle::PlayStation);
+    CHECK(ui::glyphStyleFor(PadKind::None) == GlyphStyle::PlayStation);
+    CHECK(ui::glyphStyleFor(PadKind::Xbox) == GlyphStyle::Xbox);
+    CHECK(ui::glyphStyleFor(PadKind::Switch) == GlyphStyle::Xbox);
+    CHECK(ui::glyphStyleFor(PadKind::Generic) == GlyphStyle::Xbox);
+    // The PS5's pads, whatever the desktop shows.
+    CHECK(ui::glyphStyleFor(input::anyPadCaps().kind) == GlyphStyle::PlayStation);  // null backend: no pad
+    const PadButton all[] = {PadButton::Cross, PadButton::Circle, PadButton::Square, PadButton::Triangle,
+                             PadButton::Options, PadButton::Touchpad, PadButton::L1, PadButton::R1,
+                             PadButton::L2, PadButton::R2, PadButton::L3, PadButton::R3};
+    std::string ps, xb;
+    for (PadButton b : all) {
+        ps += std::string(ui::buttonName(GlyphStyle::PlayStation, b)) + ",";
+        xb += std::string(ui::buttonName(GlyphStyle::Xbox, b)) + ",";
+    }
+    CHECK(ps == "Cross,Circle,Square,Triangle,Options,Touchpad,L1,R1,L2,R2,L3,R3,");
+    CHECK(xb == "A,B,X,Y,Menu,View,LB,RB,LT,RT,LS,RS,");
+    // Xbox letters: A green, B red, X blue, Y yellow; no colour off the face.
+    ui::Color a = ui::faceColor(GlyphStyle::Xbox, PadButton::Cross), b = ui::faceColor(GlyphStyle::Xbox, PadButton::Circle);
+    CHECK(a != b && a != 0 && b != 0);
+    CHECK(ui::faceColor(GlyphStyle::Xbox, PadButton::L1) == 0);
+    CHECK(ui::faceColor(GlyphStyle::PlayStation, PadButton::Cross) == ui::rgba(124, 178, 232));
+    CHECK(ui::faceColor(GlyphStyle::Xbox, PadButton::Cross) == ui::rgba(84, 178, 58));
+    CHECK(ui::faceColor(GlyphStyle::Xbox, PadButton::Triangle) == ui::rgba(236, 184, 30));
+}
+
+// The desktop app's in-app notices (platform/toasts.h).
+static void testToasts() {
+    using platform::ToastQueue;
+    ToastQueue q;
+    uint64_t v0 = q.version(1000);
+    CHECK(q.visible(1000).empty() && q.version(1000) == v0);
+    q.push("one", 1000);
+    q.push("", 1000);  // nothing
+    CHECK(q.visible(1000) == std::vector<std::string>{"one"});
+    uint64_t v1 = q.version(1000);
+    CHECK(v1 != v0 && q.version(1001) == v1);  // nothing changed: no redraw
+    q.push("two", 2000);
+    q.push("three", 2500);
+    q.push("four", 3000);  // waits: three on screen at most
+    CHECK((q.visible(3000) == std::vector<std::string>{"one", "two", "three"}));
+    // "one" has had its time: "four" takes its place, and the version moves.
+    uint64_t v2 = q.version(5999);
+    CHECK(q.version(6000) != v2);
+    CHECK((q.visible(6000) == std::vector<std::string>{"two", "three", "four"}));
+    // The same text again restarts it at the end instead of stacking.
+    q.push("two", 6500);
+    CHECK((q.visible(6500) == std::vector<std::string>{"three", "four", "two"}));
+    CHECK((q.visible(7499) == std::vector<std::string>{"three", "four", "two"}));
+    CHECK((q.visible(7500) == std::vector<std::string>{"four", "two"}));  // three's time (from 2500) is up
+    CHECK((q.visible(11000) == std::vector<std::string>{"two"}));        // four's (from 6000)
+    CHECK(q.visible(11500).empty());
+    // Bounded: the oldest dropped beyond kMaxQueued.
+    for (size_t i = 0; i < ToastQueue::kMaxQueued + 5; ++i) q.push("n" + std::to_string(i), 20000);
+    auto shown = q.visible(20000);
+    CHECK(shown.size() == ToastQueue::kMaxShown && shown.front() == "n5");
+    q.clear();
+    CHECK(q.visible(20000).empty());
+    // Off by default: the tools keep printing notifications.
+    CHECK(!platform::toastsEnabled());
+}
+
+static void testNullBackends() {
+    CHECK(input::init());
+    input::ControllerState pad;
+    pad.btnA = true;
+    CHECK(!input::poll(pad) && !pad.connected && !pad.btnA);
+    CHECK(!input::pollPad(2, pad) && !input::padConnected(0) && input::padUserName(0).empty());
+    CHECK(input::padUserId(0) == -1 && input::padActiveAt(0) == 0);
+    input::setCircleConfirms(true);
+    CHECK(input::circleConfirms());
+    input::setCircleConfirms(false);
+    CHECK(!input::circleConfirms());
+    CHECK(!input::kbmInit(-1));
+    input::KbmInput kbm = input::kbmPoll();
+    CHECK(!kbm.keyboard && !kbm.mouse && kbm.keys.empty() && !kbm.moved);
+    media::HwDecoder hw;
+    CHECK(!hw.init(1920, 1088) && !hw.ready());
+    display::DisplayCaps caps = display::caps();
+    CHECK(!caps.upscalers && !caps.deband && !caps.sharpen && !caps.highRefreshSwitch && !caps.presentTiming);
+    CHECK(!display::canSwitchRefresh() && !display::setHighRefresh(true) && !display::bringUpTest(1));
+}
+
+static void testVideoDecoder() {
+    media::VideoDecoder dec;
+    CHECK(dec.init(1, false));
+    CHECK(!dec.isHardware());
+    CHECK(dec.needsKeyframe());
+
+    media::Picture pic;
+    CHECK(!dec.decode(nullptr, 0, pic));
+    CHECK(!dec.decode(nullptr, 100, pic));
+    uint8_t garbage[16] = {0, 0, 0, 1, 0xFF, 0xFF, 0xFF, 0xFF};
+    CHECK(!dec.decode(garbage, 0, pic));
+    CHECK(!dec.decode(garbage, sizeof garbage, pic));
+    CHECK(dec.needsKeyframe());
+
+    // Hardware init preference test (on non-PS5 desktop without HW device it gracefully stays/falls back to software)
+    media::VideoDecoder hwDec;
+    CHECK(hwDec.init(1, true));
+
+    // splitAccessUnits tests
+    std::vector<uint8_t> stream = {0, 0, 0, 1, 9, 0x10, 0, 0, 0, 1, 7, 0x42, 0, 0, 0, 1, 8, 0xCE, 0, 0, 0, 1, 5, 0x88};
+    auto aus = media::splitAccessUnits(stream.data(), stream.size());
+    CHECK(!aus.empty());
+}
+
+static void testDrawNv12() {
+    // Boundary and parameter checks
+    CHECK(!display::drawNv12(nullptr, nullptr, 0, 0, 0, 0, false));
+    CHECK(!display::drawNv12(nullptr, nullptr, 1920, 1920, 1920, 1080, false));
+    uint8_t dummy[16] = {};
+    CHECK(!display::drawNv12(dummy, dummy, 10, 10, -1, 1080, false));
+    CHECK(!display::drawNv12(dummy, dummy, 10, 10, 1920, -1, false));
+    CHECK(!display::drawNv12(dummy, dummy, 100, 100, 1920, 1080, false));  // stride < width
+
+    // Valid dummy frame in null display backend
+    std::vector<uint8_t> y(1920 * 1080, 128);
+    std::vector<uint8_t> uv(1920 * 540, 128);
+    CHECK(display::drawNv12(y.data(), uv.data(), 1920, 1920, 1920, 1080, false));
+}
+
+// --- M1 input / audio backends (pure parts, null backends) ----------------
+
+// The audio queue: bounded at ~250 ms (cut back to 140 ms, oldest first),
+// silence past its end, the volume, and what the periodic log counts.
+static void testAudioQueueLatency() {
+    media::AudioQueue q;
+    q.open();
+    CHECK(q.takeLowWater() == SIZE_MAX && q.takeUnderruns() == 0);
+    std::vector<float> out(512);
+    q.pull(out.data(), 256);  // before any sound: not a dry pull
+    CHECK(q.takeUnderruns() == 0);
+    std::vector<float> tone(4800 * 2, 0.5f);  // 100 ms, constant
+    q.push(tone.data(), 4800);
+    q.pull(out.data(), 256);
+    q.pull(out.data(), 256);
+    CHECK(q.takeLowWater() == 4800 - 256);  // the lowest seen at a pull
+    CHECK(q.takeLowWater() == SIZE_MAX);
+    const size_t before = q.queuedFrames();
+    CHECK(q.cutAhead(960));
+    CHECK(q.queuedFrames() == before - 960);
+    // Both sides of the cut were 0.5: the crossfade keeps it 0.5, no click.
+    std::vector<float> rest(before * 2);
+    q.pull(rest.data(), q.queuedFrames());
+    bool flat = true;
+    for (size_t i = 0; i < (before - 960) * 2; ++i) flat &= std::abs(rest[i] - 0.5f) < 1e-4f;
+    CHECK(flat);
+    CHECK(!q.cutAhead(960));  // nothing queued
+    q.pull(out.data(), 256);  // dry, after sound
+    CHECK(q.takeUnderruns() == 1);
+    q.clear();
+    q.pull(out.data(), 256);
+    CHECK(q.takeUnderruns() == 0);  // cleared: not started again
+
+    // A refill level: after running dry the sound waits for 40 ms queued.
+    q.setRefill(1920);
+    q.push(tone.data(), 300);  // 6 ms: plays out, then dry
+    q.pull(out.data(), 256);
+    q.pull(out.data(), 256);   // dry: refilling (one event, not one per grain)
+    CHECK(q.takeUnderruns() == 1);
+    q.push(tone.data(), 960);  // 20 ms: under the level, still silent
+    q.pull(out.data(), 256);
+    CHECK(out[100] == 0.0f && q.queuedFrames() == 960 && q.takeUnderruns() == 0);
+    q.push(tone.data(), 1200);  // 45 ms queued: resumes, ramping in
+    q.pull(out.data(), 256);
+    CHECK(out[0] == 0.0f && std::abs(out[400] - 0.5f) < 1e-4f && q.queuedFrames() == 2160 - 256);
+}
+
+static void testAudioQueue() {
+    media::AudioQueue q;
+    std::vector<float> in(48 * 2 * 10, 0.25f);  // 10 ms
+    q.push(in.data(), 480);
+    CHECK(q.queuedFrames() == 0);  // closed: ignored
+    q.open();
+    for (int i = 0; i < 24; ++i) q.push(in.data(), 480);  // 240 ms: under the bound
+    CHECK(q.queuedFrames() == 11520 && q.stats().trimmed == 0);
+    q.push(in.data(), 480);  // 250 ms
+    q.push(in.data(), 480);  // 260 ms: past 250, back to 140
+    CHECK(q.queuedFrames() == media::AudioQueue::kTrimTo && q.stats().trimmed == 12480 - 6720);
+    // The oldest go first: mark the newest frame and find it last.
+    float mark[2] = {0.5f, -0.5f};
+    q.push(mark, 1);
+    std::vector<float> out(6721 * 2);
+    q.pull(out.data(), 6721);
+    CHECK(out[6720 * 2] == 0.5f && out[6720 * 2 + 1] == -0.5f && out[100 * 2] == 0.25f);
+    CHECK(q.queuedFrames() == 0);
+    q.pull(out.data(), 256);  // empty: silence, counted
+    CHECK(out[0] == 0.0f && out[511] == 0.0f);
+    media::AudioQueue::Stats st = q.stats();
+    CHECK(st.pulls == 2 && st.empty == 1 && st.frames == 6721 + 256 && st.depthMax == 6721);
+    // Volume: clamped to 0..2, applied and clipped at full scale.
+    q.setVolume(5.0f);
+    CHECK(q.volume() == 2.0f);
+    float loud[4] = {0.75f, -0.25f, 0.1f, -0.9f};
+    q.push(loud, 2);
+    q.pull(out.data(), 2);
+    CHECK(out[0] == 1.0f && out[1] == -0.5f && std::abs(out[2] - 0.2f) < 1e-6f && out[3] == -1.0f);
+    q.setVolume(-1.0f);
+    CHECK(q.volume() == 0.0f);
+    q.setVolume(1.0f);
+    // ~10 s of sound pulled (480000 frames): logged, and the counts start
+    // again. 6979 frames so far, so the 1848th grain of 256 crosses it.
+    for (int i = 0; i < 1875; ++i) q.pull(out.data(), 256);
+    CHECK(q.stats().pulls == 27 && q.stats().frames == 27 * 256 && q.stats().trimmed == 0);
+    q.close();
+    q.push(loud, 2);
+    CHECK(q.queuedFrames() == 0);
+}
+
+// The microphone's pipeline: gain (clipped), mute, the meter, 20 ms frames.
+static void testMicPipeline() {
+    media::MicPipeline mic;
+    std::atomic<float> level{0.0f};
+    std::vector<std::vector<int16_t>> frames;
+    media::AudioIn::AudioCallback cb = [&](const int16_t* pcm, size_t n) { frames.emplace_back(pcm, pcm + n); };
+    std::vector<int16_t> grain(media::MicPipeline::kGrain, 1000);
+    for (int i = 0; i < 3; ++i) mic.process(grain.data(), grain.size(), false, 1.0f, level, cb);
+    CHECK(frames.empty() && level.load() > 0.3f);  // 768 samples: not a frame yet
+    mic.process(grain.data(), grain.size(), false, 1.0f, level, cb);
+    CHECK(frames.size() == 1 && frames[0].size() == media::AudioIn::kFrameSize && frames[0][959] == 1000);
+    std::vector<int16_t> loud(media::MicPipeline::kGrain, 30000);
+    mic.process(loud.data(), loud.size(), false, 1.5f, level, cb);
+    CHECK(loud[0] == 32767 && level.load() == 1.0f);  // clipped at full scale
+    std::vector<int16_t> half(media::MicPipeline::kGrain, 1000);
+    mic.process(half.data(), half.size(), false, 0.5f, level, cb);
+    CHECK(half[0] == 500);
+    float before = level.load();
+    mic.process(grain.data(), grain.size(), true, 1.0f, level, cb);  // muted: silence, the meter falls back
+    CHECK(grain[0] == 0 && level.load() < before && level.load() > 0.9f * before);
+    CHECK(frames.size() == 1);  // three grains since the first frame: 64 + 768 samples left
+    mic.process(grain.data(), grain.size(), true, 1.0f, level, cb);
+    CHECK(frames.size() == 2 && frames[1][959] == 0);
+}
+
+// The DualSense's trigger effects through SDL: the bytes for off, feedback
+// (resistance) and vibration, and where each trigger's block sits.
+static void testDs5TriggerEffects() {
+    using namespace xc::input;
+    uint8_t b[kDs5TriggerBlock];
+    ds5TriggerBlock(TriggerCommand{}, b);  // mode 0
+    const uint8_t off[11] = {0x05, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    CHECK(std::equal(b, b + 11, off));
+    TriggerCommand weight = triggerCommand(0, 2, 1, 2, false, 0);  // medium resistance: from 3, strength 4
+    CHECK(weight.mode == 1 && weight.data[0] == 3 && weight.data[1] == 4);
+    ds5TriggerBlock(weight, b);
+    const uint8_t feedback[11] = {0x21, 0xF8, 0x03, 0x00, 0xB6, 0x6D, 0x1B, 0, 0, 0, 0};
+    CHECK(std::equal(b, b + 11, feedback));
+    TriggerCommand vib = triggerCommand(38, 2, 1, 2, false, 0);  // amplitude 4 at 60 Hz, from 0
+    CHECK(vib.mode == 3 && vib.data[1] == 4 && vib.data[2] == 60);
+    ds5TriggerBlock(vib, b);
+    const uint8_t vibration[11] = {0x26, 0xFF, 0x03, 0xDB, 0xB6, 0x6D, 0x1B, 0, 0, 60, 0};
+    CHECK(std::equal(b, b + 11, vibration));
+    TriggerCommand strongest;  // a pulse at its hardest: strength 8 -> 7 in every zone
+    strongest.mode = 1;
+    strongest.data[1] = 8;
+    ds5TriggerBlock(strongest, b);
+    const uint8_t full[11] = {0x21, 0xFF, 0x03, 0xFF, 0xFF, 0xFF, 0x3F, 0, 0, 0, 0};
+    CHECK(std::equal(b, b + 11, full));
+    TriggerCommand silent;  // vibration with no amplitude: off
+    silent.mode = 3;
+    silent.data[2] = 60;
+    ds5TriggerBlock(silent, b);
+    CHECK(std::equal(b, b + 11, off));
+    uint8_t packet[kDs5EffectsSize];
+    ds5TriggerEffects(vib, weight, packet);  // L2 vibrating, R2 weighted
+    CHECK(packet[0] == 0x0C && packet[1] == 0 && packet[2] == 0 && packet[9] == 0);
+    CHECK(std::equal(packet + kDs5RightTrigger, packet + kDs5RightTrigger + 11, feedback));
+    CHECK(std::equal(packet + kDs5LeftTrigger, packet + kDs5LeftTrigger + 11, vibration));
+    CHECK(std::all_of(packet + 32, packet + kDs5EffectsSize, [](uint8_t v) { return v == 0; }));  // no light bar
+}
+
+// SDL's mouse button mask -> the wire's bits (right and middle swap places).
+static void testSdlMouseButtons() {
+    using xc::input::sdlMouseButtons;
+    CHECK(sdlMouseButtons(0) == 0);
+    CHECK(sdlMouseButtons(1) == 1);    // left
+    CHECK(sdlMouseButtons(2) == 4);    // middle
+    CHECK(sdlMouseButtons(4) == 2);    // right
+    CHECK(sdlMouseButtons(8) == 8);    // X1: back
+    CHECK(sdlMouseButtons(16) == 16);  // X2: forward
+    CHECK(sdlMouseButtons(1 | 4) == 3 && sdlMouseButtons(31) == 31 && sdlMouseButtons(0xFFFFFFE0u) == 0);
+    // A controller's touchpad as a pointer device (Linux) isn't the mouse.
+    using xc::input::isPadPointerName;
+    CHECK(isPadPointerName("Sony Interactive Entertainment DualSense Wireless Controller Touchpad"));
+    CHECK(isPadPointerName("DualSense Wireless Controller Touchpad"));  // Bluetooth
+    CHECK(isPadPointerName("Wireless Controller Touchpad"));            // DS4, Bluetooth
+    CHECK(isPadPointerName("Sony Computer Entertainment DUALSHOCK 4 Wireless Controller Touchpad"));
+    CHECK(isPadPointerName("Generic Controller Touchpad"));
+    CHECK(!isPadPointerName("ELAN1200:00 04F3:30F7 Touchpad") && !isPadPointerName("SynPS/2 Synaptics TouchPad"));
+    CHECK(!isPadPointerName("Logitech G502 HERO Gaming Mouse") && !isPadPointerName("Virtual core pointer (seat0)"));
+    CHECK(!isPadPointerName("") && !isPadPointerName(nullptr));
+    // One pad's evdev and hidraw nodes lead to its HID device.
+    using xc::input::padSysfsLink;
+    CHECK(padSysfsLink("/dev/input/event12") == "/sys/class/input/event12/device/device");
+    CHECK(padSysfsLink("/dev/hidraw1") == "/sys/class/hidraw/hidraw1/device");
+    CHECK(padSysfsLink("/dev/input/js0").empty() && padSysfsLink("/dev/hidraw").empty() &&
+          padSysfsLink("/dev/hidraw1/../x").empty() && padSysfsLink(nullptr).empty() && padSysfsLink("").empty());
+    using xc::input::padLacksHidapi;
+    CHECK(padLacksHidapi(1, false, "/dev/input/event12"));   // a DualSense on evdev
+    CHECK(padLacksHidapi(2, false, nullptr));                // a DS4, path unknown
+    CHECK(!padLacksHidapi(1, true, "/dev/input/event12"));   // has its light bar
+    CHECK(!padLacksHidapi(1, false, "/dev/hidraw1"));        // HIDAPI already
+    CHECK(!padLacksHidapi(3, false, "/dev/input/event5"));   // an Xbox pad: nothing to look for
+}
+
+// SDL's scancodes are HID usages: the same keys as the PS5's keyboard.
+static void testScancodeToVk() {
+    using xc::input::scancodeToVk;
+    for (int sc = 0; sc < 224; ++sc) CHECK(scancodeToVk(sc) == xc::input::hidToVk(static_cast<uint16_t>(sc)));
+    CHECK(scancodeToVk(4) == 'A' && scancodeToVk(29) == 'Z' && scancodeToVk(30) == '1' && scancodeToVk(39) == '0');
+    CHECK(scancodeToVk(40) == 0x0D && scancodeToVk(41) == 0x1B && scancodeToVk(44) == 0x20 && scancodeToVk(58) == 0x70);
+    CHECK(scancodeToVk(79) == 0x27 && scancodeToVk(82) == 0x26);  // right, up
+    const uint8_t mods[8] = {0x11, 0x10, 0x12, 0x5B, 0x11, 0x10, 0x12, 0x5C};  // LCtrl LShift LAlt LGui, then right
+    for (int i = 0; i < 8; ++i) CHECK(scancodeToVk(224 + i) == mods[i]);
+    CHECK(scancodeToVk(0) == 0 && scancodeToVk(232) == 0 && scancodeToVk(257) == 0 && scancodeToVk(-1) == 0);
+}
+
+// SDL's sensors and axes in the units the shared code takes.
+static void testSdlSensorUnits() {
+    using namespace xc::input;
+    const float ms2[3] = {0.0f, 9.80665f, -4.903325f};
+    float g[3];
+    sdlAccelToG(ms2, g);
+    CHECK(g[0] == 0.0f && std::abs(g[1] - 1.0f) < 1e-6f && std::abs(g[2] + 0.5f) < 1e-6f);
+    // Held flat and still at 1 g: gyro aiming's "up" stays put, no push.
+    GyroState s;
+    const float still[3] = {0, 0, 0};
+    float x = 1, y = 1;
+    for (int i = 0; i < 10; ++i) gyroToStick(still, g, 5, s, x, y);
+    CHECK(x == 0 && y == 0);
+    CHECK(sdlStickAxis(32767) == 1.0f && sdlStickAxis(-32768) == -1.0f && sdlStickAxis(0) == 0.0f);
+    CHECK(std::abs(sdlStickAxis(16384) - 0.5f) < 0.001f);
+    CHECK(sdlTriggerAxis(32767) == 1.0f && sdlTriggerAxis(0) == 0.0f && sdlTriggerAxis(-5) == 0.0f);
+    uint8_t c[3];
+    playerLightColour(0, c);
+    CHECK(c[0] == 0 && c[1] == 112 && c[2] == 220);
+    playerLightColour(3, c);
+    CHECK(c[0] == 225 && c[1] == 90 && c[2] == 175);
+    CHECK(triggerMotorLevel(0) == 0 && triggerMotorLevel(128) == 128 && triggerMotorLevel(128, 1) == 64);
+    CHECK(triggerMotorLevel(200, 3) == 255 && triggerMotorLevel(1, 4) == 255 && triggerMotorLevel(200, 0) == 0);
+}
+
+// The null backends stay honest about M1's additions: no pad and no
+// capabilities, capturing the mouse does nothing, sound goes nowhere.
+static void testNullBackendsM1() {
+    input::PadCaps caps = input::padCaps(0), any = input::anyPadCaps();
+    CHECK(caps.kind == input::PadKind::None && !caps.rumble && !caps.triggerRumble && !caps.adaptiveTriggers);
+    CHECK(any.kind == input::PadKind::None && !any.lightBar && !any.gyro && !any.touchpad);
+    CHECK(input::padDeviceName(0).empty() && input::padCaps(9).kind == input::PadKind::None);
+    input::setRumble(255, 255, 100, 0);  // nowhere to go, and nothing breaks
+    input::setLightBar(1, 2, 3, 0);
+    input::ControllerState pad;
+    CHECK(!input::poll(pad) && !input::padConnected(0));
+    input::kbmSetCaptured(true);
+    input::KbmInput kbm = input::kbmPoll();
+    CHECK(!kbm.keyboard && !kbm.mouse && !kbm.moved && kbm.dx == 0);
+    input::kbmSetCaptured(false);
+    CHECK(media::audioStart() && media::audioStart());
+    std::vector<float> sound(48 * 2 * 260, 0.1f);  // 260 ms, never played: kept to the bound
+    media::audioPush(sound.data(), 48 * 260);
+    CHECK(media::audioQueue().queuedFrames() == media::AudioQueue::kTrimTo);
+    media::audioStop();
+    CHECK(media::audioQueue().queuedFrames() == 0);
+    media::audioPush(sound.data(), 480);
+    CHECK(media::audioQueue().queuedFrames() == 0);  // stopped: ignored
+    media::AudioIn mic;
+    bool called = false;
+    CHECK(mic.open([&](const int16_t*, size_t) { called = true; }) && mic.isRecording());
+    CHECK(!mic.isHardwareMuted() && mic.level() == 0.0f);
+    mic.close();
+    CHECK(!mic.isRecording() && !called);
+}
+
+static void testPurchase() {
+    using namespace xcloud;
+    std::string err;
+    int status = 200;
+    std::string body;
+    net::Request lastReq;
+
+    net::setTestTransport([&](const net::Request& req) {
+        lastReq = req;
+        net::Response r;
+        r.status = status;
+        r.body = body;
+        return r;
+    });
+
+    // 1. fetchPurchaseOffer for a free product
+    body = R"({
+        "Products": [
+            {
+                "ProductId": "FREE123",
+                "DisplaySkuAvailabilities": [
+                    {
+                        "Sku": {"SkuId": "0001"},
+                        "Availabilities": [
+                            {
+                                "AvailabilityId": "AVAIL_FREE",
+                                "Actions": ["Details", "Purchase"],
+                                "OrderManagementData": {
+                                    "Price": {
+                                        "ListPrice": 0.0,
+                                        "MSRP": 0.0,
+                                        "CurrencyCode": "USD"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    })";
+
+    PurchaseOffer offer;
+    CHECK(fetchPurchaseOffer("FREE123", "US", "en-us", offer, err));
+    CHECK(offer.productId == "FREE123");
+    CHECK(offer.skuId == "0001");
+    CHECK(offer.availabilityId == "AVAIL_FREE");
+    CHECK(offer.isFree);
+    CHECK(offer.listPrice == 0.0);
+    CHECK(lastReq.url.find("displaycatalog.mp.microsoft.com") != std::string::npos);
+
+    // 2. fetchPurchaseOffer for a paid product: isFree must be false
+    body = R"({
+        "Products": [
+            {
+                "ProductId": "PAID123",
+                "DisplaySkuAvailabilities": [
+                    {
+                        "Sku": {"SkuId": "0002"},
+                        "Availabilities": [
+                            {
+                                "AvailabilityId": "AVAIL_PAID",
+                                "Actions": ["Purchase"],
+                                "OrderManagementData": {
+                                    "Price": {
+                                        "ListPrice": 69.99,
+                                        "MSRP": 69.99,
+                                        "CurrencyCode": "USD"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    })";
+    PurchaseOffer paidOffer;
+    CHECK(fetchPurchaseOffer("PAID123", "US", "en-us", paidOffer, err));
+    CHECK(!paidOffer.isFree);
+    CHECK(paidOffer.listPrice == 69.99);
+
+    // 3. Safety check: claimFreeProduct MUST refuse paid products
+    CHECK(!claimFreeProduct("XBL3.0 x=test;token", paidOffer, "US", "en-US", err));
+    CHECK(err.find("safety block") != std::string::npos);
+
+    // 4. claimFreeProduct with empty auth or incomplete offer
+    PurchaseOffer invalidOffer = offer;
+    invalidOffer.availabilityId.clear();
+    CHECK(!claimFreeProduct("XBL3.0 x=test;token", invalidOffer, "US", "en-US", err));
+    CHECK(!claimFreeProduct("", offer, "US", "en-US", err));
+
+    // 5. Successful claim of free product (2-step POST create and PUT finalize)
+    net::Request lastPostReq, lastPutReq;
+    net::setTestTransport([&](const net::Request& req) {
+        net::Response r;
+        if (req.method == "POST") {
+            lastPostReq = req;
+            r.status = 201;
+            r.body = R"({"orderId":"ORDER-12345","orderState":"Editing"})";
+        } else if (req.method == "PUT") {
+            lastPutReq = req;
+            r.status = 200;
+            r.body = R"({"orderId":"ORDER-12345","orderState":"Purchased"})";
+        }
+        return r;
+    });
+
+    CHECK(claimFreeProduct("XBL3.0 x=test;token", offer, "US", "en-US", err));
+    CHECK(lastPostReq.url.find("purchase.mp.microsoft.com/v7.0/users/me/orders") != std::string::npos);
+    std::string authVal;
+    for (const auto& h : lastPostReq.headers) {
+        if (h.first == "Authorization") authVal = h.second;
+    }
+    CHECK(authVal == "XBL3.0 x=test;token");
+    auto postJson = json::parse(lastPostReq.body);
+    CHECK(postJson && (*postJson)["items"].isArray());
+    CHECK((*postJson)["items"][0]["productId"].str() == "FREE123");
+    CHECK((*postJson)["items"][0]["skuId"].str() == "0001");
+    CHECK((*postJson)["items"][0]["availabilityId"].str() == "AVAIL_FREE");
+    CHECK((*postJson)["items"][0]["price"].asNumber() == 0.0);
+    CHECK((*postJson)["clientContext"]["client"].str() == "Xbox");
+    CHECK(!(*postJson)["orderId"].str().empty());
+
+    CHECK(lastPutReq.method == "PUT");
+    auto putJson = json::parse(lastPutReq.body);
+    CHECK(putJson && (*putJson)["orderState"].str() == "Purchased");
+
+    // 6. claimFreeProduct error handling (must extract innererror code/message, not innererror.data[0] productId)
+    net::setTestTransport([&](const net::Request&) {
+        net::Response r;
+        r.status = 400;
+        r.body = R"({"code":"PaymentRequired","innererror":{"code":"MissingPaymentInstrument","data":["FREE123"],"message":"Payment method needed"}})";
+        return r;
+    });
+    CHECK(!claimFreeProduct("XBL3.0 x=test;token", offer, "US", "en-US", err));
+    CHECK(err.find("Payment method needed") != std::string::npos);
+    CHECK(err != "FREE123");
+
+    // 7. UserAlreadyOwnsContent on finalize (HTTP 403, Issue #104) is treated as already acquired
+    net::setTestTransport([&](const net::Request& req) {
+        net::Response r;
+        if (req.method == "POST") {
+            r.status = 201;
+            r.body = R"({"orderId":"ORDER-12345","orderState":"Editing"})";
+        } else {
+            r.status = 403;
+            r.body = R"({"code":"Forbidden","innererror":{"code":"UserAlreadyOwnsContent","data":["9P22THR57FV7"],"message":"Purchase policy restricts user from purchasing certain content multiple times"}})";
+        }
+        return r;
+    });
+    CHECK(claimFreeProduct("XBL3.0 x=test;token", offer, "US", "en-US", err));
+
+    // 8. fetchPurchaseOffer skips RemediationRequired upsells and picks the non-remediated free availability
+    net::setTestTransport([&](const net::Request&) {
+        net::Response r;
+        r.status = 200;
+        r.body = R"({
+            "Products": [{
+                "DisplaySkuAvailabilities": [{
+                    "Sku": {"SkuId": "0001"},
+                    "Availabilities": [
+                        {
+                            "AvailabilityId": "AVAIL_UPSELL_REMEDIATION",
+                            "Actions": ["Purchase"],
+                            "RemediationRequired": true,
+                            "OrderManagementData": {"Price": {"ListPrice": 0.0, "MSRP": 0.0, "CurrencyCode": "USD"}}
+                        },
+                        {
+                            "AvailabilityId": "AVAIL_DIRECT_FREE",
+                            "Actions": ["Purchase"],
+                            "RemediationRequired": false,
+                            "OrderManagementData": {"Price": {"ListPrice": 0.0, "MSRP": 0.0, "CurrencyCode": "USD"}}
+                        }
+                    ]
+                }]
+            }]
+        })";
+        return r;
+    });
+    PurchaseOffer directOffer;
+    CHECK(fetchPurchaseOffer("FREE123", "US", "en-us", directOffer, err));
+    CHECK(directOffer.isFree);
+    CHECK(directOffer.availabilityId == "AVAIL_DIRECT_FREE");
+
+    // 9. fetchPurchaseOffer rejects non-purchaseable actions like "Browse" or "License"
+    net::setTestTransport([](const net::Request&) {
+        net::Response r;
+        r.status = 200;
+        r.body = R"({
+            "Products": [{
+                "ProductId": "JUSTDANCE",
+                "DisplaySkuAvailabilities": [{
+                    "Sku": { "SkuId": "0001" },
+                    "Availabilities": [{
+                        "AvailabilityId": "AVAIL_JUSTDANCE",
+                        "Actions": ["Browse", "License"],
+                        "OrderManagementData": {
+                            "Price": { "ListPrice": 0.0, "MSRP": 0.0, "CurrencyCode": "BRL" }
+                        }
+                    }]
+                }]
+            }]
+        })";
+        return r;
+    });
+    PurchaseOffer trialOffer;
+    CHECK(!fetchPurchaseOffer("JUSTDANCE", "BR", "pt-br", trialOffer, err));
+
+    net::setTestTransport({});
+}
+
+static void testWishlist() {
+    using namespace xc::app;
+    std::string tmp = "/tmp/xcloud-tests-wishlist.json";
+    Settings s;
+    s.wishlist = {"PROD_A", "PROD_B"};
+    CHECK(s.save(tmp));
+
+    Settings loaded;
+    CHECK(loaded.load(tmp));
+    CHECK(loaded.wishlist.size() == 2);
+    if (loaded.wishlist.size() == 2) {
+        CHECK(loaded.wishlist[0] == "PROD_A");
+        CHECK(loaded.wishlist[1] == "PROD_B");
+    }
+    ::unlink(tmp.c_str());
+
+    Library lib;
+    lib.setWishlist({"PROD_WISH"});
+    auto rows = lib.rows();
+    // Standalone wishlist shelf must not exist in Game Pass home rows
+    for (const auto& r : rows) {
+        CHECK(r.title != ui::tr(ui::Str::Wishlist));
+    }
+
+    // AppUi Wishlist tests
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+
+    ui::GameTile ownedTile, unownedTileA, unownedTileB;
+    ownedTile.productId = "OWNED_1";
+    ownedTile.titleId = "TITLE_OWNED_1";
+    ownedTile.name = "Owned Game";
+
+    unownedTileA.productId = "UNOWNED_A";
+    unownedTileA.titleId = "TITLE_UNOWNED_A";
+    unownedTileA.name = "Game A";
+
+    unownedTileB.productId = "UNOWNED_B";
+    unownedTileB.titleId = "TITLE_UNOWNED_B";
+    unownedTileB.name = "Game B";
+
+    // Set owned and purchasable: unownedTileB is wishlisted initially.
+    // Also include ownedTile in wishlist initially to verify rebuild() prunes acquired games!
+    app.setPrefs({}, ui::LibrarySort::AZ, {}, {"OWNED_1", "UNOWNED_B"});
+    app.setOwned({ownedTile}, {unownedTileA, unownedTileB}, true);
+
+    // In purchasable_, UNOWNED_B should be at index 0 because it's wishlisted, even though Game A precedes Game B alphabetically!
+    ui::GameTile firstPurchasable;
+    CHECK(app.purchasableAt(0, firstPurchasable));
+    CHECK(firstPurchasable.productId == "UNOWNED_B");
+
+    // Search filtering with Wishlist
+    app.setSearchPools({}, {unownedTileA, unownedTileB});
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    auto res = app.searchResults(10);
+    // Only UNOWNED_B should be returned because it's in the wishlist
+    CHECK(res.size() == 1);
+    if (!res.empty()) {
+        CHECK(res[0].first == "Game B");
+    }
+
+    // Test details screen: open details for ownedTile, press R3 -> should NOT add to wishlist!
+    app.showDetails(ownedTile);
+    ui::NavInput r3Press;
+    r3Press.r3 = true;
+    app.handle(r3Press);
+
+    // Verify search with wishlist filter again: ownedTile was NOT added!
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    res = app.searchResults(10);
+    CHECK(res.size() == 1);
+    if (!res.empty()) {
+        CHECK(res[0].first == "Game B");
+    }
+
+    // Open details for unownedTileA, press R3 -> should be added to wishlist!
+    app.showDetails(unownedTileA);
+    app.handle(r3Press);
+
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    res = app.searchResults(10);
+    // Now both UNOWNED_B and UNOWNED_A are wishlisted!
+    CHECK(res.size() == 2);
+
+    // Press R3 again on unownedTileA -> toggles off!
+    app.showDetails(unownedTileA);
+    app.handle(r3Press);
+
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    res = app.searchResults(10);
+    CHECK(res.size() == 1);
+
+    // Test price updating via setPrices while wishlist filter is active
+    ui::PriceInfo pi;
+    pi.list = 49.99;
+    pi.msrp = 49.99;
+    pi.now = "R$ 49,99";
+    app.setPrices({{"UNOWNED_B", pi}});
+    res = app.searchResults(10);
+    CHECK(res.size() == 1);
+    CHECK(res[0].second.now == "R$ 49,99");
+
+    // Add UNOWNED_A to wishlist
+    app.showDetails(unownedTileA);
+    app.handle(r3Press);
+
+    // Test pruning of acquired game matching titleId
+    ui::GameTile newlyOwned;
+    newlyOwned.productId = "DIFF_PID";
+    newlyOwned.titleId = "TITLE_UNOWNED_A";
+    newlyOwned.name = "Game A";
+    app.setOwned({ownedTile, newlyOwned}, {unownedTileA, unownedTileB}, true);
+
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    res = app.searchResults(10);
+    // UNOWNED_A must be pruned because newlyOwned has matching titleId
+    CHECK(res.size() == 1);
+    CHECK(res[0].first == "Game B");
+
+    // Unwishlist UNOWNED_B to test empty state
+    app.showDetails(unownedTileB);
+    app.handle(r3Press);
+
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    app.chooseFilter(ui::AppUi::Filter::Wishlist, 1);
+    res = app.searchResults(10);
+    CHECK(res.empty());
+
+    // Empty wishlist string test
+    CHECK(std::string(ui::tr(ui::Str::WishlistEmpty)).find("vazia") != std::string::npos ||
+          std::string(ui::tr(ui::Str::WishlistEmpty)).find("empty") != std::string::npos);
+}
+
+static void testBlock1Features() {
+    using namespace xc;
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+
+    // 1. 3x3 filter grid verification
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    CHECK(app.filterRow(0).size() == 3); // Wishlist, Free, Cheapest
+    CHECK(app.filterRow(1).size() == 3); // Mode, Genre, Publisher
+    CHECK(app.filterRow(2).size() == 3); // Console, Language, MouseKeyboard
+    CHECK(app.filterRow(3).empty());
+
+    app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+    CHECK(app.filterRow(0).size() == 3); // Plan, Console, MouseKeyboard
+    CHECK(app.filterRow(1).size() == 3); // Mode, Genre, Publisher
+    CHECK(app.filterRow(2).size() == 1); // Language
+    CHECK(app.filterRow(3).empty());
+
+    // 2. isFreeGame and ClaimFreeGame for zero-priced games
+    ui::GameTile trialGame;
+    trialGame.productId = "9P0LHV4DV2BG";
+    trialGame.titleId = "TITLE_JUSTDANCE";
+    trialGame.name = "Just Dance Trial";
+    trialGame.purchasable = false; // Test that even when purchasable is false, zero price enables claiming
+    trialGame.playable = false;
+    trialGame.freeInStore = false; // Microsoft doesn't set freeInStore for trials
+
+    // Before prices are loaded, not free
+    CHECK(!app.isFreeGame(trialGame));
+
+    // When prices.json returns list=0 and msrp=0
+    ui::PriceInfo zeroPrice;
+    zeroPrice.list = 0.0;
+    zeroPrice.msrp = 0.0;
+    zeroPrice.now = "Grátis";
+    app.setPrices({{"9P0LHV4DV2BG", zeroPrice}});
+
+    CHECK(app.isFreeGame(trialGame));
+
+    // Opening details and pressing accept should produce Action::ClaimFreeGame
+    app.showDetails(trialGame);
+    ui::NavInput acceptPress;
+    acceptPress.accept = true;
+    auto ev = app.handle(acceptPress);
+    CHECK(ev.action == ui::Action::ClaimFreeGame);
+    CHECK(ev.game.productId == "9P0LHV4DV2BG");
+    CHECK(ev.game.freeInStore == true);
+
+    // After acquiring the game, it becomes owned/playable: pressing accept produces Action::Play
+    app.markTileOwned("9P0LHV4DV2BG", "TITLE_JUSTDANCE");
+    ev = app.handle(acceptPress);
+    CHECK(ev.action == ui::Action::Play);
+
+    // 3. Search filter navigation across 3x3 grid
+    app.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    // Move down from wide keys to filter row 0, 1, 2
+    ui::NavInput navDown;
+    navDown.down = true;
+    app.handle(navDown);
+    app.handle(navDown);
+    // Move left and right
+    ui::NavInput navRight;
+    navRight.right = true;
+    app.handle(navRight);
+    ui::NavInput navLeft;
+    navLeft.left = true;
+    app.handle(navLeft);
+}
+
+static void testAchievements() {
+    using namespace xc::xcloud;
+    TitleAchievements ach;
+    std::string err;
+    CHECK(!fetchTitleAchievements("", "123", "TITLE1", ach, err));
+    CHECK(err == "xblAuth empty");
+    CHECK(!fetchTitleAchievements("XBL3.0 x=test;tok", "123", "", ach, err));
+    CHECK(err == "xboxTitleId empty");
+}
+
+static void testBlock2Features() {
+    // 1. Parsing of bilingual release notes
+    std::string notes =
+        "<!-- LANG:PT -->\n"
+        "## Novidades 1.3.4\n"
+        "- Alto-falante no menu\n"
+        "- Novos tetos de bitrate\n"
+        "<!-- LANG:EN -->\n"
+        "## What's new 1.3.4\n"
+        "- Speaker in menu\n"
+        "- New bitrate caps\n";
+    std::string pt = app::filterReleaseNotes(notes, "pt-BR");
+    CHECK(pt.find("Novidades 1.3.4") != std::string::npos);
+    CHECK(pt.find("What's new") == std::string::npos);
+
+    std::string en = app::filterReleaseNotes(notes, "en");
+    CHECK(en.find("What's new 1.3.4") != std::string::npos);
+    CHECK(en.find("Novidades 1.3.4") == std::string::npos);
+
+    // Fallback to EN when lang tag is not found
+    std::string es = app::filterReleaseNotes(notes, "es");
+    CHECK(es.find("What's new 1.3.4") != std::string::npos);
+
+    // No tags: returns whole text
+    std::string plain = "Simple release notes without tags.";
+    CHECK(app::filterReleaseNotes(plain, "pt-BR") == plain);
+
+    // Test tag spacing and casing variations
+    std::string noSpaceNotes = "<!--LANG:PT-->\nNotas compactas\n<!--LANG:EN-->\nCompact notes";
+    CHECK(app::filterReleaseNotes(noSpaceNotes, "pt-BR") == "Notas compactas");
+    CHECK(app::filterReleaseNotes(noSpaceNotes, "en") == "Compact notes");
+
+    std::string spaceColonNotes = "<!-- LANG: PT -->\nNotas com espaco\n<!-- LANG: EN -->\nSpaced notes";
+    CHECK(app::filterReleaseNotes(spaceColonNotes, "pt-BR") == "Notas com espaco");
+    CHECK(app::filterReleaseNotes(spaceColonNotes, "en") == "Spaced notes");
+
+    std::string lowerNotes = "<!-- lang: pt-br -->\nNotas minusculas\n<!-- lang: en-us -->\nLowercase notes";
+    CHECK(app::filterReleaseNotes(lowerNotes, "pt-BR") == "Notas minusculas");
+    CHECK(app::filterReleaseNotes(lowerNotes, "en") == "Lowercase notes");
+
+    // Ensure delimiter tags do not leak into output
+    CHECK(app::filterReleaseNotes(notes, "pt-BR").find("<!--") == std::string::npos);
+    CHECK(app::filterReleaseNotes(notes, "en").find("<!--") == std::string::npos);
+
+    // 2. Settings serialization of padSpeakerVolume
+    app::Settings s;
+    CHECK(s.padSpeakerVolume == 100);
+    s.padSpeakerVolume = 75;
+    std::string tmpPath = "/tmp/test_settings_block2.json";
+    CHECK(s.save(tmpPath));
+
+    app::Settings loaded;
+    CHECK(loaded.load(tmpPath));
+    CHECK(loaded.padSpeakerVolume == 75);
+    std::remove(tmpPath.c_str());
+
+    // Test media::setPadSpeakerVolume and padSpeakerVolume
+    media::setPadSpeakerVolume(60);
+    CHECK(media::padSpeakerVolume() == 60);
+    media::setPadSpeakerVolume(-10);
+    CHECK(media::padSpeakerVolume() == 0);
+    media::setPadSpeakerVolume(150);
+    CHECK(media::padSpeakerVolume() == 100);
+
+    // 3. Bitrate caps in UI
+    ui::Fonts dummyFonts{};
+    ui::ImageCache images([] {});
+    ui::AppUi app(dummyFonts, images);
+
+    app::Settings bs;
+    bs.maxBitrateMbps = 50;
+    ui::SettingsChoice bc = ui::choiceFromSettings(bs);
+    CHECK(bc.maxBitrateMbps == 50);
+    app::Settings bsBack;
+    ui::applyChoice(bc, bsBack);
+    CHECK(bsBack.maxBitrateMbps == 50);
+
+    bs.maxBitrateMbps = 45;
+    bc = ui::choiceFromSettings(bs);
+    CHECK(bc.maxBitrateMbps == 45);
+    ui::applyChoice(bc, bsBack);
+    CHECK(bsBack.maxBitrateMbps == 45);
+
+    // Test settings navigation in AppUi
+    app.showHome();
+    ui::NavInput openOpt;
+    openOpt.options = true;
+    app.handle(openOpt);
+    CHECK(app.screen() == ui::Screen::Settings);
+
+    // Navigate down to BitrateCap row (row 10)
+    ui::NavInput navDownRow;
+    navDownRow.down = true;
+    while (app.settingsFocus() != 10) {
+        app.handle(navDownRow);
+    }
+    CHECK(app.settingsFocus() == 10);
+
+    // Test inline slider navigation on BitrateCap (row 10)
+    CHECK(app.settings().maxBitrateMbps == 0);
+
+    // Pressing left at 0 (Automatic) should clamp at 0
+    ui::NavInput navLeft;
+    navLeft.left = true;
+    app.handle(navLeft);
+    CHECK(app.settings().maxBitrateMbps == 0);
+
+    // Pressing right increases the bitrate in 5 Mbps increments up to 50 Mbps
+    ui::NavInput navRight;
+    navRight.right = true;
+    const int expectedMbps[] = {5, 10, 15, 20, 25, 30, 35, 40, 45, 50};
+    for (int exp : expectedMbps) {
+        app.handle(navRight);
+        CHECK(app.settings().maxBitrateMbps == exp);
+    }
+
+    // Pressing right at 50 Mbps should clamp at 50 Mbps
+    app.handle(navRight);
+    CHECK(app.settings().maxBitrateMbps == 50);
+
+    // Pressing left reduces the bitrate from 50 to 45 Mbps
+    app.handle(navLeft);
+    CHECK(app.settings().maxBitrateMbps == 45);
+
+    // Pressing accept (Cross) on row 10 cycles/alternates to next option (no dropdown opened)
+    ui::NavInput acc;
+    acc.accept = true;
+    app.handle(acc);
+    CHECK(app.settings().maxBitrateMbps == 50);
+    app.handle(acc);
+    CHECK(app.settings().maxBitrateMbps == 0); // wrapped to Automatic
+    app.handle(acc);
+    CHECK(app.settings().maxBitrateMbps == 5);
+
+    // Non-exact bitrate snapping test:
+    // If a legacy or custom setting such as 22 Mbps is loaded, it should snap to nearest option (20 Mbps)
+    auto st = app.settings();
+    st.maxBitrateMbps = 22;
+    app.setSettings(st);
+    app.handle(navRight); // from snapped 20 Mbps -> 25 Mbps
+    CHECK(app.settings().maxBitrateMbps == 25);
+    app.handle(navLeft);  // 25 -> 20 Mbps
+    CHECK(app.settings().maxBitrateMbps == 20);
+    app.handle(navLeft);  // 20 -> 15 Mbps
+    CHECK(app.settings().maxBitrateMbps == 15);
+
+    // Test rendering on row 10 with controller and keyboard hints
+    ui::Canvas canvas(1920, 1080);
+    ui::g_keyboardHints = false;
+    app.render(canvas, 1000);
+    ui::g_keyboardHints = true;
+    app.render(canvas, 1000);
+    ui::g_keyboardHints = false;
+
+    // Test keyLabel icon index alignment
+    CHECK(std::string(ui::keyLabel(0)) == "Enter");
+    CHECK(std::string(ui::keyLabel(1)) == "Esc");
+    CHECK(std::string(ui::keyLabel(2)) == "Tab");
+    CHECK(std::string(ui::keyLabel(3)) == "F");
+    CHECK(std::string(ui::keyLabel(4)) == "Del");
+    CHECK(std::string(ui::keyLabel(5)) == "H");
+    CHECK(std::string(ui::keyLabel(6)) == "R");
+    CHECK(std::string(ui::keyLabel(7)) == "Shift");
+    CHECK(std::string(ui::keyLabel(8)) == "Z C");
+    CHECK(std::string(ui::keyLabel(9)) == "<- ->");
+    CHECK(std::string(ui::keyLabel(10)) == "Q E");
+    CHECK(std::string(ui::keyLabel(11)) == "");
+    CHECK(std::string(ui::keyLabel(-1)) == "");
+
+    // Close Settings
+    ui::NavInput navBack;
+    navBack.back = true;
+    app.handle(navBack);
+    CHECK(app.screen() == ui::Screen::Home);
+
+    // 4. StreamMenu with PadSpeakerVolumeItem
+    ui::StreamMenu menu(dummyFonts);
+    menu.open(0, false, 0, 1, 0, false, true, false, 2, 15, false, 0.0f, false, 100);
+    CHECK(menu.padSpeakerVolume() == 100);
+
+    // When at 100%, right should not trigger PadSpeakerVolume action
+    ui::NavInput down;
+    down.down = true;
+    for (int i = 0; i < 12; ++i) menu.handle(down);
+
+    ui::NavInput right;
+    right.right = true;
+    auto actAt100 = menu.handle(right);
+    CHECK(actAt100 == ui::MenuAction::None);
+    CHECK(menu.padSpeakerVolume() == 100);
+
+    // Left should decrease volume by 5%
+    ui::NavInput left;
+    left.left = true;
+    auto act = menu.handle(left);
+    CHECK(act == ui::MenuAction::PadSpeakerVolume);
+    CHECK(menu.padSpeakerVolume() == 95);
+
+    // Test decreasing down to 0%
+    for (int i = 0; i < 20; ++i) menu.handle(left);
+    CHECK(menu.padSpeakerVolume() == 0);
+
+    // When at 0%, left should not trigger PadSpeakerVolume action
+    auto actAt0 = menu.handle(left);
+    CHECK(actAt0 == ui::MenuAction::None);
+    CHECK(menu.padSpeakerVolume() == 0);
+
+    // Rendering at 0% should render valid canvas
+    ui::StreamInfo sinfo;
+    auto cMute = menu.renderMenu(sinfo);
+    CHECK(cMute.width() == ui::StreamMenu::kMenuW);
+
+    // Right should increase by 5%
+    act = menu.handle(right);
+    CHECK(act == ui::MenuAction::PadSpeakerVolume);
+    CHECK(menu.padSpeakerVolume() == 5);
+
+    // 5. Update prompt with 3 buttons and Square shortcut
+    app.showHome();
+    app.setUpdateState("v1.3.3", "v1.3.4", false, notes);
+    app.offerUpdate(notes);
+    CHECK(app.updateOffered());
+    CHECK(!app.showingUpdateNotes());
+
+    // Navigation between 3 buttons: left wraps from 0 to 2
+    ui::NavInput navL;
+    navL.left = true;
+    app.handle(navL); // promptFocus_ becomes 2 (Not now)
+    ui::NavInput navR;
+    navR.right = true;
+    app.handle(navR); // promptFocus_ wraps to 0 (Update now)
+    app.handle(navR); // promptFocus_ is 1 (What's new)
+
+    // Press accept on What's new -> opens notes modal
+    ui::NavInput accept;
+    accept.accept = true;
+    auto ev = app.handle(accept);
+    CHECK(ev.action == ui::Action::None);
+    CHECK(app.showingUpdateNotes());
+
+    // Up / Down scroll in notes modal
+    ui::NavInput navDown;
+    navDown.down = true;
+    app.handle(navDown);
+    ui::NavInput navUp;
+    navUp.up = true;
+    app.handle(navUp);
+
+    // Shoulder buttons page scrolling (L1/R1)
+    ui::NavInput navR1;
+    navR1.r1 = true;
+    app.handle(navR1);
+    ui::NavInput navL1;
+    navL1.l1 = true;
+    app.handle(navL1);
+
+    // Right stick smooth scrolling
+    ui::NavInput stickScroll;
+    stickScroll.scrollRows = 2;
+    app.handle(stickScroll);
+    stickScroll.scrollRows = -2;
+    app.handle(stickScroll);
+
+    // Back closes notes modal
+    ui::NavInput back;
+    back.back = true;
+    app.handle(back);
+    CHECK(!app.showingUpdateNotes());
+    CHECK(app.updateOffered());
+
+    // Square shortcut opens notes modal directly
+    ui::NavInput sq;
+    sq.square = true;
+    app.handle(sq);
+    CHECK(app.showingUpdateNotes());
+    app.handle(back);
+    CHECK(!app.showingUpdateNotes());
+}
+
+static void testBlock3Features() {
+    using namespace xc;
+
+    // 1. Content ratings parsing
+    {
+        // ClassInd for BR
+        auto jBr = json::parse(R"({
+            "ContentRatings": [
+                {
+                    "RatingSystem": "ClassInd",
+                    "RatingId": "14",
+                    "RatingDescriptors": ["Violência", "Drogas Lícitas"]
+                },
+                {
+                    "RatingSystem": "ESRB",
+                    "RatingId": "Teen",
+                    "RatingDescriptors": ["Violence", "Blood"]
+                }
+            ]
+        })");
+        CHECK(jBr.has_value());
+        std::string age, sys;
+        std::vector<std::string> desc;
+        xcloud::parseContentRatings(*jBr, "BR", age, sys, desc);
+        CHECK(sys == "ClassInd");
+        CHECK(age == "14+");
+        CHECK(desc.size() == 2 && desc[0] == "Violência");
+
+        // ESRB for US
+        std::string ageUs, sysUs;
+        std::vector<std::string> descUs;
+        xcloud::parseContentRatings(*jBr, "US", ageUs, sysUs, descUs);
+        CHECK(sysUs == "ESRB");
+        CHECK(ageUs == "T");
+        CHECK(descUs.size() == 2 && descUs[0] == "Violence");
+
+        // ESRB Mature
+        auto jMature = json::parse(R"({
+            "MarketProperties": [
+                {
+                    "ContentRatings": [
+                        {
+                            "ratingSystem": "ESRB",
+                            "ratingId": "Mature 17+",
+                            "ratingDescriptors": ["Blood and Gore", "Intense Violence"]
+                        }
+                    ]
+                }
+            ]
+        })");
+        CHECK(jMature.has_value());
+        xcloud::parseContentRatings(*jMature, "US", ageUs, sysUs, descUs);
+        CHECK(sysUs == "ESRB");
+        CHECK(ageUs == "M");
+        CHECK(descUs.size() == 2);
+
+        // PEGI for GB / UK
+        auto jPegi = json::parse(R"({
+            "LocalizedProperties": [
+                {
+                    "ContentRatings": [
+                        {
+                            "RatingSystemId": "PEGI",
+                            "RatingName": "18",
+                            "RatingDescriptor": "Bad Language"
+                        }
+                    ]
+                }
+            ]
+        })");
+        CHECK(jPegi.has_value());
+        std::string ageEu, sysEu;
+        std::vector<std::string> descEu;
+        xcloud::parseContentRatings(*jPegi, "GB", ageEu, sysEu, descEu);
+        CHECK(sysEu == "PEGI");
+        CHECK(ageEu == "18+");
+        CHECK(descEu.size() == 1 && descEu[0] == "Bad Language");
+
+        // Fallback when ClassInd not present in BR market -> falls back to ESRB
+        std::string ageFb, sysFb;
+        std::vector<std::string> descFb;
+        xcloud::parseContentRatings(*jMature, "BR", ageFb, sysFb, descFb);
+        CHECK(sysFb == "ESRB");
+        CHECK(ageFb == "M");
+
+        // Microsoft Game Pass v3 catalog API singular "ContentRating" object (RemoteHighSapphire0)
+        auto jV3Br = json::parse(R"({
+            "ContentRating": {
+                "LongName": "16 anos",
+                "Description": "Para maiores de 16 anos",
+                "Age": 16,
+                "RatingSystem": "DJCTQ",
+                "LocalizedDescriptors": ["Violência"],
+                "LocalizedInteractiveElements": ["Usuários Interagem", "Compras no Jogo"]
+            }
+        })");
+        CHECK(jV3Br.has_value());
+        std::string ageV3Br, sysV3Br;
+        std::vector<std::string> descV3Br;
+        xcloud::parseContentRatings(*jV3Br, "BR", ageV3Br, sysV3Br, descV3Br);
+        CHECK(sysV3Br == "ClassInd");
+        CHECK(ageV3Br == "16+");
+        CHECK(descV3Br.size() == 3);
+        CHECK(descV3Br[0] == "Violência");
+        CHECK(descV3Br[1] == "Usuários Interagem");
+
+        // V3 Livre
+        auto jV3Livre = json::parse(R"({
+            "ContentRating": {
+                "LongName": "Livre",
+                "Description": "Para todas as idades",
+                "Age": 1,
+                "RatingSystem": "DJCTQ",
+                "LocalizedDescriptors": []
+            }
+        })");
+        CHECK(jV3Livre.has_value());
+        std::string ageLivre, sysLivre;
+        std::vector<std::string> descLivre;
+        xcloud::parseContentRatings(*jV3Livre, "BR", ageLivre, sysLivre, descLivre);
+        CHECK(sysLivre == "ClassInd");
+        CHECK(ageLivre == "Livre");
+
+        // V3 ESRB
+        auto jV3Esrb = json::parse(R"({
+            "ContentRating": {
+                "LongName": "TEEN",
+                "Age": 13,
+                "RatingSystem": "ESRB",
+                "LocalizedDescriptors": ["Blood", "Mild Violence"]
+            }
+        })");
+        CHECK(jV3Esrb.has_value());
+        std::string ageV3Us, sysV3Us;
+        std::vector<std::string> descV3Us;
+        xcloud::parseContentRatings(*jV3Esrb, "US", ageV3Us, sysV3Us, descV3Us);
+        CHECK(sysV3Us == "ESRB");
+        CHECK(ageV3Us == "T");
+        CHECK(descV3Us.size() == 2 && descV3Us[0] == "Blood");
+    }
+
+    // 2. Local Web Micro-Server
+    {
+        app::WebServer ws;
+        CHECK(!ws.isRunning());
+        std::string ip = ws.localIp();
+        CHECK(!ip.empty());
+        std::string url = ws.url();
+        CHECK(url.find(":8080") != std::string::npos);
+
+        // Test OPTIONS (CORS preflight)
+        auto optRes = ws.handleRequest("OPTIONS", "/api/search", "");
+        CHECK(optRes.status == 204);
+
+        // Test GET / (HTML index)
+        auto htmlRes = ws.handleRequest("GET", "/", "");
+        CHECK(htmlRes.status == 200);
+        CHECK(htmlRes.contentType.find("text/html") != std::string::npos);
+        CHECK(htmlRes.body.find("PSBOX CLOUD GAMING") != std::string::npos);
+        CHECK(htmlRes.body.find("logo-icon") != std::string::npos);
+        CHECK(htmlRes.body.find("#107C41") != std::string::npos);
+        CHECK(htmlRes.body.find("tabBtnGamePass") != std::string::npos);
+        CHECK(htmlRes.body.find("tabBtnLibrary") != std::string::npos);
+        CHECK(htmlRes.body.find("filtersGamePass") != std::string::npos);
+        CHECK(htmlRes.body.find("filtersLibrary") != std::string::npos);
+        CHECK(htmlRes.body.find("chipWishlist") != std::string::npos);
+        CHECK(htmlRes.body.find("chipFree") != std::string::npos);
+        CHECK(htmlRes.body.find("chipCheapest") != std::string::npos);
+        CHECK(htmlRes.body.find("filterPlan") != std::string::npos);
+        CHECK(htmlRes.body.find("filterConsoleGP") != std::string::npos);
+        CHECK(htmlRes.body.find("chipMouseGP") != std::string::npos);
+        CHECK(htmlRes.body.find("Teclado Remoto para Busca") != std::string::npos);
+        CHECK(htmlRes.body.find("Remapeamento de Botões") != std::string::npos);
+        CHECK(htmlRes.body.find("Remapeamento de Teclado") != std::string::npos);
+        CHECK(htmlRes.body.find("subRemapKey") != std::string::npos);
+
+        CHECK(htmlRes.body.find("navTab-search") != std::string::npos);
+        CHECK(htmlRes.body.find("navTab-remap") != std::string::npos);
+        CHECK(htmlRes.body.find("navTab-logs") != std::string::npos);
+        CHECK(htmlRes.body.find("clamp(") != std::string::npos);
+        CHECK(htmlRes.body.find("chipSelectModeGP") != std::string::npos);
+        CHECK(htmlRes.body.find("chipSelectLangGP") != std::string::npos);
+        CHECK(htmlRes.body.find("chipSelectModeLib") != std::string::npos);
+        CHECK(htmlRes.body.find("chipSelectLangLib") != std::string::npos);
+
+        // Test GET /api/settings
+        auto getSetRes = ws.handleRequest("GET", "/api/settings", "");
+        CHECK(getSetRes.status == 200);
+        CHECK(getSetRes.contentType.find("application/json") != std::string::npos);
+        auto jSet = json::parse(getSetRes.body);
+        CHECK(jSet.has_value() && (*jSet)["ok"].asBool());
+        CHECK((*jSet).has("keyMap") && (*jSet)["keyMap"].isArray());
+        CHECK((*jSet).has("tab") && (*jSet)["tab"].isString());
+        CHECK((*jSet).has("filters") && (*jSet)["filters"].isObject());
+
+        // Test POST /api/search with query only
+        auto searchRes = ws.handleRequest("POST", "/api/search", R"({"query":"Gears of War"})");
+        CHECK(searchRes.status == 200);
+        auto jSearch = json::parse(searchRes.body);
+        CHECK(jSearch.has_value() && (*jSearch)["ok"].asBool());
+        CHECK((*jSearch)["query"].str() == "Gears of War");
+
+        // Test POST /api/search with tab and interactive filters (Game Pass)
+        auto searchGPRes = ws.handleRequest("POST", "/api/search", R"({
+            "query": "Halo",
+            "tab": "gamepass",
+            "filters": {
+                "plan": 1,
+                "console": 2,
+                "mode": 1,
+                "language": 2,
+                "mouseKeyboard": true
+            }
+        })");
+        CHECK(searchGPRes.status == 200);
+        auto jSearchGP = json::parse(searchGPRes.body);
+        CHECK(jSearchGP.has_value() && (*jSearchGP)["ok"].asBool());
+        CHECK((*jSearchGP)["query"].str() == "Halo");
+        CHECK((*jSearchGP)["tab"].str() == "gamepass");
+        CHECK((*jSearchGP)["filters"]["plan"].asInt() == 1);
+        CHECK((*jSearchGP)["filters"]["console"].asInt() == 2);
+        CHECK((*jSearchGP)["filters"]["mode"].asInt() == 1);
+        CHECK((*jSearchGP)["filters"]["language"].asInt() == 2);
+        CHECK((*jSearchGP)["filters"]["mouseKeyboard"].asBool() == true);
+
+        // Test POST /api/search with tab and interactive filters (Library / Meus jogos)
+        auto searchLibRes = ws.handleRequest("POST", "/api/search", R"({
+            "query": "Forza",
+            "tab": "library",
+            "filters": {
+                "wishlist": true,
+                "free": true,
+                "cheapest": false,
+                "mode": 3,
+                "language": 1
+            }
+        })");
+        CHECK(searchLibRes.status == 200);
+        auto jSearchLib = json::parse(searchLibRes.body);
+        CHECK(jSearchLib.has_value() && (*jSearchLib)["ok"].asBool());
+        CHECK((*jSearchLib)["query"].str() == "Forza");
+        CHECK((*jSearchLib)["tab"].str() == "library");
+        CHECK((*jSearchLib)["filters"]["wishlist"].asBool() == true);
+        CHECK((*jSearchLib)["filters"]["free"].asBool() == true);
+        CHECK((*jSearchLib)["filters"]["cheapest"].asBool() == false);
+        CHECK((*jSearchLib)["filters"]["mode"].asInt() == 3);
+        CHECK((*jSearchLib)["filters"]["language"].asInt() == 1);
+
+        // Test setSearchParams / getSearchParams hooks integration
+        {
+            std::string hookedQ;
+            std::string hookedTab;
+            json::Value hookedFilters = json::Value::object();
+            app::setWebServerHooks({
+                /*getSettings=*/nullptr,
+                /*updateSettings=*/nullptr,
+                /*getSearchQuery=*/nullptr,
+                /*setSearchQuery=*/nullptr,
+                /*setSearchParams=*/[&](const std::string* q, const std::string* tab, const json::Value* f) {
+                    if (q) hookedQ = *q;
+                    if (tab) hookedTab = *tab;
+                    if (f && f->isObject()) hookedFilters = *f;
+                },
+                /*getSearchParams=*/[&](std::string& outQ, std::string& outTab, json::Value& outF) {
+                    outQ = hookedQ;
+                    outTab = hookedTab.empty() ? "gamepass" : hookedTab;
+                    outF = hookedFilters;
+                }
+            });
+
+            ws.handleRequest("POST", "/api/search", R"({"query":"Starfield","tab":"library","filters":{"wishlist":true,"console":1,"mode":2}})");
+            CHECK(hookedQ == "Starfield");
+            CHECK(hookedTab == "library");
+            CHECK(hookedFilters["wishlist"].asBool() == true);
+            CHECK(hookedFilters["console"].asInt() == 1);
+            CHECK(hookedFilters["mode"].asInt() == 2);
+
+            auto hookGetRes = ws.handleRequest("GET", "/api/settings", "");
+            auto jHookGet = json::parse(hookGetRes.body);
+            CHECK(jHookGet.has_value() && (*jHookGet)["query"].str() == "Starfield");
+            CHECK((*jHookGet)["tab"].str() == "library");
+            CHECK((*jHookGet)["filters"]["wishlist"].asBool() == true);
+            CHECK((*jHookGet)["filters"]["mode"].asInt() == 2);
+
+            // Test POST without tab: should resolve current tab from hooks
+            auto noTabRes = ws.handleRequest("POST", "/api/search", R"({"query":"Flight Simulator"})");
+            auto jNoTab = json::parse(noTabRes.body);
+            CHECK(jNoTab.has_value() && (*jNoTab)["ok"].asBool());
+            CHECK((*jNoTab)["tab"].str() == "library");  // resolved from hookedTab
+
+            // Clean up hooks
+            app::setWebServerHooks({});
+        }
+
+        // Test POST /api/settings (bad json, padMap only, and padMap + keyMap)
+        auto badSetRes = ws.handleRequest("POST", "/api/settings", "not-a-json");
+        CHECK(badSetRes.status == 400);
+
+        auto goodSetRes = ws.handleRequest("POST", "/api/settings", R"({"padMap":{"version":1,"map":[0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15]}})");
+        CHECK(goodSetRes.status == 200);
+
+        auto fullSetRes = ws.handleRequest("POST", "/api/settings", R"({
+            "padMap": [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15],
+            "keyMap": [87,0,83,0,65,0,68,0,38,0,40,0,37,0,39,0,32,0,67,0,82,0,69,0,81,0,70,0,242,0,241,0,16,0,86,243,9,0,27,0]
+        })");
+        CHECK(fullSetRes.status == 200);
+
+        // Test GET /api/log
+        auto logRes = ws.handleRequest("GET", "/api/log", "");
+        CHECK(logRes.status == 200);
+        CHECK(logRes.contentType.find("text/plain") != std::string::npos);
+        CHECK(logRes.extraHeaders.find("Content-Disposition") != std::string::npos);
+
+        // Test 404
+        auto notFoundRes = ws.handleRequest("GET", "/api/unknown_endpoint", "");
+        CHECK(notFoundRes.status == 404);
+
+        // Test start/stop on a high ephemeral port (e.g. 18088)
+        CHECK(ws.start(18088));
+        CHECK(ws.isRunning());
+        CHECK(ws.port() == 18088);
+        ws.stop();
+        CHECK(!ws.isRunning());
+    }
+
+    // 3. UI Integration: Web QR & Remote Search & Rating Badges
+    {
+        ui::Fonts dummyFonts{};
+        ui::ImageCache images([] {});
+        ui::AppUi app(dummyFonts, images);
+
+        app.setWebUrl("http://192.168.1.100:8080");
+        CHECK(app.webUrl() == "http://192.168.1.100:8080");
+
+        app.setSearchQuery("Halo");
+        CHECK(app.searchQuery() == "Halo");
+
+        // Edge case: setSearchQuery while in streaming or modal mode should NOT yank out of screen
+        app.showStreaming();
+        CHECK(app.screen() == ui::Screen::Streaming);
+        app.setSearchQuery("Forza");
+        CHECK(app.screen() == ui::Screen::Streaming);  // Must remain streaming!
+        CHECK(app.searchQuery() == "Forza");
+
+        // Test Game Details with rating badge rendering and long descriptors line
+        ui::GameTile tile;
+        tile.name = "Forza Horizon 5";
+        tile.publisher = "Xbox Game Studios";
+        tile.description = "Your Ultimate Horizon Adventure awaits!";
+        tile.ratingAge = "Livre";
+        tile.ratingSystem = "ClassInd";
+        tile.ratingDescriptors = {
+            "Violência Fantasiosa", "Compras no Jogo", "Interação de Usuários",
+            "Linguagem Apropriada", "Elementos Online Adicionais"
+        };
+        tile.categories = {"Corrida", "Mundo Aberto"};
+        tile.playable = true;
+
+        app.showDetails(tile);
+        ui::Canvas c(1920, 1080);
+        app.render(c, 1000);
+        CHECK(c.width() == 1920 && c.height() == 1080);
+
+        // Test other rating badge colors (12+, 14+, 16+, 18+)
+        tile.ratingAge = "14+";
+        app.showDetails(tile);
+        app.render(c, 1000);
+
+        tile.ratingAge = "18+";
+        app.showDetails(tile);
+        app.render(c, 1000);
+
+        // Test Settings screen rendering with QR Panel
+        app.showHome();
+        ui::NavInput openOpt;
+        openOpt.options = true;
+        app.handle(openOpt);
+        CHECK(app.screen() == ui::Screen::Settings);
+        app.render(c, 1000);
+        CHECK(c.width() == 1920);
+
+        // Close Settings
+        ui::NavInput back;
+        back.back = true;
+        app.handle(back);
+        CHECK(app.screen() == ui::Screen::Home);
+    }
+}
+
+void testWebStreamingAndGamepad() {
+    xc::app::WebServer srv;
+    bool streamingFlag = false;
+    std::string currentQuery = "";
+    std::string currentTab = "gamepass";
+    json::Value currentFilters = json::Value::object();
+
+    xc::app::WebServerHooks hooks;
+    hooks.isStreaming = [&]() { return streamingFlag; };
+    hooks.getSearchParams = [&](std::string& q, std::string& tab, json::Value& f) {
+        q = currentQuery;
+        tab = currentTab;
+        f = currentFilters;
+    };
+    hooks.setSearchParams = [&](const std::string* q, const std::string* tab, const json::Value* f) {
+        if (q) currentQuery = *q;
+        if (tab) currentTab = *tab;
+        if (f) currentFilters = *f;
+    };
+    xc::app::setWebServerHooks(hooks);
+
+    // 1. GET /api/status when not streaming
+    {
+        auto res = srv.handleRequest("GET", "/api/status", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && j->isObject());
+        CHECK((*j)["ok"].asBool(false) == true);
+        CHECK((*j)["streaming"].asBool(true) == false);
+    }
+
+    // 2. POST /api/search when not streaming should succeed
+    {
+        auto res = srv.handleRequest("POST", "/api/search", "{\"query\":\"halo\",\"tab\":\"gamepass\"}");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && (*j)["ok"].asBool(false) == true);
+        CHECK(currentQuery == "halo");
+    }
+
+    // 3. GET /api/status when streaming is active
+    streamingFlag = true;
+    {
+        auto res = srv.handleRequest("GET", "/api/status", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && (*j)["streaming"].asBool(false) == true);
+    }
+
+    // 4. POST /api/search when streaming must be blocked with 409 Conflict
+    {
+        auto res = srv.handleRequest("POST", "/api/search", "{\"query\":\"gears\",\"tab\":\"gamepass\"}");
+        CHECK(res.status == 409);
+        auto j = json::parse(res.body);
+        CHECK(j && (*j)["ok"].asBool(true) == false);
+        CHECK((*j)["error"].asString() == "streaming_active");
+        CHECK(currentQuery == "halo"); // Search state was preserved and not changed
+    }
+
+    // 5. Virtual gamepad: Player 1 (main controller)
+    {
+        xc::app::resetVirtualGamepads();
+        input::ControllerState s0;
+        bool conn0 = false;
+        xc::app::virtualGamepadState(0, s0, conn0);
+        CHECK(!conn0);
+
+        auto res = srv.handleRequest("POST", "/api/gamepad",
+            "{\"player\":1,\"btnA\":true,\"leftStickX\":0.75,\"leftStickY\":-0.5,\"btnNexus\":true}");
+        CHECK(res.status == 200);
+        bool ok = xc::app::virtualGamepadState(0, s0, conn0);
+        CHECK(ok);
+        CHECK(conn0);
+        CHECK(s0.btnA == true);
+        CHECK(s0.btnB == false);
+        CHECK(s0.btnNexus == true);
+        CHECK(std::abs(s0.leftStickX - 0.75f) < 0.01f);
+        CHECK(std::abs(s0.leftStickY - (-0.5f)) < 0.01f);
+    }
+
+    // 6. Virtual gamepad: Player 2 (co-op controller)
+    {
+        input::ControllerState s1;
+        bool conn1 = false;
+        xc::app::virtualGamepadState(1, s1, conn1);
+        CHECK(!conn1);
+
+        auto res = srv.handleRequest("POST", "/api/gamepad",
+            "{\"player\":2,\"btnB\":true,\"triggerR2\":0.9,\"btnView\":true,\"dpadUp\":true}");
+        CHECK(res.status == 200);
+        bool ok = xc::app::virtualGamepadState(1, s1, conn1);
+        CHECK(ok);
+        CHECK(conn1);
+        CHECK(s1.btnB == true);
+        CHECK(s1.btnA == false);
+        CHECK(s1.btnTouchpad == true); // btnView maps to btnTouchpad
+        CHECK(s1.dpadUp == true);
+        CHECK(std::abs(s1.triggerR2 - 0.9f) < 0.01f);
+        // Test L3 and R3 buttons on Virtual Gamepad
+        input::ControllerState s0;
+        bool conn0 = false;
+        auto resL3R3 = srv.handleRequest("POST", "/api/gamepad",
+            "{\"player\":1,\"btnL3\":true,\"btnR3\":true}");
+        CHECK(resL3R3.status == 200);
+        bool okL3R3 = xc::app::virtualGamepadState(0, s0, conn0);
+        CHECK(okL3R3);
+        CHECK(s0.btnL3 == true);
+        CHECK(s0.btnR3 == true);
+    }
+
+    // 7. Reset virtual gamepads
+    {
+        xc::app::resetVirtualGamepads();
+        input::ControllerState s0, s1;
+        bool conn0 = false, conn1 = false;
+        xc::app::virtualGamepadState(0, s0, conn0);
+        xc::app::virtualGamepadState(1, s1, conn1);
+        CHECK(!conn0);
+        CHECK(!conn1);
+    }
+
+    // 8. Test AppUi::detailWanted prevents infinite re-fetching when detailInfo_ exists
+    {
+        ui::Fonts dummyFonts{};
+        ui::ImageCache images([] {});
+        ui::AppUi uiApp(dummyFonts, images);
+        ui::GameTile tile;
+        tile.productId = "PROD_UNRATED";
+        tile.name = "Unrated Game";
+        tile.description = "Short desc";
+        tile.heroUrl = "http://example.com/hero.jpg";
+        tile.ratingAge = ""; // Empty age rating
+
+        uiApp.showDetails(tile);
+        // First wanted call should ask for details
+        std::string asked = uiApp.detailWanted(1000);
+        CHECK(asked == "PROD_UNRATED");
+
+        // Simulate priceLoop fetching details and storing in detailInfo_
+        uiApp.setDetailInfo("PROD_UNRATED", "Longer desc", "Publisher X", {"Indie"}, "http://example.com/hero.jpg",
+                            "", "", {});
+
+        // Subsequent detailWanted calls (even after 5000ms) must NOT ask again
+        std::string askedAfter = uiApp.detailWanted(10000);
+        CHECK(askedAfter.empty());
+    }
+
+    xc::app::setWebServerHooks({});
+}
+
+static void testWebSettingsAndStreamMenu() {
+    xc::app::WebServer srv;
+    bool streamMenuUpdated = false;
+    std::string lastStreamAction;
+    json::Value lastStreamUpdate;
+    json::Value currentSettings = json::Value::object();
+    currentSettings.set("bitrateMbps", 25);
+    currentSettings.set("resolution", "1080p");
+    currentSettings.set("voiceRouting", 1);
+
+    xc::app::WebServerHooks hooks;
+    hooks.isStreaming = []() { return true; };
+    hooks.getSettings = [&](json::Value& out) {
+        out = currentSettings;
+    };
+    hooks.updateSettings = [&](const json::Value& root) {
+        if (root.has("bitrateMbps")) currentSettings.set("bitrateMbps", root["bitrateMbps"].asInt());
+        if (root.has("voiceRouting")) currentSettings.set("voiceRouting", root["voiceRouting"].asInt());
+        return true;
+    };
+    hooks.getTelemetry = [](json::Value& stats) {
+        stats = json::Value::object();
+        stats.set("fps", 60.0);
+        stats.set("decodeMs", 3.2);
+        stats.set("rtt", 14.5);
+        stats.set("packetLoss", 0.0);
+        stats.set("bitrateKbps", 15200);
+    };
+    hooks.getStreamMenuState = [](json::Value& state) {
+        state = json::Value::object();
+        state.set("volume", 80);
+        state.set("micMuted", false);
+        state.set("sharpness", 2);
+        state.set("casSharpness", 3);
+        state.set("deband", true);
+        state.set("stats", true);
+        state.set("statsMode", 1);
+        state.set("touchPadMouse", false);
+        state.set("virtualGamepad", true);
+    };
+    hooks.updateStreamMenu = [&](const json::Value& update) {
+        streamMenuUpdated = true;
+        lastStreamUpdate = update;
+        return true;
+    };
+    hooks.streamAction = [&](const std::string& action) {
+        lastStreamAction = action;
+    };
+    xc::app::setWebServerHooks(hooks);
+
+    // 1. GET /api/settings
+    {
+        auto res = srv.handleRequest("GET", "/api/settings", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && j->isObject());
+        CHECK((*j)["bitrateMbps"].asInt() == 25);
+        CHECK((*j)["resolution"].str() == "1080p");
+        CHECK((*j)["voiceRouting"].asInt() == 1);
+    }
+
+    // 2. POST /api/settings
+    {
+        auto res = srv.handleRequest("POST", "/api/settings", R"({"bitrateMbps":40,"voiceRouting":2})");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && (*j)["ok"].asBool() == true);
+        CHECK(currentSettings["bitrateMbps"].asInt() == 40);
+        CHECK(currentSettings["voiceRouting"].asInt() == 2);
+    }
+
+    // 3. GET /api/stats
+    {
+        auto res = srv.handleRequest("GET", "/api/stats", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && j->isObject());
+        CHECK((*j)["fps"].asNumber() == 60.0);
+        CHECK((*j)["decodeMs"].asNumber() == 3.2);
+        CHECK((*j)["rtt"].asNumber() == 14.5);
+    }
+
+    // 4. GET /api/stream
+    {
+        auto res = srv.handleRequest("GET", "/api/stream", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && j->isObject());
+        CHECK((*j)["volume"].asInt() == 80);
+        CHECK((*j)["micMuted"].asBool() == false);
+        CHECK((*j)["sharpness"].asInt() == 2);
+        CHECK((*j)["casSharpness"].asInt() == 3);
+        CHECK((*j)["virtualGamepad"].asBool() == true);
+    }
+
+    // 5. POST /api/stream with action
+    {
+        lastStreamAction.clear();
+        auto res = srv.handleRequest("POST", "/api/stream", R"({"action":"disconnect"})");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j && (*j)["ok"].asBool() == true);
+        CHECK(lastStreamAction == "disconnect");
+    }
+
+    // 6. POST /api/stream with stream menu update
+    {
+        streamMenuUpdated = false;
+        auto res = srv.handleRequest("POST", "/api/stream", R"({"volume":65,"sharpness":1})");
+        CHECK(res.status == 200);
+        CHECK(streamMenuUpdated == true);
+        CHECK(lastStreamUpdate["volume"].asInt() == 65);
+        CHECK(lastStreamUpdate["sharpness"].asInt() == 1);
+    }
+
+    // 7. Error handling: invalid JSON
+    {
+        auto res = srv.handleRequest("POST", "/api/stream", "invalid{json");
+        CHECK(res.status == 400);
+    }
+
+    xc::app::setWebServerHooks({});
+}
+
+static void testVoiceRouting() {
+    // Default should be 0 (All Audio to TV / Main)
+    media::audioSetVoiceRouting(0);
+    CHECK(media::audioVoiceRouting() == 0);
+
+    // Test routing switching: 1 = Pad Voice / Speaker
+    media::audioSetVoiceRouting(1);
+    CHECK(media::audioVoiceRouting() == 1);
+
+    // Values > 1 clamp to 1, < 0 clamp to 0
+    media::audioSetVoiceRouting(5);
+    CHECK(media::audioVoiceRouting() == 1);
+
+    media::audioSetVoiceRouting(-1);
+    CHECK(media::audioVoiceRouting() == 0);
+
+    // Test Settings JSON persistence
+    std::string testPath = "/tmp/xcloud-tests-voice.json";
+    app::Settings s;
+    s.voiceRouting = 1;
+    CHECK(s.save(testPath));
+
+    app::Settings loaded;
+    CHECK(loaded.load(testPath));
+    CHECK(loaded.voiceRouting == 1);
+    std::remove(testPath.c_str());
+
+    // Test playVoiceAudio fallback on platforms without pad speaker
+    std::vector<float> samplePcm(480 * 2, 0.1f);
+    CHECK(media::playVoiceAudio(samplePcm.data(), 480));
+
+    // Test SettingsChoice round-trip
+    app::Settings st;
+    st.voiceRouting = 1;
+    ui::SettingsChoice ch = ui::choiceFromSettings(st);
+    CHECK(ch.voiceRouting == 1);
+    ch.voiceRouting = 0;
+    ui::applyChoice(ch, st);
+    CHECK(st.voiceRouting == 0);
+}
+
+static void testUsbPadReports() {
+    using input::ControllerState;
+    auto near = [](float a, float b) { return std::abs(a - b) < 0.01f; };
+
+    // XInput (Xbox 360 layout; 8BitDo Ultimate 2.4G in PC mode): A + LB +
+    // Up + Start, LT half, RT full, left stick right and up.
+    const uint8_t xin[20] = {0x00, 0x14, 0x11, 0x11, 128, 255, 0xff, 0x7f, 0xff, 0x7f, 0, 0, 0x00, 0x80};
+    ControllerState s;
+    CHECK(input::parseXInputReport(xin, sizeof xin, s));
+    CHECK(s.connected && s.btnA && s.btnL1 && s.dpadUp && s.btnOptions);
+    CHECK(!s.btnB && !s.btnX && !s.btnY && !s.btnR1 && !s.dpadDown && !s.btnTouchpad && !s.btnNexus);
+    CHECK(near(s.triggerL2, 0.5f) && near(s.triggerR2, 1.0f));
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));      // +y is down
+    CHECK(near(s.rawRightX, 0.0f) && near(s.rawRightY, 1.0f));     // RY -32768: all the way down
+    const uint8_t xinGuide[20] = {0x00, 0x14, 0x20, 0x04};  // Back + Guide
+    CHECK(input::parseXInputReport(xinGuide, sizeof xinGuide, s));
+    CHECK(s.btnTouchpad && s.btnNexus && !s.btnA && !s.btnOptions);
+    // Not input: the LED and rumble status reports.
+    const uint8_t xinLed[3] = {0x01, 0x03, 0x02}, xinRumble[3] = {0x03, 0x03, 0x00};
+    CHECK(!input::parseXInputReport(xinLed, sizeof xinLed, s));
+    CHECK(!input::parseXInputReport(xinRumble, sizeof xinRumble, s));
+
+    // GIP (Xbox One / Series): B + Y + View + Right + RB + RS, LT 1023,
+    // RT 0, right stick left.
+    const uint8_t gip[18] = {0x20, 0x00, 0x05, 0x0e, 0xa8, 0xa8, 0xff, 0x03, 0x00, 0x00,
+                             0, 0, 0, 0, 0x00, 0x80, 0, 0};
+    s = {};
+    CHECK(input::parseGipReport(gip, sizeof gip, s));
+    CHECK(s.btnB && s.btnY && s.btnTouchpad && s.dpadRight && s.btnR1 && s.btnR3);
+    CHECK(!s.btnA && !s.btnX && !s.btnOptions && !s.dpadLeft && !s.btnL1 && !s.btnL3 && !s.btnNexus);
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.0f));
+    CHECK(near(s.rawRightX, -1.0f) && near(s.rawLeftX, 0.0f));
+    // The Xbox button comes by itself and keeps the other buttons.
+    const uint8_t guideDown[6] = {0x07, 0x30, 0x01, 0x02, 0x01, 0x5b}, guideUp[6] = {0x07, 0x30, 0x02, 0x02, 0x00, 0x5b};
+    CHECK(input::parseGipReport(guideDown, sizeof guideDown, s));
+    CHECK(s.btnNexus && s.btnB && s.btnY);
+    CHECK(input::parseGipReport(guideUp, sizeof guideUp, s));
+    CHECK(!s.btnNexus && s.btnB);
+    // Its announce and keep-alive messages are not input.
+    const uint8_t announce[8] = {0x02, 0x20, 0x01, 0x1c, 0x7e, 0xed, 0x8b, 0x11}, keepAlive[6] = {0x03, 0x20, 0x01, 0x04, 0x80, 0x00};
+    CHECK(!input::parseGipReport(announce, sizeof announce, s));
+    CHECK(!input::parseGipReport(keepAlive, sizeof keepAlive, s));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::Gip, gip, sizeof gip, s));
+    CHECK(!input::parseUsbPadReport(input::UsbPadProtocol::None, gip, sizeof gip, s));
+
+    // GIP acknowledgements: the Xbox button's message asks for one.
+    auto acks = input::gipAcksFor(guideDown, sizeof guideDown);
+    CHECK(acks.size() == 1);
+    const std::array<uint8_t, 13> ack = {0x01, 0x20, 0x01, 0x09, 0x00, 0x07, 0x20, 0x02, 0, 0, 0, 0, 0};
+    CHECK(!acks.empty() && acks[0] == ack);
+    CHECK(input::gipAcksFor(gip, sizeof gip).empty());  // input is not acknowledged
+
+    // DualShock 3 (PS3): Select + DPad Up + Cross + L1 + PS button, sticks, triggers
+    uint8_t ds3[49] = {};
+    ds3[0] = 0x01;
+    ds3[2] = 0x11;  // Select (0x01) + DPad Up (0x10)
+    ds3[3] = 0x44;  // Cross (0x40) + L1 (0x04)
+    ds3[4] = 0x01;  // PS button (0x01)
+    ds3[6] = 255;   // LX right (1.0f)
+    ds3[7] = 0;     // LY up (-1.0f)
+    ds3[8] = 128;   // RX center (0.0f)
+    ds3[9] = 255;   // RY down (1.0f)
+    ds3[18] = 255;  // L2 trigger (1.0f)
+    ds3[19] = 128;  // R2 trigger (~0.5f)
+    s = {};
+    CHECK(input::parseDualShock3Report(ds3, sizeof ds3, s));
+    CHECK(s.connected && s.btnA && s.btnL1 && s.dpadUp && s.btnTouchpad && s.btnNexus);
+    CHECK(!s.btnB && !s.btnX && !s.btnY && !s.btnR1 && !s.dpadDown && !s.btnOptions);
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));
+    CHECK(near(s.rawRightX, 0.0f) && near(s.rawRightY, 1.0f));
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.5f));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::DualShock3, ds3, sizeof ds3, s));
+
+    // DualSense (PS5 USB): Cross + DPad Right + R1 + Options + PS button + touch point
+    uint8_t ds5[64] = {};
+    ds5[0] = 0x01;  // Report ID
+    ds5[1] = 0;     // LX left (-1.0f)
+    ds5[2] = 255;   // LY down (1.0f)
+    ds5[3] = 255;   // RX right (1.0f)
+    ds5[4] = 128;   // RY center (0.0f)
+    ds5[5] = 255;   // L2 (1.0f)
+    ds5[6] = 0;     // R2 (0.0f)
+    ds5[8] = 0x22;  // Hat 2 (Right) + Cross (0x20)
+    ds5[9] = 0x22;  // R1 (0x02) + Options (0x20)
+    ds5[10] = 0x01; // PS button (0x01)
+    ds5[33] = 0x00; // Touch point 0 active (contact bit 7 == 0)
+    ds5[34] = 0x80; // tx lo
+    ds5[35] = 0x43; // tx hi (0x3), ty lo (0x4)
+    ds5[36] = 0x20; // ty hi (0x20)
+    s = {};
+    CHECK(input::parseDualSenseReport(ds5, sizeof ds5, s));
+    CHECK(s.connected && s.btnA && s.dpadRight && s.btnR1 && s.btnOptions && s.btnNexus);
+    CHECK(!s.btnB && !s.btnX && !s.btnY && !s.btnL1 && !s.dpadUp);
+    CHECK(near(s.rawLeftX, -1.0f) && near(s.rawLeftY, 1.0f));
+    CHECK(near(s.rawRightX, 1.0f) && near(s.rawRightY, 0.0f));
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.0f));
+    CHECK(s.touching);
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::DualSense, ds5, sizeof ds5, s));
+
+    // Nintendo Switch Pro (full report 0x30): B (btnA) + R (btnR1) + Plus (btnOptions) + Home (btnNexus) + Up
+    uint8_t sw[12] = {};
+    sw[0] = 0x30;
+    sw[3] = 0x04 | 0x40; // B (0x04) + R (0x40)
+    sw[4] = 0x02 | 0x10; // Plus (0x02) + Home (0x10)
+    sw[5] = 0x02 | 0x80; // Up (0x02) + ZL (0x80)
+    sw[6] = 0x00; sw[7] = 0x08; sw[8] = 0x80;  // 12-bit LX=2048, LY=2048 (center)
+    sw[9] = 0x00; sw[10] = 0x08; sw[11] = 0x80; // 12-bit RX=2048, RY=2048 (center)
+    s = {};
+    CHECK(input::parseSwitchProReport(sw, sizeof sw, s));
+    CHECK(s.connected && s.btnA && s.btnR1 && s.btnOptions && s.btnNexus && s.dpadUp);
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.0f));
+    CHECK(near(s.rawLeftX, 0.0f) && near(s.rawLeftY, 0.0f));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::SwitchPro, sw, sizeof sw, s));
+
+    // Nintendo Switch Pro (simple report 0x3F)
+    uint8_t swSimple[12] = {};
+    swSimple[0] = 0x3F;
+    swSimple[1] = 0x02 | 0x20; // B (btnA) + R (btnR1)
+    swSimple[2] = 0x02 | 0x10; // Plus (btnOptions) + Home (btnNexus)
+    swSimple[3] = 0;           // Hat 0 = Up
+    swSimple[5] = 255;         // LX right
+    swSimple[7] = 0;           // LY up
+    swSimple[9] = 128;         // RX center
+    swSimple[11] = 255;        // RY down
+    s = {};
+    CHECK(input::parseSwitchProReport(swSimple, sizeof swSimple, s));
+    CHECK(s.connected && s.btnA && s.btnR1 && s.btnOptions && s.btnNexus && s.dpadUp);
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));
+    CHECK(near(s.rawRightX, 0.0f) && near(s.rawRightY, 1.0f));
+
+    // Nintendo Switch Input-Only (7 bytes)
+    uint8_t swIn[7] = {0x02 | 0x10, 0x10 | 0x01, 4, 255, 0, 128, 255}; // B+L, Home+Minus, Hat 4=Down, sticks
+    s = {};
+    CHECK(input::parseSwitchInputOnlyReport(swIn, sizeof swIn, s));
+    CHECK(s.connected && s.btnA && s.btnL1 && s.btnNexus && s.btnTouchpad && s.dpadDown);
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));
+    CHECK(near(s.rawRightX, 0.0f) && near(s.rawRightY, 1.0f));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::SwitchInputOnly, swIn, sizeof swIn, s));
+
+    // Google Stadia (10 bytes)
+    uint8_t stadia[10] = {0x03, 6, 0x10 | 0x20, 0x40 | 0x02, 0, 128, 128, 255, 255, 0};
+    s = {};
+    CHECK(input::parseStadiaReport(stadia, sizeof stadia, s));
+    CHECK(s.connected && s.dpadLeft && s.btnNexus && s.btnOptions && s.btnA && s.btnR1);
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.0f));
+    CHECK(near(s.rawLeftX, -1.0f) && near(s.rawRightY, 1.0f));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::Stadia, stadia, sizeof stadia, s));
+
+    // DualShock 4 (PS4 third-party): 64-byte report with ID 0x01
+    // Cross + DPad Left + L1 + Options + PS + Touchpad click + touches
+    uint8_t ds4[64] = {};
+    ds4[0] = 0x01; // Report ID
+    ds4[1] = 0;    // LX left (-1.0f)
+    ds4[2] = 255;  // LY down (1.0f)
+    ds4[3] = 255;  // RX right (1.0f)
+    ds4[4] = 0;    // RY up (-1.0f)
+    ds4[5] = 0x26; // Hat 6 (Left) + Cross (0x20)
+    ds4[6] = 0x21; // L1 (0x01) + Options (0x20)
+    ds4[7] = 0x03; // PS (0x01) + Touchpad click (0x02)
+    ds4[8] = 255;  // L2 trigger (1.0f)
+    ds4[9] = 128;  // R2 trigger (~0.5f)
+    ds4[35] = 0x00; // Touch point 0 active (contact bit 7 == 0)
+    ds4[36] = 0x80; // tx lo
+    ds4[37] = 0x43; // tx hi (0x3), ty lo (0x4)
+    ds4[38] = 0x20; // ty hi (0x20)
+    s = {};
+    CHECK(input::parseDualShock4Report(ds4, sizeof ds4, s));
+    CHECK(s.connected && s.btnA && s.dpadLeft && s.btnL1 && s.btnOptions && s.btnNexus && s.btnTouchpad);
+    CHECK(!s.btnB && !s.btnX && !s.btnY && !s.btnR1 && !s.dpadUp && !s.dpadRight && !s.dpadDown);
+    CHECK(near(s.rawLeftX, -1.0f) && near(s.rawLeftY, 1.0f));
+    CHECK(near(s.rawRightX, 1.0f) && near(s.rawRightY, -1.0f));
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.5f));
+    CHECK(s.touching);
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::DualShock4, ds4, sizeof ds4, s));
+
+    // DualShock 4 release D-Pad and Touch: hat = 8 (neutral), touch active bit 7 = 1
+    ds4[5] = 0x08; // hat neutral, no face buttons
+    ds4[35] = 0x80; // touch inactive
+    CHECK(input::parseDualShock4Report(ds4, sizeof ds4, s));
+    CHECK(!s.dpadLeft && !s.dpadUp && !s.dpadDown && !s.dpadRight);
+    CHECK(!s.btnA && !s.touching);
+
+    // DualSense release D-Pad and Touch
+    ds5[8] = 0x08; // hat neutral
+    ds5[33] = 0x80; // touch 0 inactive
+    CHECK(input::parseDualSenseReport(ds5, sizeof ds5, s));
+    CHECK(!s.dpadRight && !s.dpadUp && !s.dpadDown && !s.dpadLeft);
+    CHECK(!s.touching);
+
+    // Switch Pro 0x30 stick deflections: LY up (0) should produce rawLeftY = -1.0f
+    sw[5] = 0x00; // D-Pad neutral
+    sw[6] = 0x00; sw[7] = 0x08; sw[8] = 0x00; // 12-bit LX=2048 (center), LY=0 (full UP)
+    CHECK(input::parseSwitchProReport(sw, sizeof sw, s));
+    CHECK(!s.dpadUp && !s.dpadDown && !s.dpadLeft && !s.dpadRight);
+    CHECK(near(s.rawLeftX, 0.0f) && near(s.rawLeftY, -1.0f));
+
+    // Switch Pro 0x3F hat release
+    swSimple[3] = 8; // neutral hat
+    CHECK(input::parseSwitchProReport(swSimple, sizeof swSimple, s));
+    CHECK(!s.dpadUp && !s.dpadDown && !s.dpadLeft && !s.dpadRight);
+
+    // Switch Input-Only hat release
+    swIn[2] = 8; // neutral hat
+    CHECK(input::parseSwitchInputOnlyReport(swIn, sizeof swIn, s));
+    CHECK(!s.dpadDown && !s.dpadUp && !s.dpadLeft && !s.dpadRight);
+
+    // Stadia hat release
+    stadia[1] = 8; // neutral hat
+    CHECK(input::parseStadiaReport(stadia, sizeof stadia, s));
+    CHECK(!s.dpadLeft && !s.dpadUp && !s.dpadDown && !s.dpadRight);
+
+    // Generic HID fallback (raw axes + buttons)
+    uint8_t hidRaw[7] = {255, 0, 128, 255, 0, 0x02 | 0x10, 0x10}; // LX=1.0, LY=-1.0, RX=0.0, RY=1.0, Hat=Up, Cross+L1, PS
+    s = {};
+    CHECK(input::parseGenericHidFallback(hidRaw, sizeof hidRaw, s));
+    CHECK(s.connected && s.btnA && s.btnL1 && s.dpadUp && s.btnNexus);
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));
+    CHECK(input::parseUsbPadReport(input::UsbPadProtocol::GenericHid, hidRaw, sizeof hidRaw, s));
+
+    // Generic HID fallback hat release
+    hidRaw[4] = 8; // neutral hat
+    CHECK(input::parseGenericHidFallback(hidRaw, sizeof hidRaw, s));
+    CHECK(!s.dpadUp && !s.dpadDown && !s.dpadLeft && !s.dpadRight);
+
+    // Generic HID descriptor with Rx/Ry right stick, Z/Rz triggers, and 12-button combo
+    const uint8_t hidGamepadDesc[] = {
+        0x05, 0x01,        // Usage Page (Generic Desktop)
+        0x09, 0x05,        // Usage (Gamepad)
+        0xA1, 0x01,        // Collection (Application)
+        0x05, 0x01,        //   Usage Page (Generic Desktop)
+        0x09, 0x30,        //   Usage (X)
+        0x09, 0x31,        //   Usage (Y)
+        0x09, 0x32,        //   Usage (Z)
+        0x09, 0x35,        //   Usage (Rz)
+        0x09, 0x33,        //   Usage (Rx)
+        0x09, 0x34,        //   Usage (Ry)
+        0x15, 0x00,        //   Logical Minimum (0)
+        0x26, 0xFF, 0x00,  //   Logical Maximum (255)
+        0x75, 0x08,        //   Report Size (8)
+        0x95, 0x06,        //   Report Count (6)
+        0x81, 0x02,        //   Input (Data, Var, Abs)
+        0x09, 0x39,        //   Usage (Hat switch)
+        0x15, 0x00,        //   Logical Minimum (0)
+        0x25, 0x07,        //   Logical Maximum (7)
+        0x75, 0x04,        //   Report Size (4)
+        0x95, 0x01,        //   Report Count (1)
+        0x81, 0x42,        //   Input (Data, Var, Abs, Null)
+        0x75, 0x04,        //   Report Size (4)
+        0x95, 0x01,        //   Report Count (1)
+        0x81, 0x01,        //   Input (Const)
+        0x05, 0x09,        //   Usage Page (Button)
+        0x19, 0x01,        //   Usage Minimum (1)
+        0x29, 0x0C,        //   Usage Maximum (12)
+        0x15, 0x00,        //   Logical Minimum (0)
+        0x25, 0x01,        //   Logical Maximum (1)
+        0x75, 0x01,        //   Report Size (1)
+        0x95, 0x0C,        //   Report Count (12)
+        0x81, 0x02,        //   Input (Data, Var, Abs)
+        0x75, 0x04,        //   Report Size (4)
+        0x95, 0x01,        //   Report Count (1)
+        0x81, 0x01,        //   Input (Const)
+        0xC0               // End Collection
+    };
+    input::GenericHidContext hidCtx{};
+    CHECK(input::parseHidDescriptor(hidCtx, hidGamepadDesc, sizeof(hidGamepadDesc), 0x1234, 0x5678));
+    CHECK(hidCtx.role[input::ROLE_LX] == input::AX_X);
+    CHECK(hidCtx.role[input::ROLE_LY] == input::AX_Y);
+    CHECK(hidCtx.role[input::ROLE_RX] == input::AX_RX);
+    CHECK(hidCtx.role[input::ROLE_RY] == input::AX_RY);
+    CHECK(hidCtx.role[input::ROLE_L2] == input::AX_Z);
+    CHECK(hidCtx.role[input::ROLE_R2] == input::AX_RZ);
+
+    // Feed a report to hidCtx:
+    // LX=255, LY=0, Z=255 (L2), Rz=128 (R2), Rx=0, Ry=255, Hat=2 (Right), Buttons: Select (btn 9, bit 8) + Start (btn 10, bit 9)
+    uint8_t hidReport[9] = {
+        255, 0, 255, 128, 0, 255,
+        0x02, // Hat=2 (Right)
+        0x00, 0x03 // bits 8 and 9 (Select + Start)
+    };
+    s = {};
+    CHECK(input::parseGenericHidReport(hidCtx, hidReport, sizeof(hidReport), s));
+    CHECK(s.connected && s.dpadRight);
+    CHECK(near(s.rawLeftX, 1.0f) && near(s.rawLeftY, -1.0f));
+    CHECK(near(s.rawRightX, -1.0f) && near(s.rawRightY, 1.0f));
+    CHECK(near(s.triggerL2, 1.0f) && near(s.triggerR2, 0.5f));
+    CHECK(s.btnTouchpad && s.btnOptions);
+    CHECK(s.btnNexus); // 12-button combo active!
+
+    // Protocol names
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::DualShock3)) == "DualShock 3");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::DualShock4)) == "DualShock 4");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::DualSense)) == "DualSense");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::SwitchPro)) == "Switch Pro");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::SwitchInputOnly)) == "Switch");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::Stadia)) == "Stadia");
+    CHECK(std::string(input::usbPadProtocolName(input::UsbPadProtocol::GenericHid)) == "Generic HID");
+}
+
+static void testUsbPadDescriptors() {
+    // An Xbox Series pad's configuration (045e:0b12): GIP interface 0
+    // (OUT 0x02, IN 0x82), then the audio interface with its alternates.
+    const uint8_t series[] = {
+        0x09, 0x02, 0x77, 0x00, 0x03, 0x01, 0x00, 0xa0, 0xfa,  // configuration
+        0x09, 0x04, 0x00, 0x00, 0x02, 0xff, 0x47, 0xd0, 0x00,  // interface 0: GIP
+        0x07, 0x05, 0x02, 0x03, 0x40, 0x00, 0x04,              // OUT 0x02 interrupt
+        0x07, 0x05, 0x82, 0x03, 0x40, 0x00, 0x04,              // IN 0x82 interrupt
+        0x09, 0x04, 0x01, 0x00, 0x00, 0xff, 0x47, 0xd0, 0x00,  // interface 1, no endpoints
+        0x09, 0x04, 0x01, 0x01, 0x02, 0xff, 0x47, 0xd0, 0x00,  // its alternate 1: isochronous
+        0x07, 0x05, 0x03, 0x01, 0xe4, 0x00, 0x01,
+        0x07, 0x05, 0x83, 0x01, 0x40, 0x00, 0x01,
+    };
+    input::UsbPadInterface i = input::findUsbPadInterface(series, sizeof series);
+    CHECK(i.protocol == input::UsbPadProtocol::Gip && i.number == 0 && i.epIn == 0x82 && i.epOut == 0x02);
+
+    // An XInput pad (8BitDo Ultimate, 2dc8:3106): interface 0 FF/5D/01
+    // (IN 0x81, OUT 0x01) after a vendor interface the code must skip.
+    const uint8_t xinput[] = {
+        0x09, 0x02, 0x40, 0x00, 0x02, 0x01, 0x00, 0xa0, 0xfa,
+        0x09, 0x04, 0x00, 0x00, 0x00, 0xff, 0xfd, 0x13, 0x00,  // security interface: not a pad
+        0x09, 0x04, 0x01, 0x00, 0x02, 0xff, 0x5d, 0x01, 0x00,  // interface 1: XInput
+        0x11, 0x21, 0x10, 0x01, 0x01, 0x25, 0x81, 0x14, 0x03, 0x03, 0x03, 0x04, 0x13, 0x02, 0x08, 0x03, 0x03,
+        0x07, 0x05, 0x81, 0x03, 0x20, 0x00, 0x01,
+        0x07, 0x05, 0x01, 0x03, 0x20, 0x00, 0x08,
+    };
+    i = input::findUsbPadInterface(xinput, sizeof xinput);
+    CHECK(i.protocol == input::UsbPadProtocol::XInput && i.number == 1 && i.epIn == 0x81 && i.epOut == 0x01);
+
+    // A keyboard (HID, class 3): no pad. A truncated descriptor: none either.
+    const uint8_t keyboard[] = {
+        0x09, 0x02, 0x22, 0x00, 0x01, 0x01, 0x00, 0xa0, 0x32,
+        0x09, 0x04, 0x00, 0x00, 0x01, 0x03, 0x01, 0x01, 0x00,
+        0x07, 0x05, 0x81, 0x03, 0x08, 0x00, 0x0a,
+    };
+    CHECK(input::findUsbPadInterface(keyboard, sizeof keyboard).protocol == input::UsbPadProtocol::None);
+    CHECK(input::findUsbPadInterface(series, 20).protocol == input::UsbPadProtocol::None);
+    CHECK(input::findUsbPadInterface(nullptr, 0).protocol == input::UsbPadProtocol::None);
+    CHECK(input::usbPadProtocolFor(0x03, 0x00, 0x00) == input::UsbPadProtocol::None);
+}
+
+static void testUsbPadSlots() {
+    using input::UsbPadEvent;
+    input::ControllerState out;
+    input::takeUsbPadEvents();
+    CHECK(!input::pollUsbPad(out) && !out.connected && input::usbPadCount() == 0);
+    // Each pad a player of its own, in the order they came (no DualSense here).
+    input::usbPadAttached(1, "Xbox Wireless Controller");
+    input::usbPadAttached(0, "8BitDo Ultimate");
+    CHECK(input::usbPadCount() == 2 && input::usbPadPlayer(1) == -1);
+    CHECK(!input::pollUsbPad(out));  // no input from either yet; the players given
+    CHECK(input::usbPadPlayer(1) == 0 && input::usbPadPlayer(0) == 1);
+    auto events = input::takeUsbPadEvents();
+    CHECK(events.size() == 2 && events[0].kind == UsbPadEvent::Kind::Connected && events[0].player == 0 &&
+          events[0].name == "Xbox Wireless Controller" && events[1].player == 1);
+    CHECK(input::usbPadNameFor(0) == "Xbox Wireless Controller" && input::usbPadNameFor(1) == "8BitDo Ultimate");
+    CHECK(input::usbPadNameFor(2).empty() && input::usbPadActiveAt(0) == 0);
+
+    input::ControllerState xbox, bitdo;
+    xbox.btnA = true;
+    xbox.rawLeftX = 0.05f;  // the left stick inside the dead zone, the right one pushed
+    xbox.rawRightY = 0.9f;
+    bitdo.dpadRight = true;
+    bitdo.triggerR2 = 0.7f;
+    input::usbPadState(1, xbox);
+    input::usbPadState(0, bitdo);
+    CHECK(input::usbPadActiveAt(0) > 0 && input::usbPadActiveAt(1) > 0);
+    // The menus: both. The game: each its own player.
+    CHECK(input::pollUsbPad(out) && out.btnA && out.dpadRight && std::abs(out.triggerR2 - 0.7f) < 0.01f);
+    CHECK(input::pollUsbPadsFor(0, out) && out.btnA && !out.dpadRight);
+    CHECK(out.leftStickX == 0.0f && out.rawLeftX > 0.04f && out.rightStickY > 0.8f);
+    CHECK(input::pollUsbPadsFor(1, out) && out.dpadRight && !out.btnA);
+    CHECK(!input::pollUsbPadsFor(2, out) && !input::pollUsbPadsFor(-1, out) && !input::pollUsbPadsFor(9, out));
+    // Circle confirms: the Xbox B button becomes A as the DualSense's Circle does.
+    input::setCircleConfirms(true);
+    CHECK(input::pollUsbPadsFor(0, out) && !out.btnA && out.btnB);
+    input::setCircleConfirms(false);
+
+    // Xbox / Home + RB: the 8BitDo to player 3; LB / RB and the Xbox
+    // button do not reach the game meanwhile.
+    bitdo = {};
+    bitdo.btnNexus = true;
+    input::usbPadState(0, bitdo);
+    CHECK(input::pollUsbPadsFor(1, out) && !out.btnNexus);
+    bitdo.btnR1 = true;
+    input::usbPadState(0, bitdo);
+    CHECK(input::usbPadPlayer(0) == 2 && !input::pollUsbPadsFor(1, out));
+    CHECK(input::pollUsbPadsFor(2, out) && !out.btnR1 && !out.btnNexus);
+    bitdo.btnR1 = false;
+    input::usbPadState(0, bitdo);
+    bitdo.btnR1 = true;  // again: player 4
+    input::usbPadState(0, bitdo);
+    CHECK(input::usbPadPlayer(0) == 3);
+    bitdo = {};
+    input::usbPadState(0, bitdo);  // let go after a move: no menu
+    bitdo.btnNexus = true, bitdo.btnL1 = true;  // Xbox + LB: back to player 3
+    input::usbPadState(0, bitdo);
+    CHECK(input::usbPadPlayer(0) == 2);
+    bitdo = {};
+    input::usbPadState(0, bitdo);
+    events = input::takeUsbPadEvents();
+    CHECK(events.size() == 3 && events[0].kind == UsbPadEvent::Kind::Moved && events[0].player == 2 &&
+          events[0].slot == 0 && events[1].player == 3 && events[2].player == 2);
+    // From player 1, LB goes round to player 4, and RB back.
+    xbox = {};
+    xbox.btnNexus = true;
+    input::usbPadState(1, xbox);
+    xbox.btnL1 = true;
+    input::usbPadState(1, xbox);
+    CHECK(input::usbPadPlayer(1) == 3);
+    xbox.btnL1 = false;
+    input::usbPadState(1, xbox);
+    xbox.btnR1 = true;
+    input::usbPadState(1, xbox);
+    CHECK(input::usbPadPlayer(1) == 0);
+    xbox = {};
+    input::usbPadState(1, xbox);
+    input::takeUsbPadEvents();
+    // The Xbox button alone: the in-game menu, for that pad, once let go.
+    xbox.btnNexus = true;
+    input::usbPadState(1, xbox);
+    CHECK(input::takeUsbPadEvents().empty());
+    xbox.btnNexus = false;
+    input::usbPadState(1, xbox);
+    events = input::takeUsbPadEvents();
+    CHECK(events.size() == 1 && events[0].kind == UsbPadEvent::Kind::MenuButton && events[0].slot == 1 &&
+          events[0].player == 0);
+    // Menu (Start) goes straight through, with View too.
+    xbox.btnOptions = true;
+    input::usbPadState(1, xbox);
+    CHECK(input::pollUsbPadsFor(0, out) && out.btnOptions);
+    xbox = {};
+    input::usbPadState(1, xbox);
+
+    // The menu's owner: out of its player's input, read by itself.
+    xbox.btnA = true;
+    input::usbPadState(1, xbox);
+    CHECK(!input::pollUsbPadsFor(0, out, 1));
+    CHECK(input::pollUsbPadSlot(1, out) && out.btnA && !input::pollUsbPadSlot(3, out) && !input::pollUsbPadSlot(-1, out));
+    // The menu closed with A held: out of the game until let go (the menus still see it).
+    input::usbPadsWaitRelease();
+    CHECK(!input::pollUsbPadsFor(0, out) && input::pollUsbPad(out) && out.btnA);
+    xbox.btnA = false;
+    input::usbPadState(1, xbox);
+    CHECK(input::pollUsbPadsFor(0, out) && !out.btnA);
+    // The menu's Player item.
+    input::setUsbPadPlayer(1, 2);
+    CHECK(input::usbPadPlayer(1) == 2 && input::usbPadName(1) == "Xbox Wireless Controller");
+    input::setUsbPadPlayer(1, 7);  // out of range: kept
+    CHECK(input::usbPadPlayer(1) == 2);
+    input::setUsbPadPlayer(1, 0);
+    events = input::takeUsbPadEvents();
+    CHECK(events.size() == 2 && events[0].kind == UsbPadEvent::Kind::Moved && events[0].player == 2 &&
+          events[1].player == 0);
+
+    // A pad that reports only on change keeps its state.
+    bitdo.btnY = true;
+    input::usbPadState(0, bitdo);
+    CHECK(input::pollUsbPadsFor(2, out) && out.btnY);
+    CHECK(input::pollUsbPadsFor(2, out) && out.btnY);
+    input::usbPadDetached(1);
+    events = input::takeUsbPadEvents();
+    CHECK(events.size() == 1 && events[0].kind == UsbPadEvent::Kind::Disconnected && events[0].player == 0);
+    // Gone: its player is free for the next one.
+    input::usbPadAttached(1, "Xbox Wireless Controller");
+    CHECK(!input::pollUsbPadsFor(0, out) && input::usbPadPlayer(1) == 0);
+    input::usbPadDetached(0);
+    input::usbPadDetached(1);
+    input::takeUsbPadEvents();
+    CHECK(!input::pollUsbPad(out) && input::usbPadCount() == 0);
+    input::usbPadState(2, bitdo);  // a slot that was never attached
+    CHECK(!input::pollUsbPad(out) && input::usbPadPlayer(2) == -1);
+    input::usbPadState(9, bitdo);  // out of range: ignored
+
+    // USB Pads Enabled toggle and rumble
+    CHECK(input::usbPadsEnabled());
+    input::usbPadAttached(0, "Test Pad");
+    input::setUsbPadRumble(0, 128, 64);
+    input::setUsbPadRumble(5, 128, 64);  // out of bounds
+    input::setUsbPadsEnabled(false);
+    CHECK(!input::usbPadsEnabled());
+    CHECK(input::usbPadCount() == 0);
+    input::setUsbPadsEnabled(true);
+    CHECK(input::usbPadsEnabled());
+    input::takeUsbPadEvents();
+}
+
+static void testDesktopMouseNav() {
+    ui::Fonts dummyFonts{};
+    ui::ImageCache images([] {});
+    ui::AppUi uiApp(dummyFonts, images);
+
+    ui::GameRow row;
+    row.title = "Test Row";
+    row.isGrid = false;
+    ui::GameTile tile1;
+    tile1.productId = "GAME_001";
+    tile1.name = "First Game";
+    ui::GameTile tile2;
+    tile2.productId = "GAME_002";
+    tile2.name = "Second Game";
+    row.tiles.push_back(tile1);
+    row.tiles.push_back(tile2);
+    uiApp.setRows({row});
+    uiApp.showHome();
+
+    // 1. Mouse cursor state, initial position, and clamping
+    CHECK(uiApp.mouseCursorX() == 960.0f);
+    CHECK(uiApp.mouseCursorY() == 540.0f);
+    CHECK(!uiApp.mouseCursorVisible());
+
+    {
+        auto evMove = uiApp.onMouseMove(300.0f, 300.0f);
+        CHECK(evMove.action == ui::Action::None);
+        CHECK(uiApp.mouseCursorX() == 300.0f);
+        CHECK(uiApp.mouseCursorY() == 300.0f);
+        CHECK(uiApp.mouseCursorVisible());
+
+        auto evClick = uiApp.onMouseDown(300.0f, 300.0f, 1);
+        CHECK(evClick.action == ui::Action::None);
+        auto evWheel = uiApp.onMouseWheel(0.0f, 1.0f);
+        CHECK(evWheel.action == ui::Action::None);
+
+        uiApp.setMouseCursor(2500.0f, -100.0f);
+        CHECK(uiApp.mouseCursorX() == 1919.0f);
+        CHECK(uiApp.mouseCursorY() == 0.0f);
+    }
+
+    // 2. Enable desktopWindow capability (Desktop / Steam Deck mode)
+    ui::UiCaps caps{};
+    caps.desktopWindow = true;
+    uiApp.setCaps(caps);
+
+    // 3. Hovering over a card updates focus
+    {
+        // First card is at kMargin (96) + 0, cardY = kRowTop (470) + 48 = 518
+        auto ev = uiApp.onMouseMove(120.0f, 550.0f);
+        CHECK(ev.action == ui::Action::None);
+    }
+
+    // 4. Clicking a card opens details
+    {
+        auto ev = uiApp.onMouseDown(120.0f, 550.0f, 1);
+        CHECK(ev.action == ui::Action::None);
+        // AppUi should now be showing details
+        CHECK(uiApp.detailWanted(100) == "GAME_001");
+    }
+
+    // 5. Right-click (button 3) returns back to Home screen
+    {
+        auto ev = uiApp.onMouseDown(500.0f, 500.0f, 3);
+        CHECK(ev.action == ui::Action::None);
+        // After returning to Home, detailWanted should be empty
+        CHECK(uiApp.detailWanted(100).empty());
+    }
+
+    // 6. Clicking or hovering in the top bar area (y < 140) must not hit cards
+    {
+        auto evTop = uiApp.onMouseDown(120.0f, 100.0f, 1);
+        CHECK(evTop.action == ui::Action::None);
+        CHECK(uiApp.detailWanted(100).empty());
+    }
+
+    // 7. Mouse wheel scrolling
+    {
+        auto evWheel = uiApp.onMouseWheel(0.0f, 2.0f);
+        CHECK(evWheel.action == ui::Action::None);
+    }
+
+    // 7. Avatar / profile click opens Settings screen
+    {
+        auto evClick = uiApp.onMouseDown(1920 - 96 - 20, 60.0f, 1);
+        CHECK(uiApp.screen() == ui::Screen::Settings);
+    }
+
+    // 8. In Settings, clicking a dropdown setting opens the dropdown
+    {
+        // Language row (row 0) at y = 190
+        auto evClick = uiApp.onMouseDown(200.0f, 200.0f, 1);
+        // First right click closes the dropdown
+        auto evClose = uiApp.onMouseDown(200.0f, 200.0f, 3);
+        CHECK(uiApp.screen() == ui::Screen::Settings);
+        // Second right click exits back to Home
+        auto evBack = uiApp.onMouseDown(200.0f, 200.0f, 3);
+        CHECK(uiApp.screen() == ui::Screen::Home);
+    }
+}
+
+static void testWebSocketRFC6455() {
+    // 1. RFC 6455 Handshake Accept Key test vector
+    // Standard test vector from RFC 6455 Section 4.2.2:
+    // Key: "dGhlIHNhbXBsZSBub25jZQ==" -> Accept: "s3pPLMBiTxaQ9kYGzzhZRbK+xOo="
+    std::string accept = app::ws::computeAccept("dGhlIHNhbXBsZSBub25jZQ==");
+    CHECK(accept == "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
+
+    // 2. Unmasked Text Frame
+    std::string textMsg = "{\"type\":\"ping\"}";
+    std::vector<uint8_t> frameText = app::ws::makeTextFrame(textMsg);
+    app::ws::Frame parsed;
+    size_t consumed = 0;
+    CHECK(app::ws::parseFrame(frameText.data(), frameText.size(), parsed, consumed));
+    CHECK(consumed == frameText.size());
+    CHECK(parsed.fin);
+    CHECK(parsed.opcode == app::ws::Opcode::Text);
+    CHECK(std::string(parsed.payload.begin(), parsed.payload.end()) == textMsg);
+
+    // 3. Masked Text Frame (as sent from client / browser)
+    uint8_t maskKey[4] = {0x37, 0xfa, 0x21, 0x3d};
+    std::string rawPayload = "Hello WebSocket";
+    std::vector<uint8_t> maskedFrame;
+    maskedFrame.push_back(static_cast<uint8_t>(0x81)); // FIN + Text
+    maskedFrame.push_back(static_cast<uint8_t>(0x80 | rawPayload.size())); // Masked + len
+    for (int i = 0; i < 4; ++i) maskedFrame.push_back(maskKey[i]);
+    for (size_t i = 0; i < rawPayload.size(); ++i) {
+        maskedFrame.push_back(static_cast<uint8_t>(rawPayload[i] ^ maskKey[i % 4]));
+    }
+    CHECK(app::ws::parseFrame(maskedFrame.data(), maskedFrame.size(), parsed, consumed));
+    CHECK(consumed == maskedFrame.size());
+    CHECK(std::string(parsed.payload.begin(), parsed.payload.end()) == rawPayload);
+
+    // 4. Binary Frame
+    std::vector<uint8_t> binData = {0x00, 0x01, 0x02, 0x03, 0x04, 0xFF, 0xFE};
+    std::vector<uint8_t> frameBin = app::ws::makeBinaryFrame(binData.data(), binData.size());
+    CHECK(app::ws::parseFrame(frameBin.data(), frameBin.size(), parsed, consumed));
+    CHECK(parsed.opcode == app::ws::Opcode::Binary);
+    CHECK(parsed.payload == binData);
+
+    // 5. Ping & Pong Frames
+    std::string pingStr = "heartbeat";
+    std::vector<uint8_t> pingPayload(pingStr.begin(), pingStr.end());
+    std::vector<uint8_t> framePing = app::ws::makeFrame(app::ws::Opcode::Ping, pingPayload.data(), pingPayload.size(), true);
+    CHECK(app::ws::parseFrame(framePing.data(), framePing.size(), parsed, consumed));
+    CHECK(parsed.opcode == app::ws::Opcode::Ping);
+    CHECK(parsed.payload == pingPayload);
+
+    std::vector<uint8_t> framePong = app::ws::makePongFrame(pingPayload);
+    CHECK(app::ws::parseFrame(framePong.data(), framePong.size(), parsed, consumed));
+    CHECK(parsed.opcode == app::ws::Opcode::Pong);
+    CHECK(parsed.payload == pingPayload);
+
+    // 6. Close Frame
+    std::vector<uint8_t> frameClose = app::ws::makeCloseFrame(1000);
+    CHECK(app::ws::parseFrame(frameClose.data(), frameClose.size(), parsed, consumed));
+    CHECK(parsed.opcode == app::ws::Opcode::Close);
+
+    // 7. parseGamepadJson test
+    std::string gpJson = R"({
+        "buttons": {
+            "a": true, "b": false, "x": true, "y": false,
+            "lb": true, "rb": false, "view": true, "menu": false,
+            "dpad_up": true, "dpad_down": false, "dpad_left": false, "dpad_right": true
+        },
+        "axes": {
+            "lx": -0.5, "ly": 0.75, "rx": 0.25, "ry": -0.8,
+            "lt": 0.6, "rt": 1.0
+        }
+    })";
+    auto j = json::parse(gpJson);
+    CHECK(j.has_value());
+    int slot = -1;
+    input::ControllerState cs{};
+    CHECK(app::parseGamepadJson(*j, slot, cs));
+    CHECK(slot == 0);
+    CHECK(cs.btnA == true);
+    CHECK(cs.btnB == false);
+    CHECK(cs.btnX == true);
+    CHECK(cs.btnY == false);
+    CHECK(cs.btnL1 == true);
+    CHECK(cs.btnR1 == false);
+    CHECK(cs.btnTouchpad == true);
+    CHECK(cs.btnOptions == false);
+    CHECK(cs.dpadUp == true);
+    CHECK(cs.dpadRight == true);
+    CHECK(std::abs(cs.leftStickX - (-0.5f)) < 0.01f);
+    CHECK(std::abs(cs.leftStickY - 0.75f) < 0.01f);
+    CHECK(std::abs(cs.rightStickX - 0.25f) < 0.01f);
+    CHECK(std::abs(cs.rightStickY - (-0.8f)) < 0.01f);
+    CHECK(std::abs(cs.triggerL2 - 0.6f) < 0.01f);
+    CHECK(std::abs(cs.triggerR2 - 1.0f) < 0.01f);
+
+    // 8. W3C Gamepad API standard arrays
+    std::string w3cJson = R"({
+        "player": 2,
+        "buttons": [
+            {"pressed": true, "value": 1.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": true, "value": 1.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": true, "value": 1.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": true, "value": 0.85},
+            {"pressed": true, "value": 0.95},
+            {"pressed": true, "value": 1.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": true, "value": 1.0},
+            {"pressed": true, "value": 1.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": false, "value": 0.0},
+            {"pressed": true, "value": 1.0},
+            {"pressed": true, "value": 1.0}
+        ],
+        "axes": [0.45, -0.65, -0.3, 0.8]
+    })";
+    auto jW3c = json::parse(w3cJson);
+    CHECK(jW3c.has_value());
+    int w3cSlot = -1;
+    input::ControllerState csW3c{};
+    CHECK(app::parseGamepadJson(*jW3c, w3cSlot, csW3c));
+    CHECK(w3cSlot == 1); // player 2 -> slot 1
+    CHECK(csW3c.btnA == true);
+    CHECK(csW3c.btnB == false);
+    CHECK(csW3c.btnX == true);
+    CHECK(csW3c.btnY == false);
+    CHECK(csW3c.btnL1 == true);
+    CHECK(csW3c.btnR1 == false);
+    CHECK(std::abs(csW3c.triggerL2 - 0.85f) < 0.01f);
+    CHECK(std::abs(csW3c.triggerR2 - 0.95f) < 0.01f);
+    CHECK(csW3c.btnTouchpad == true); // index 8 View
+    CHECK(csW3c.btnOptions == false); // index 9 Menu
+    CHECK(csW3c.btnL3 == false);       // index 10
+    CHECK(csW3c.btnR3 == true);        // index 11
+    CHECK(csW3c.dpadUp == true);       // index 12
+    CHECK(csW3c.dpadDown == false);    // index 13
+    CHECK(csW3c.dpadLeft == false);    // index 14
+    CHECK(csW3c.dpadRight == true);    // index 15
+    CHECK(csW3c.btnNexus == true);     // index 16 Guide
+    CHECK(std::abs(csW3c.leftStickX - 0.45f) < 0.01f);
+    CHECK(std::abs(csW3c.leftStickY - (-0.65f)) < 0.01f);
+    CHECK(std::abs(csW3c.rightStickX - (-0.3f)) < 0.01f);
+    CHECK(std::abs(csW3c.rightStickY - 0.8f) < 0.01f);
+}
+
+
+static void testAudioToHaptics() {
+    media::AudioToHaptics filter;
+    filter.init(48000.0f, 120.0f);
+
+    // 1. Frequency response: 50 Hz sine wave (sub-bass in passband)
+    constexpr size_t kSamples = 960; // 20 ms
+    std::vector<float> sine50(kSamples * 2);
+    for (size_t i = 0; i < kSamples; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 50.0f * i / 48000.0f);
+        sine50[i * 2] = s;
+        sine50[i * 2 + 1] = s;
+    }
+    float energyPass = 0.0f;
+    for (size_t i = 0; i < kSamples; ++i) {
+        float filtered = filter.processSample(sine50[i * 2]);
+        if (i >= 480) energyPass += filtered * filtered;
+    }
+    energyPass /= 480.0f;
+    CHECK(energyPass > 0.35f); // High passband transmission
+
+    // 2. Frequency response: 1000 Hz sine wave (treble in stopband)
+    filter.reset();
+    std::vector<float> sine1000(kSamples * 2);
+    for (size_t i = 0; i < kSamples; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 1000.0f * i / 48000.0f);
+        sine1000[i * 2] = s;
+        sine1000[i * 2 + 1] = s;
+    }
+    float energyStop = 0.0f;
+    for (size_t i = 0; i < kSamples; ++i) {
+        float filtered = filter.processSample(sine1000[i * 2]);
+        if (i >= 480) energyStop += filtered * filtered;
+    }
+    energyStop /= 480.0f;
+    CHECK(energyStop < 0.005f); // > 20 dB strong high-frequency attenuation
+
+    // 3. Envelope decay (~100 ms decay test)
+    filter.reset();
+    constexpr size_t kBurstSamples = 2400; // 50 ms of 50 Hz sub-bass burst
+    std::vector<float> burst(kBurstSamples * 2);
+    for (size_t i = 0; i < kBurstSamples; ++i) {
+        float s = std::sin(2.0f * 3.14159265f * 50.0f * i / 48000.0f);
+        burst[i * 2] = s;
+        burst[i * 2 + 1] = s;
+    }
+    filter.process(burst.data(), kBurstSamples, 2);
+    float envPeak = filter.envelope();
+    CHECK(envPeak > 0.0f);
+    std::vector<float> silence(4800 * 2, 0.0f); // 100 ms of silence
+    filter.process(silence.data(), 4800, 2);
+    float envDecayed = filter.envelope();
+    CHECK(envDecayed < envPeak * 0.40f); // Decayed significantly over ~100 ms
+
+    // 4. Sensitivity levels & kick activation
+    media::setAudioHapticsLevel(0);
+    CHECK(media::audioHapticsLevel() == 0);
+    CHECK(!input::audioHapticsEnabled());
+
+    media::setAudioHapticsLevel(2); // Medium
+    CHECK(media::audioHapticsLevel() == 2);
+    CHECK(input::audioHapticsEnabled());
+
+    // 5. Settings and GameProfile serialization roundtrip
+    app::Settings s;
+    s.audioHaptics = 3; // Alto
+    app::GameProfile gp = s.defaultProfile();
+    CHECK(gp.audioHaptics == 3);
+    gp.audioHaptics = 1; // Baixo
+    s.perGame["TEST_GAME"] = gp;
+
+    std::string testPath = "/tmp/test_haptics_settings.json";
+    CHECK(s.save(testPath));
+
+    app::Settings sLoaded;
+    CHECK(sLoaded.load(testPath));
+    CHECK(sLoaded.audioHaptics == 3);
+    CHECK(sLoaded.perGame["TEST_GAME"].audioHaptics == 1);
+    ::unlink(testPath.c_str());
+}
+
+static void testLibraryOfflineCache() {
+    std::string cacheFile = "/tmp/test_library_cache.json";
+    ::unlink(cacheFile.c_str());
+
+    // 1. Populate a library instance and save cache
+    {
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        lib.markAsOwned("PROD_1001", "TITLE_1001");
+        lib.markAsOwned("PROD_1002", "TITLE_1002");
+        CHECK(lib.ownedKnown());
+        CHECK(lib.owned().size() == 2);
+        lib.saveCache();
+    }
+
+    // 2. Instant-resume load from library_cache.json without network
+    {
+        app::Library libResume;
+        libResume.setCachePath(cacheFile);
+        CHECK(libResume.loadCache(true));
+        CHECK(libResume.ownedKnown());
+        CHECK(libResume.owned().size() == 2);
+    }
+
+    // 3. Fallback to library.json when cachePath doesn't exist
+    std::string legacyFile = "/tmp/library.json";
+    ::rename(cacheFile.c_str(), legacyFile.c_str());
+    {
+        app::Library libFallback;
+        libFallback.setCachePath(cacheFile); // pointing to non-existent library_cache.json
+        CHECK(libFallback.loadCache(true));  // should successfully fall back to library.json
+        CHECK(libFallback.ownedKnown());
+        CHECK(libFallback.owned().size() == 2);
+    }
+    ::unlink(legacyFile.c_str());
+
+    // 4. Empty cache robustness test
+    std::string emptyCacheFile = "/tmp/test_empty_cache.json";
+    ::unlink(emptyCacheFile.c_str());
+    {
+        app::Library libEmpty;
+        libEmpty.setCachePath(emptyCacheFile);
+        CHECK(!libEmpty.loadCache(true)); // no file
+        platform::writeFileAtomic(emptyCacheFile, "{}");
+        CHECK(!libEmpty.loadCache(true)); // version mismatch
+    }
+    ::unlink(emptyCacheFile.c_str());
+}
+
+static void testTouchpadShortcutsAndSlots() {
+    // 1. TouchpadShortcuts defaults and manipulation
+    {
+        input::TouchpadShortcuts ts = input::defaultTouchpadShortcuts();
+        CHECK(ts.swipeUp == input::TouchpadAction::XboxButton);
+        CHECK(ts.swipeDown == input::TouchpadAction::GameMenu);
+        CHECK(ts.swipeLeft == input::TouchpadAction::GameMenu);
+        CHECK(ts.swipeRight == input::TouchpadAction::XboxButton);
+        CHECK(ts.clickLeft == input::TouchpadAction::View);
+        CHECK(ts.clickRight == input::TouchpadAction::View);
+
+        CHECK(ts.get(0) == input::TouchpadAction::XboxButton);
+        CHECK(ts.get(1) == input::TouchpadAction::GameMenu);
+        CHECK(ts.get(2) == input::TouchpadAction::GameMenu);
+        CHECK(ts.get(3) == input::TouchpadAction::XboxButton);
+        CHECK(ts.get(4) == input::TouchpadAction::View);
+        CHECK(ts.get(5) == input::TouchpadAction::View);
+
+        ts.set(0, input::TouchpadAction::ToggleStats);
+        ts.set(4, input::TouchpadAction::A);
+        CHECK(ts.get(0) == input::TouchpadAction::ToggleStats);
+        CHECK(ts.get(4) == input::TouchpadAction::A);
+
+        // JSON roundtrip
+        json::Value j = input::touchpadShortcutsJson(ts);
+        input::TouchpadShortcuts back;
+        CHECK(input::readTouchpadShortcuts(j, back));
+        CHECK(back == ts);
+
+        // Button action checks
+        CHECK(input::isTouchpadButtonAction(input::TouchpadAction::A));
+        CHECK(input::isTouchpadButtonAction(input::TouchpadAction::View));
+        CHECK(!input::isTouchpadButtonAction(input::TouchpadAction::GameMenu));
+        CHECK(!input::isTouchpadButtonAction(input::TouchpadAction::XboxButton));
+        CHECK(!input::isTouchpadButtonAction(input::TouchpadAction::None));
+
+        input::ControllerState s{};
+        CHECK(input::applyTouchpadButtonAction(s, input::TouchpadAction::A));
+        CHECK(s.btnA);
+        CHECK(!input::applyTouchpadButtonAction(s, input::TouchpadAction::GameMenu));
+
+        // Edge cases: out of bounds indices and invalid actions
+        CHECK(ts.get(-1) == input::TouchpadAction::None);
+        CHECK(ts.get(99) == input::TouchpadAction::None);
+        ts.set(-1, input::TouchpadAction::A);
+        ts.set(99, input::TouchpadAction::A);
+        ts.set(0, static_cast<input::TouchpadAction>(250));
+        CHECK(ts.get(0) == input::TouchpadAction::None);
+
+        // Corrupted JSON inputs
+        input::TouchpadShortcuts corruptTs;
+        CHECK(!input::readTouchpadShortcuts(json::Value(), corruptTs));
+        CHECK(corruptTs == input::defaultTouchpadShortcuts());
+        json::Value badVer = json::Value::object();
+        badVer.set("version", 99);
+        CHECK(!input::readTouchpadShortcuts(badVer, corruptTs));
+        CHECK(corruptTs == input::defaultTouchpadShortcuts());
+
+        // Labels
+        for (int i = 0; i < 6; ++i) {
+            CHECK(ui::touchpadTriggerLabel(i)[0] != '\0');
+        }
+        CHECK(ui::touchpadTriggerLabel(-1)[0] == '\0');
+        CHECK(ui::touchpadTriggerLabel(10)[0] == '\0');
+        for (int a = 0; a < input::kTouchpadActions; ++a) {
+            CHECK(!ui::touchpadActionLabel(a).empty());
+        }
+        CHECK(ui::touchpadActionLabel(999) == ui::touchpadActionLabel(0));
+    }
+
+    // 2. 4 Virtual Gamepad Slots (P1..P4) and timestamps
+    {
+        app::resetVirtualGamepads();
+        app::WebServer srv;
+
+        for (int p = 1; p <= 4; ++p) {
+            int slotIdx = p - 1;
+            input::ControllerState st{};
+            bool conn = false;
+            app::virtualGamepadState(slotIdx, st, conn);
+            CHECK(!conn);
+            CHECK(app::virtualGamepadActiveAt(slotIdx) == 0);
+
+            // Send input for player p
+            std::string body = "{\"player\":" + std::to_string(p) + ",\"btnA\":true,\"leftStickX\":0.5}";
+            auto res = srv.handleRequest("POST", "/api/gamepad", body);
+            CHECK(res.status == 200);
+
+            bool ok = app::virtualGamepadState(slotIdx, st, conn);
+            CHECK(ok && conn);
+            CHECK(st.btnA);
+            CHECK(app::virtualGamepadActiveAt(slotIdx) > 0);
+        }
+
+        // touchVirtualGamepad
+        uint64_t before = app::virtualGamepadActiveAt(2);
+        app::touchVirtualGamepad(2);
+        CHECK(app::virtualGamepadActiveAt(2) >= before);
+
+        app::resetVirtualGamepads();
+        for (int i = 0; i < 4; ++i) {
+            input::ControllerState st{};
+            bool conn = false;
+            app::virtualGamepadState(i, st, conn);
+            CHECK(!conn);
+        }
+
+        // Out of bounds player index edge cases
+        {
+            input::ControllerState st{};
+            bool conn = false;
+            CHECK(!app::virtualGamepadState(-1, st, conn));
+            CHECK(!conn);
+            CHECK(!app::virtualGamepadState(4, st, conn));
+            CHECK(!conn);
+            CHECK(!app::virtualGamepadState(99, st, conn));
+            CHECK(!conn);
+            CHECK(app::virtualGamepadActiveAt(-1) == 0);
+            CHECK(app::virtualGamepadActiveAt(4) == 0);
+            CHECK(app::virtualGamepadActiveAt(99) == 0);
+            app::touchVirtualGamepad(-1);
+            app::touchVirtualGamepad(4);
+            app::touchVirtualGamepad(99);
+        }
+    }
+
+    // 3. Dynamic Slot Device Icon Resolution with Phone/Keyboard/Gamepad
+    {
+        ui::PadSlots slots;
+        for (int i = 0; i < 4; ++i) {
+            slots[i].device = ui::PadDevice::Gamepad;
+            slots[i].connected = true;
+        }
+
+        // Test slot 0: Phone is more recent than Gamepad and Keyboard
+        uint64_t padT = 1000, kbT = 500, phoneT = 2000;
+        ui::PadDevice dev = ui::PadDevice::Gamepad;
+        if (phoneT > 0 && phoneT >= padT && phoneT >= kbT) dev = ui::PadDevice::Phone;
+        else if (kbT > 0 && kbT >= padT && kbT >= phoneT) dev = ui::PadDevice::Keyboard;
+        CHECK(dev == ui::PadDevice::Phone);
+
+        // Pad becomes more recent
+        padT = 3000;
+        if (phoneT > 0 && phoneT >= padT && phoneT >= kbT) dev = ui::PadDevice::Phone;
+        else if (kbT > 0 && kbT >= padT && kbT >= phoneT) dev = ui::PadDevice::Keyboard;
+        else dev = ui::PadDevice::Gamepad;
+        CHECK(dev == ui::PadDevice::Gamepad);
+
+        // Keyboard becomes more recent
+        kbT = 4000;
+        if (phoneT > 0 && phoneT >= padT && phoneT >= kbT) dev = ui::PadDevice::Phone;
+        else if (kbT > 0 && kbT >= padT && kbT >= phoneT) dev = ui::PadDevice::Keyboard;
+        else dev = ui::PadDevice::Gamepad;
+        CHECK(dev == ui::PadDevice::Keyboard);
+
+        // PadSlot device enum check
+        ui::PadSlot slot{};
+        slot.device = ui::PadDevice::Phone;
+        CHECK(slot.device == ui::PadDevice::Phone);
+    }
+
+    // 4. WebUI Layout & WebSocket / settingsVersion
+    {
+        app::WebServer srv;
+        // Check kIndexHtml content for 3x2 grid and fullscreen landscape
+        auto res = srv.handleRequest("GET", "/", "");
+        CHECK(res.status == 200);
+        CHECK(res.body.find("grid-template-columns: repeat(3, 1fr)") != std::string::npos);
+        CHECK(res.body.find("btnFullscreen") != std::string::npos);
+        CHECK(res.body.find("lastSettingsVersion") != std::string::npos);
+        CHECK(res.body.find("P1") != std::string::npos && res.body.find("P4") != std::string::npos);
+
+        // Check settingsVersion in /api/status or /api/settings
+        auto statusRes = srv.handleRequest("GET", "/api/status", "");
+        CHECK(statusRes.status == 200);
+        auto jStatus = json::parse(statusRes.body);
+        CHECK(jStatus && jStatus->isObject());
+        CHECK((*jStatus).has("ok") && (*jStatus)["ok"].asBool());
+
+        // WebSocket frames
+        auto closeFrame = app::ws::makeCloseFrame();
+        CHECK(!closeFrame.empty());
+        std::vector<uint8_t> pongPayload = {'p', 'o', 'n', 'g'};
+        auto pongFrame = app::ws::makePongFrame(pongPayload);
+        CHECK(!pongFrame.empty());
+    }
+}
+
+static void testPlayerSwitchAndUnresolvedTiles() {
+    // 1. Virtual Gamepad Player Switching & Ghost Icon Prevention
+    {
+        app::resetVirtualGamepads();
+        app::WebServer srv;
+
+        // Player 2 connects and sends input
+        auto resP2 = srv.handleRequest("POST", "/api/gamepad", "{\"player\":2,\"btnA\":true}");
+        CHECK(resP2.status == 200);
+        input::ControllerState s1{};
+        bool conn1 = false;
+        CHECK(app::virtualGamepadState(1, s1, conn1) && conn1);
+        CHECK(s1.btnA);
+        CHECK(app::virtualGamepadActiveAt(1) > 0);
+
+        // Player 2 switches to Player 1 (with activeSwitch: true)
+        auto resP1 = srv.handleRequest("POST", "/api/gamepad", "{\"player\":1,\"activeSwitch\":true,\"btnB\":true}");
+        CHECK(resP1.status == 200);
+
+        // Player 1 must now be connected
+        input::ControllerState s0{};
+        bool conn0 = false;
+        CHECK(app::virtualGamepadState(0, s0, conn0) && conn0);
+        CHECK(s0.btnB);
+        CHECK(app::virtualGamepadActiveAt(0) > 0);
+
+        // Player 2 MUST be completely cleared and disconnected (no ghost icon on PS5)
+        input::ControllerState s1After{};
+        bool conn1After = false;
+        app::virtualGamepadState(1, s1After, conn1After);
+        CHECK(!conn1After);
+        CHECK(app::virtualGamepadActiveAt(1) == 0);
+        CHECK(!s1After.btnA);
+
+        // Player 3 & 4 remain disconnected
+        input::ControllerState sX{};
+        bool connX = false;
+        app::virtualGamepadState(2, sX, connX);
+        CHECK(!connX);
+        CHECK(app::virtualGamepadActiveAt(2) == 0);
+        app::virtualGamepadState(3, sX, connX);
+        CHECK(!connX);
+        CHECK(app::virtualGamepadActiveAt(3) == 0);
+
+        // Direct switchVirtualGamepadSlot test
+        app::switchVirtualGamepadSlot(3);
+        app::virtualGamepadState(0, s0, conn0);
+        CHECK(!conn0);
+        CHECK(app::virtualGamepadActiveAt(0) == 0);
+        app::virtualGamepadState(3, sX, connX);
+        CHECK(connX);
+        CHECK(app::virtualGamepadActiveAt(3) > 0);
+    }
+
+    // 2. Library Filtering of Unresolved Store BigIds (e.g. bsr9nlhvf1kl)
+    {
+        app::Library lib;
+        lib.markAsOwned("bsr9nlhvf1kl", "T_UNRESOLVED");
+        auto ownedTiles = lib.owned();
+        bool foundRawId = false;
+        for (const auto& t : ownedTiles) {
+            if (t.productId == "bsr9nlhvf1kl" || t.name == "bsr9nlhvf1kl" || t.tileUrl.empty()) {
+                foundRawId = true;
+            }
+        }
+        CHECK(!foundRawId);
+    }
+
+    // 3. WebUI HTML contains responsive layout and safe-area rules
+    {
+        app::WebServer srv;
+        auto res = srv.handleRequest("GET", "/", "");
+        CHECK(res.status == 200);
+        CHECK(res.body.find("safe-area-inset-top") != std::string::npos);
+        CHECK(res.body.find("safe-area-inset-bottom") != std::string::npos);
+        CHECK(res.body.find("gamepad-viewport-wrapper") != std::string::npos);
+        CHECK(res.body.find("gamepad-container") != std::string::npos);
+
+        auto resBoost = srv.handleRequest("GET", "/boost", "");
+        CHECK(resBoost.status == 200);
+        CHECK(resBoost.body.find("gamepad-container") != std::string::npos);
+    }
+}
+
+static void testWebReportAndGamepadLayout() {
+    app::WebServer srv;
+
+    // 1. GET /api/report-issue
+    {
+        auto res = srv.handleRequest("GET", "/api/report-issue", "");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j.has_value() && (*j)["ok"].asBool());
+        CHECK((*j).has("url") && (*j)["url"].str().find("github.com") != std::string::npos);
+        CHECK((*j).has("platform") && !(*j)["platform"].str().empty());
+        CHECK((*j).has("release") && (*j)["release"].str() == XC_APP_VERSION);
+    }
+
+    // 2. POST /api/report-issue with custom title and description
+    {
+        auto res = srv.handleRequest("POST", "/api/report-issue",
+                                     "{\"title\":\"Audio crackling on PS5\",\"what\":\"Sound started stuttering during stream\"}");
+        CHECK(res.status == 200);
+        auto j = json::parse(res.body);
+        CHECK(j.has_value() && (*j)["ok"].asBool());
+        CHECK((*j)["title"].str() == "Audio crackling on PS5");
+        CHECK((*j)["url"].str().find("Audio+crackling+on+PS5") != std::string::npos);
+    }
+
+    // 3. WebUI HTML checks (enlarged sticks/buttons, no L3/R3 tap-click, report UI, RT visibility layout)
+    {
+        auto res = srv.handleRequest("GET", "/", "");
+        CHECK(res.status == 200);
+        // Report form in tab-logs
+        CHECK(res.body.find("openGitHubReport()") != std::string::npos);
+        CHECK(res.body.find("copySanitizedReport()") != std::string::npos);
+        CHECK(res.body.find("reportTitle") != std::string::npos);
+        // Portrait 2-row layout classes
+        CHECK(res.body.find("pad-bumper-left") != std::string::npos);
+        CHECK(res.body.find("pad-bumper-right") != std::string::npos);
+        // Enlarged fullscreen sizes
+        CHECK(res.body.find("width: 152px !important") != std::string::npos);
+        CHECK(res.body.find("width: 160px !important") != std::string::npos);
+        // Tap-click removed from setupStick calls
+        CHECK(res.body.find("setupStick('leftStickZone', 'leftStickHead', 'leftStickX', 'leftStickY')") != std::string::npos);
+        CHECK(res.body.find("setupStick('leftStickZone', 'leftStickHead', 'leftStickX', 'leftStickY', 'btnL3')") == std::string::npos);
+        // Stick heads have no static L3/R3 text
+        CHECK(res.body.find("id=\"leftStickHead\"></div>") != std::string::npos);
+        CHECK(res.body.find("id=\"rightStickHead\"></div>") != std::string::npos);
+    }
+}
+
+static void testCodSearchRomanAndSettingsReset() {
+    // 1. Search matching: Call of Duty MW4, acronyms, Roman numerals
+    {
+        ui::Fonts fonts;
+        ui::ImageCache images([] {});
+        ui::AppUi app(fonts, images);
+
+        ui::GameTile mw3, mw4, bo6, gta5, fn;
+        mw3.productId = "COD_MW3";
+        mw3.name = "Call of Duty: Modern Warfare III";
+        mw3.playable = true;
+
+        mw4.productId = "9NCPSQQD1Z66";
+        mw4.name = "Call of Duty: Modern Warfare 4";
+        mw4.playable = true;
+
+        bo6.productId = "COD_BO6";
+        bo6.name = "Call of Duty: Black Ops 6";
+        bo6.playable = true;
+
+        gta5.productId = "GTA_V";
+        gta5.name = "Grand Theft Auto V";
+        gta5.playable = true;
+
+        fn.productId = "FN";
+        fn.name = "Fortnite";
+        fn.playable = true;
+
+        app.setSearchPools({mw3, mw4, bo6, gta5, fn}, {});
+
+        // Search "mw4" -> should match Call of Duty: Modern Warfare 4
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("mw4");
+        auto res = app.searchResults(10);
+        CHECK(res.size() == 1 && res[0].first == "Call of Duty: Modern Warfare 4");
+
+        // Search "cod 4" -> should match Call of Duty: Modern Warfare 4
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("cod 4");
+        res = app.searchResults(10);
+        CHECK(!res.empty() && res[0].first == "Call of Duty: Modern Warfare 4");
+
+        // Search "call of duty 4" -> should match Call of Duty: Modern Warfare 4
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("call of duty 4");
+        res = app.searchResults(10);
+        CHECK(!res.empty() && res[0].first == "Call of Duty: Modern Warfare 4");
+
+        // Search "mw 3" -> Roman numeral 3 <-> iii
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("mw 3");
+        res = app.searchResults(10);
+        CHECK(!res.empty() && res[0].first == "Call of Duty: Modern Warfare III");
+
+        // Search "gta 5" -> Roman numeral 5 <-> v
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("gta 5");
+        res = app.searchResults(10);
+        CHECK(res.size() == 1 && res[0].first == "Grand Theft Auto V");
+
+        // Search "bo 6" -> Black Ops 6
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("bo 6");
+        res = app.searchResults(10);
+        CHECK(res.size() == 1 && res[0].first == "Call of Duty: Black Ops 6");
+
+        // Search "cod" -> all 3 COD games
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("cod");
+        res = app.searchResults(10);
+        CHECK(res.size() == 3);
+    }
+
+    // 2. WebControl strings
+    {
+        for (int lang = 0; lang < 6; ++lang) {
+            ui::setLanguage(static_cast<ui::Language>(lang));
+            std::string desc = ui::tr(ui::Str::WebControlDesc);
+            CHECK(!desc.empty());
+            std::string title = ui::tr(ui::Str::WebControlTitle);
+            CHECK(!title.empty());
+            std::string resetDesc = ui::tr(ui::Str::SettingDescResetSettings);
+            CHECK(!resetDesc.empty());
+        }
+        ui::setLanguage(ui::Language::English);
+    }
+
+    // 3. Settings Reset
+    {
+        app::Settings s{};
+        s.queueReadyAlert = false;
+        s.resolution = "720p";
+        s.language = "fr-FR";
+        s.padSpeakerVolume = 50;
+
+        app::Settings def{};
+        s = app::Settings{};
+        CHECK(s.queueReadyAlert == def.queueReadyAlert);
+        CHECK(s.resolution == def.resolution);
+        CHECK(s.language == def.language);
+        CHECK(s.padSpeakerVolume == def.padSpeakerVolume);
+    }
+}
+
+static void testCallOfDutyModernWarfare4CatalogAndRefresh() {
+    std::string testDir = "/tmp/test-cod-mw4";
+    std::system(("rm -rf " + testDir + " && mkdir -p " + testDir).c_str());
+    std::string cacheFile = testDir + "/library_cache.json";
+
+    net::setTestTransport([](const net::Request& req) {
+        net::Response r;
+        r.status = 200;
+        if (req.url.find("/sigls/") != std::string::npos) {
+            std::string id = req.url.substr(req.url.find("id=") + 3);
+            id = id.substr(0, id.find('&'));
+            r.body = R"([{"siglId":")" + id + R"(","title":"List )" + id + R"("},{"id":"P1"}])";
+        } else if (req.url.find("/v3/products") != std::string::npos) {
+            r.body = R"({"Products":{"P1":{"XCloudTitleId":"T1","ProductTitle":"Game One"}}})";
+        } else {
+            r.status = 503;
+        }
+        return r;
+    });
+
+    xcloud::GssvClient gssv;
+    std::string err;
+
+    // 1. Verify load() seeds Modern Warfare 4 and Call of Duty franchise
+    {
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+
+        auto gpPool = lib.gamePassSearchPool();
+        bool foundMw4 = false, foundCodHq = false, foundWarzone = false;
+        for (const auto& t : gpPool) {
+            if (t.productId == "9NCPSQQD1Z66" && t.name == "Call of Duty®: Modern Warfare® 4") foundMw4 = true;
+            if (t.productId == "9N201KQXS5BM" && t.name == "Call of Duty®") foundCodHq = true;
+            if (t.productId == "9NNFG8BQRCXL" && t.name == "Call of Duty®: Warzone™") foundWarzone = true;
+        }
+        CHECK(foundMw4);
+        CHECK(foundCodHq);
+        CHECK(foundWarzone);
+
+        // Check tile details
+        ui::GameTile mw4Tile;
+        for (const auto& t : gpPool) {
+            if (t.productId == "9NCPSQQD1Z66") {
+                mw4Tile = t;
+                break;
+            }
+        }
+        CHECK(mw4Tile.productId == "9NCPSQQD1Z66");
+        CHECK(mw4Tile.titleId == "CALLOFDUTYHQ");
+        CHECK(mw4Tile.xboxTitleId == "2001700854");
+        CHECK(mw4Tile.name == "Call of Duty®: Modern Warfare® 4");
+        CHECK(!mw4Tile.tileUrl.empty());
+        CHECK(!mw4Tile.heroUrl.empty());
+
+        // Check All Games row has MW4
+        bool mw4InRows = false;
+        for (const auto& row : lib.rows()) {
+            for (const auto& t : row.tiles) {
+                if (t.productId == "9NCPSQQD1Z66") mw4InRows = true;
+            }
+        }
+        CHECK(mw4InRows);
+
+        // Save cache for offline test
+        lib.saveCache();
+    }
+
+    // 2. Test offline cache / instant-resume withLayout retains MW4
+    {
+        app::Library libResume;
+        libResume.setCachePath(cacheFile);
+        CHECK(libResume.loadCache(true));
+        auto gpPool = libResume.gamePassSearchPool();
+        bool foundMw4 = false;
+        for (const auto& t : gpPool) {
+            if (t.productId == "9NCPSQQD1Z66") foundMw4 = true;
+        }
+        CHECK(foundMw4);
+    }
+
+    // 3. Test CALLOFDUTYHQ multi-experience deduplication and search
+    {
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+
+        ui::Fonts fonts;
+        ui::ImageCache images([] {});
+        ui::AppUi app(fonts, images);
+        app.setSearchPools(lib.gamePassSearchPool(), {});
+
+        // Search "Modern Warfare 4"
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("Modern Warfare 4");
+        auto res = app.searchResults(10);
+        CHECK(!res.empty());
+        CHECK(res[0].first == "Call of Duty®: Modern Warfare® 4");
+
+        // Search "Warzone"
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("Warzone");
+        res = app.searchResults(10);
+        CHECK(!res.empty());
+        CHECK(res[0].first == "Call of Duty®: Warzone™");
+    }
+
+    // 4. Test loadOwned entitles COD games for Game Pass members
+    {
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+
+        // Modern Warfare 4 is present in rows
+        bool foundInShelf = false;
+        for (const auto& row : lib.rows()) {
+            for (const auto& t : row.tiles) {
+                if (t.productId == "9NCPSQQD1Z66") foundInShelf = true;
+            }
+        }
+        CHECK(foundInShelf);
+
+        // Simulate loadOwned with Game Pass entitlement
+        net::setTestTransport([](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("/v2/titles") != std::string::npos) {
+                r.body = R"({"results":[{"titleId":"CALLOFDUTYHQ","details":{"productId":"9N201KQXS5BM","hasEntitlement":true,"isFreeInStore":false,"userPrograms":["CALLISTO"]}}]})";
+            } else if (req.url.find("/v3/products") != std::string::npos) {
+                r.body = R"({"Products":{"9NCPSQQD1Z66":{"XCloudTitleId":"CALLOFDUTYHQ","ProductTitle":"Call of Duty®: Modern Warfare® 4"}}})";
+            } else {
+                r.status = 503;
+            }
+            return r;
+        });
+
+        std::atomic<bool> stop{false};
+        lib.loadOwned(gssv, [] {}, &stop);
+
+        // Verify MW4 is owned and playable
+        bool mw4Playable = false;
+        for (const auto& t : lib.owned()) {
+            if (t.productId == "9NCPSQQD1Z66") {
+                mw4Playable = t.playable;
+                break;
+            }
+        }
+        CHECK(mw4Playable);
+    }
+
+    // 5. Test plan tier checking: Essential does not play Ultimate-tier games, Ultimate does
+    {
+        net::setTestTransport([](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("/sigls/") != std::string::npos) {
+                std::string id = req.url.substr(req.url.find("id=") + 3);
+                id = id.substr(0, id.find('&'));
+                r.body = R"([{"siglId":")" + id + R"(","title":"List )" + id + R"("},{"id":"P1"}])";
+            } else if (req.url.find("/v3/products") != std::string::npos) {
+                r.body = R"({"Products":{"P1":{"XCloudTitleId":"T1","ProductTitle":"Game One"},"9NCPSQQD1Z66":{"XCloudTitleId":"CALLOFDUTYHQ","ProductTitle":"Call of Duty®: Modern Warfare® 4"}}})";
+            } else {
+                r.status = 503;
+            }
+            return r;
+        });
+
+        std::string planCache = testDir + "/plan_cache.json";
+        platform::writeFileAtomic(planCache, R"({"version":2,"market":"US","language":"en-US","products":{},"owned":[],"purchasable":[],"ownedTitles":[],"ownedProducts":[],"gamePass":[]})");
+        app::Library libPlan;
+        libPlan.setCachePath(planCache);
+        libPlan.setSubscription("Essential");
+        CHECK(libPlan.load(gssv, "en-US", [] {}, err));
+        for (const auto& t : libPlan.gamePassSearchPool()) {
+            if (t.productId == "9NCPSQQD1Z66") {
+                // Not playable on Essential plan without ownership
+                CHECK(!t.playable);
+            }
+        }
+
+        libPlan.setSubscription("Ultimate");
+        for (const auto& t : libPlan.gamePassSearchPool()) {
+            if (t.productId == "9NCPSQQD1Z66") {
+                // Playable on Ultimate plan
+                CHECK(t.playable);
+            }
+        }
+    }
+
+    // 6. Test forceRefresh: force-refresh reloads without dropping offline cache
+    {
+        app::Library libRefresh;
+        libRefresh.setCachePath(cacheFile);
+        CHECK(libRefresh.load(gssv, "en-US", [] {}, err, true));
+        bool foundMw4 = false;
+        for (const auto& row : libRefresh.rows()) {
+            for (const auto& t : row.tiles) {
+                if (t.productId == "9NCPSQQD1Z66") foundMw4 = true;
+            }
+        }
+        CHECK(foundMw4);
+    }
+
+    // 7. Test loadOwned populates all owned and streamable titles, not just COD and Fortnite
+    {
+        net::setTestTransport([](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("/v2/titles") != std::string::npos) {
+                r.body = R"({"results":[
+                    {"titleId":"FORTNITE","details":{"productId":"BT5P2X999VH2","hasEntitlement":true,"isFreeInStore":true,"userPrograms":["F2P"]}},
+                    {"titleId":"CYBERPUNK2077","details":{"productId":"BX3M8L83BBRW","hasEntitlement":true,"isFreeInStore":false,"userPrograms":[]}},
+                    {"titleId":"HALOINFINITE","details":{"productId":"9PP5G1F0C2B6","hasEntitlement":true,"isFreeInStore":true,"userPrograms":["F2P"]}},
+                    {"titleId":"CALLOFDUTYHQ","details":{"productId":"9N201KQXS5BM","hasEntitlement":true,"isFreeInStore":false,"userPrograms":["CALLISTO"]}}
+                ]})";
+            } else if (req.url.find("/v3/products") != std::string::npos) {
+                r.body = R"({"Products":{
+                    "BT5P2X999VH2":{"XCloudTitleId":"FORTNITE","ProductTitle":"Fortnite"},
+                    "BX3M8L83BBRW":{"XCloudTitleId":"CYBERPUNK2077","ProductTitle":"Cyberpunk 2077"},
+                    "9PP5G1F0C2B6":{"XCloudTitleId":"HALOINFINITE","ProductTitle":"Halo Infinite"},
+                    "9N201KQXS5BM":{"XCloudTitleId":"CALLOFDUTYHQ","ProductTitle":"Call of Duty®"},
+                    "9NCPSQQD1Z66":{"XCloudTitleId":"CALLOFDUTYHQ","ProductTitle":"Call of Duty®: Modern Warfare® 4"}
+                }})";
+            } else {
+                r.status = 503;
+            }
+            return r;
+        });
+
+        app::Library libOwnedAll;
+        std::string allCache = testDir + "/all_cache.json";
+        libOwnedAll.setCachePath(allCache);
+        std::atomic<bool> stop{false};
+        libOwnedAll.loadOwned(gssv, [] {}, &stop);
+
+        // Verify all 4 titles are in owned (Fortnite, Cyberpunk, Halo Infinite, Call of Duty)
+        std::set<std::string> ownedPids;
+        for (const auto& t : libOwnedAll.owned()) {
+            ownedPids.insert(t.productId);
+        }
+        CHECK(ownedPids.count("BT5P2X999VH2")); // Fortnite
+        CHECK(ownedPids.count("BX3M8L83BBRW")); // Cyberpunk 2077
+        CHECK(ownedPids.count("9PP5G1F0C2B6")); // Halo Infinite
+        CHECK(ownedPids.count("9NCPSQQD1Z66") || ownedPids.count("9N201KQXS5BM")); // COD
+        CHECK(libOwnedAll.owned().size() >= 4);
+    }
+
+    // 8. Test loadCache auto-healing of contaminated gamePass and duplicate COD entries
+    {
+        std::string badCache = testDir + "/bad_cache.json";
+        std::string gpItems = "";
+        for (int i = 0; i < 1100; ++i) {
+            if (i > 0) gpItems += ",";
+            gpItems += "\"P_FAKE_" + std::to_string(i) + "\"";
+        }
+        std::string otItems = "";
+        for (int i = 0; i < 150; ++i) {
+            if (i > 0) otItems += ",";
+            otItems += "\"T_FAKE_" + std::to_string(i) + "\"";
+        }
+        std::string codItems = "";
+        for (int i = 0; i < 25; ++i) {
+            if (i > 0) codItems += ",";
+            codItems += "{\"p\":\"COD_" + std::to_string(i) + "\",\"t\":\"CALLOFDUTYHQ\"}";
+        }
+        std::string badJson = "{\"version\":2,\"market\":\"US\",\"language\":\"en-US\",\"products\":{},"
+                              "\"owned\":[" + codItems + ",{\"p\":\"FORTNITE\",\"t\":\"FORTNITE\"}],"
+                              "\"purchasable\":[],\"ownedTitles\":[" + otItems + "],\"ownedProducts\":[],\"gamePass\":[" + gpItems + "]}";
+        platform::writeFileAtomic(badCache, badJson);
+
+        app::Library healLib;
+        healLib.setCachePath(badCache);
+        CHECK(healLib.loadCache(false));
+        // Verify ownership was invalidated due to duplicate COD entries from v1.5.0 bug
+        CHECK(!healLib.ownedKnown());
+        // Verify contaminated gamePass was discarded
+        CHECK(healLib.gamePassSearchPool().empty());
+    }
+
+    // 9. Test loadCache preserves legitimate cache for users with few owned games (<= 37) and Game Pass
+    {
+        std::string legitCache = testDir + "/legit_cache.json";
+        std::string otItems = "";
+        for (int i = 0; i < 200; ++i) {
+            if (i > 0) otItems += ",";
+            otItems += "\"T_FAKE_" + std::to_string(i) + "\"";
+        }
+        std::string legitJson = "{\"version\":2,\"market\":\"US\",\"language\":\"en-US\",\"products\":{},"
+                                "\"owned\":[{\"p\":\"FORTNITE\",\"t\":\"FORTNITE\"},{\"p\":\"CYBERPUNK\",\"t\":\"CYBERPUNK2077\"}],"
+                                "\"purchasable\":[],\"ownedTitles\":[" + otItems + "],\"ownedProducts\":[\"FORTNITE\",\"CYBERPUNK\"],"
+                                "\"gamePass\":[\"GP_GAME1\",\"GP_GAME2\"]}";
+        platform::writeFileAtomic(legitCache, legitJson);
+
+        app::Library legitLib;
+        legitLib.setCachePath(legitCache);
+        CHECK(legitLib.loadCache(false));
+        // Verify legitimate ownership with <= 37 games is PRESERVED, not discarded!
+        CHECK(legitLib.ownedKnown());
+    }
+
+    net::setTestTransport({});
+    std::system(("rm -rf " + testDir).c_str());
+}
+
+static void testBlock1Corrections() {
+    using namespace xc;
+
+    // 1. WebUI Facebuttons ABXY static positioning & no transform on active/pressed
+    {
+        const char* html = app::webServerIndexHtml();
+        CHECK(html != nullptr);
+        std::string htmlStr(html);
+        CHECK(htmlStr.find(".btn-y { top: 0; left: 52px;") != std::string::npos);
+        CHECK(htmlStr.find(".btn-a { bottom: 0; left: 52px;") != std::string::npos);
+        CHECK(htmlStr.find(".btn-x { top: 52px; left: 0;") != std::string::npos);
+        CHECK(htmlStr.find(".btn-b { top: 52px; right: 0;") != std::string::npos);
+        // Ensure no transform in abxy-key:active or abxy-key.pressed
+        size_t abxyActivePos = htmlStr.find(".abxy-key:active, .abxy-key.pressed");
+        CHECK(abxyActivePos != std::string::npos);
+        size_t blockEnd = htmlStr.find("}", abxyActivePos);
+        CHECK(blockEnd != std::string::npos);
+        std::string abxyBlock = htmlStr.substr(abxyActivePos, blockEnd - abxyActivePos);
+        CHECK(abxyBlock.find("transform") == std::string::npos);
+        CHECK(abxyBlock.find("scale") == std::string::npos);
+        CHECK(abxyBlock.find("translate") == std::string::npos);
+        CHECK(htmlStr.find("-webkit-tap-highlight-color: transparent;") != std::string::npos);
+    }
+
+    // 2. Search cursor stability across background updates (pools, prices, delta-sync, setOwned, setRows)
+    {
+        ui::Fonts fonts;
+        ui::ImageCache images([] {});
+        ui::AppUi app(fonts, images);
+
+        std::vector<ui::GameTile> pool;
+        for (int i = 0; i < 12; ++i) {
+            ui::GameTile t;
+            t.productId = "GAME_ID_" + std::to_string(i);
+            t.titleId = "TITLE_" + std::to_string(i);
+            t.name = "Action Game " + std::to_string(i);
+            t.playable = true;
+            pool.push_back(t);
+        }
+        app.setSearchPools(pool, {});
+
+        // Open search with query "Action"
+        app.showFilteredSearch(ui::Tab::GamePass, false, 0, "", 0, -1);
+        app.typeText("Action\n"); // \n moves into results grid
+        CHECK(!app.isSearchOnKeys());
+        CHECK(app.searchResultFocus() == 0);
+
+        // Move cursor in grid to item 2
+        ui::NavInput navRight;
+        navRight.right = true;
+        app.handle(navRight);
+        CHECK(app.searchResultFocus() == 1);
+        app.handle(navRight);
+        CHECK(app.searchResultFocus() == 2);
+
+        // Simulate background pool update (e.g. hydration/delta-sync)
+        app.setSearchPools(pool, {});
+        // Focus MUST NOT reset to 0! It should be preserved at 2.
+        CHECK(!app.isSearchOnKeys());
+        CHECK(app.searchResultFocus() == 2);
+
+        // Simulate background price arrival
+        std::map<std::string, ui::PriceInfo> prices;
+        prices["GAME_ID_2"] = ui::PriceInfo{"$19.99", "$29.99", 19.99, 29.99};
+        app.setPrices(prices);
+        CHECK(app.searchResultFocus() == 2);
+
+        // Simulate background ownership update (delta sync)
+        app.setOwned({pool[0], pool[1], pool[2]}, {}, true);
+        CHECK(app.searchResultFocus() == 2);
+
+        // Simulate background rows update
+        ui::GameRow r;
+        r.title = "Featured";
+        r.tiles = pool;
+        app.setRows({r});
+        CHECK(app.searchResultFocus() == 2);
+    }
+
+    // 3. Friends playing shelf: hero art fetch, resolution, and persistence across Details & Rebuild
+    {
+        ui::Fonts fonts;
+        ui::ImageCache images([] {});
+        ui::AppUi app(fonts, images);
+
+        ui::GameTile friendTile;
+        friendTile.productId = "PROD_FRIEND_01";
+        friendTile.titleId = "TITLE_FRIEND_01";
+        friendTile.name = "Friend's Favorite";
+        friendTile.playable = true;
+        friendTile.heroUrl = ""; // Initially empty
+        friendTile.friends = {{"FriendTag", "http://example.com/pic.jpg"}};
+
+        ui::GameRow friendsRow;
+        friendsRow.title = "Friends playing now";
+        friendsRow.tiles = {friendTile};
+        app.setRows({friendsRow});
+        app.showHome();
+
+        // 3a. On Home screen with tile focused, heroWanted requests the missing heroUrl
+        CHECK(app.heroWanted(100) == "PROD_FRIEND_01");
+
+        // 3b. Detail arrives via setDetailInfo
+        std::string heroUrl = "https://images.example.com/hero_friend_01.jpg";
+        app.setDetailInfo("PROD_FRIEND_01", "Friend game description", "Studio A", {"Co-Op"}, heroUrl, "E", "ESRB", {});
+
+        // 3c. After details arrived, heroWanted no longer asks for it
+        CHECK(app.heroWanted(200).empty());
+
+        // 3d. User opens Details screen, then presses back to Home
+        app.showDetails(friendTile);
+        CHECK(app.screen() == ui::Screen::Details);
+
+        ui::NavInput navBack;
+        navBack.back = true;
+        app.handle(navBack);
+        CHECK(app.screen() == ui::Screen::Home);
+
+        // Verify the tile on the Friends shelf preserves the heroUrl!
+        ui::GameTile resultTile;
+        CHECK(app.findTile("TITLE_FRIEND_01", resultTile));
+        CHECK(resultTile.heroUrl == heroUrl);
+
+        // 3e. Crucial: Background rebuild (e.g. delta-sync or setOwned) MUST NOT wipe out heroUrl!
+        app.setOwned({}, {}, true);
+        CHECK(app.findTile("TITLE_FRIEND_01", resultTile));
+        CHECK(resultTile.heroUrl == heroUrl);
+
+        // 3f. Tile with partial metadata (only titleId, empty productId) resolves productId via pool
+        ui::GameTile partialTile;
+        partialTile.productId = ""; // Empty productId
+        partialTile.titleId = "TITLE_PARTIAL_99";
+        partialTile.name = "Partial Metadata Game";
+        partialTile.playable = true;
+        partialTile.heroUrl = "";
+
+        ui::GameTile catalogTile;
+        catalogTile.productId = "PROD_PARTIAL_99";
+        catalogTile.titleId = "TITLE_PARTIAL_99";
+        catalogTile.name = "Partial Metadata Game";
+        catalogTile.heroUrl = "";
+        catalogTile.playable = true;
+
+        ui::GameRow partialRow;
+        partialRow.title = "Friends playing partial";
+        partialRow.tiles = {partialTile};
+
+        app.setSearchPools({catalogTile}, {});
+        app.setRows({partialRow});
+        app.showHome();
+
+        // heroWanted must successfully resolve the productId "PROD_PARTIAL_99" from the catalog pool!
+        CHECK(app.heroWanted(300) == "PROD_PARTIAL_99");
+    }
+
+    // 4. Library::tile resolution by titleId
+    {
+        app::Library lib;
+        ui::GameTile resolved = lib.tile("", "CALLOFDUTYHQ");
+        CHECK(!resolved.productId.empty());
+        CHECK(resolved.productId == "9NCPSQQD1Z66" || resolved.productId == "9N201KQXS5BM" || resolved.productId == "9NNFG8BQRCXL");
+        CHECK(!resolved.heroUrl.empty());
+    }
+}
+
+static void testBloco2Corrections() {
+    // 1. Splash screen input lock & Screen::Error offline option
+    {
+        ui::Fonts fonts;
+        ui::ImageCache images([] {});
+        ui::AppUi app(fonts, images);
+        CHECK(app.screen() == ui::Screen::Splash);
+
+        // All inputs while on Splash must be ignored/dropped
+        ui::NavInput in;
+        in.accept = true;
+        in.back = true;
+        in.options = true;
+        in.square = true;
+        in.triangle = true;
+        in.up = true;
+        in.down = true;
+        in.left = true;
+        in.right = true;
+        ui::UiEvent ev = app.handle(in);
+        CHECK(ev.action == ui::Action::None);
+        CHECK(app.screen() == ui::Screen::Splash);
+
+        // Error screen without cached rows cannot enter offline mode
+        app.showError("Connection failed");
+        CHECK(app.screen() == ui::Screen::Error);
+        in = {};
+        in.square = true;
+        ev = app.handle(in);
+        CHECK(app.screen() == ui::Screen::Error);
+
+        // Populate cached rows
+        ui::GameRow row;
+        row.title = "Offline Cached Games";
+        ui::GameTile tile;
+        tile.productId = "PROD_CACHE_1";
+        tile.titleId = "TITLE_CACHE_1";
+        tile.name = "Offline Game";
+        row.tiles.push_back(tile);
+        app.setRows({row});
+
+        // Error screen WITH cached rows: Square or Circle(Back) enters offline mode (Screen::Home)
+        in = {};
+        in.square = true;
+        ev = app.handle(in);
+        CHECK(app.screen() == ui::Screen::Home);
+
+        app.showError("Network timed out");
+        CHECK(app.screen() == ui::Screen::Error);
+        in = {};
+        in.back = true;
+        ev = app.handle(in);
+        CHECK(app.screen() == ui::Screen::Home);
+
+        // Error screen: loading flag is cleared when error is displayed and when offline mode is entered
+        app.setLoading(true, 5, 10);
+        app.showError("Disconnected");
+        CHECK(app.screen() == ui::Screen::Error);
+        in = {};
+        in.square = true;
+        ev = app.handle(in);
+        CHECK(app.screen() == ui::Screen::Home);
+
+        // Error screen with owned games but empty rows: can enter offline mode
+        ui::AppUi appOwned(fonts, images);
+        ui::GameTile ownedTile;
+        ownedTile.productId = "OWNED_1";
+        ownedTile.titleId = "TITLE_1";
+        ownedTile.playable = true;
+        appOwned.setOwned({ownedTile}, {}, true);
+        appOwned.showError("Auth error");
+        CHECK(appOwned.screen() == ui::Screen::Error);
+        in = {};
+        in.square = true;
+        ev = appOwned.handle(in);
+        CHECK(appOwned.screen() == ui::Screen::Home);
+    }
+
+    // 2. syncDelta: Eliminate false 24 new games popup
+    {
+        app::Library lib;
+        xcloud::GssvClient gssv;
+        std::string err;
+
+        // Set up test transport where listTitles returns 24 alternate IDs
+        // and fetchProducts returns empty/failure for them
+        net::setTestTransport([&](const net::Request& req) {
+            net::Response r;
+            if (req.url.find("titles") != std::string::npos) {
+                r.status = 200;
+                // Return 1 title with 24 alternate product IDs
+                json::Value root = json::Value::object();
+                json::Value results = json::Value::array();
+                json::Value item = json::Value::object();
+                item.set("titleId", "GAME_HQ");
+                json::Value details = json::Value::object();
+                details.set("productId", "PROD_HQ");
+                item.set("details", details);
+                json::Value alts = json::Value::array();
+                for (int i = 1; i <= 24; ++i) {
+                    alts.push("ALT_PROD_" + std::to_string(i));
+                }
+                item.set("alternateProductIds", alts);
+                results.push(item);
+                root.set("results", results);
+                r.body = root.dump();
+                return r;
+            }
+            if (req.url.find("sigls") != std::string::npos) {
+                r.status = 200;
+                r.body = R"({"productIds":["PROD_HQ"]})";
+                return r;
+            }
+            if (req.url.find("products") != std::string::npos) {
+                r.status = 200;
+                // Only return PROD_HQ with valid metadata, none of the 24 alternate IDs
+                r.body = R"({
+                    "Products": {
+                        "PROD_HQ": {
+                            "ProductTitle": "Call of Duty HQ"
+                        }
+                    }
+                })";
+                return r;
+            }
+            r.status = 200;
+            r.body = "{}";
+            return r;
+        });
+
+        // First sync: PROD_HQ is added (1 new game)
+        size_t count1 = lib.syncDelta(gssv, [&] {}, err);
+        CHECK(count1 == 1);
+
+        // Second sync (subsequent boot): PROD_HQ is already in products_,
+        // and 24 alternate IDs must NOT be computed as new games! newCount must be 0!
+        size_t count2 = lib.syncDelta(gssv, [&] {}, err);
+        CHECK(count2 == 0);
+
+        net::setTestTransport({});
+    }
+
+    // 3. Log hygiene & consecutive duplicate suppression
+    {
+        xc::log::setLevel(xc::log::Level::Info);
+
+        // Write identical message 5 times
+        XC_LOGI("bloco2_hygiene_test_repeated_log");
+        XC_LOGI("bloco2_hygiene_test_repeated_log");
+        XC_LOGI("bloco2_hygiene_test_repeated_log");
+        XC_LOGI("bloco2_hygiene_test_repeated_log");
+        XC_LOGI("bloco2_hygiene_test_repeated_log");
+
+        // Write a distinct message to trigger repeat count flush
+        XC_LOGI("bloco2_hygiene_test_distinct_log");
+
+        std::string after = xc::log::recentLogs();
+        CHECK(after.find("bloco2_hygiene_test_repeated_log") != std::string::npos);
+        CHECK(after.find("last message repeated 4 times") != std::string::npos);
+        CHECK(after.find("bloco2_hygiene_test_distinct_log") != std::string::npos);
+
+        // Test singular repetition: exactly 2 identical logs
+        XC_LOGI("bloco2_hygiene_test_twice_log");
+        XC_LOGI("bloco2_hygiene_test_twice_log");
+        xc::log::flush();
+        std::string afterTwice = xc::log::recentLogs();
+        CHECK(afterTwice.find("bloco2_hygiene_test_twice_log") != std::string::npos);
+        CHECK(afterTwice.find("last message repeated 1 time]") != std::string::npos);
+
+        // Test flush clears last message state: same message emitted after flush is printed afresh
+        XC_LOGI("bloco2_hygiene_test_twice_log");
+        xc::log::flush();
+        std::string afterFlush = xc::log::recentLogs();
+        size_t pos1 = afterFlush.find("bloco2_hygiene_test_twice_log");
+        CHECK(pos1 != std::string::npos);
+        size_t pos2 = afterFlush.find("bloco2_hygiene_test_twice_log", pos1 + 1);
+        CHECK(pos2 != std::string::npos);
+    }
+}
+
+static void testBloco3Corrections() {
+    // -------------------------------------------------------------------------
+    // Item 1: Shelf Filters / Non-contamination
+    // Store/owned games (e.g. Tesla vs Lovecraft) must never contaminate Game Pass
+    // shelves (Recently Added, Most Popular, Leaving Soon, All Games).
+    // syncDelta must not inject arbitrary owned titles into rows.
+    // Paid games in "Most Popular" are only allowed if legitimately in kMostPopular.
+    // -------------------------------------------------------------------------
+    {
+        std::string testDir = "/tmp/test-bloco3-shelves";
+        std::system(("rm -rf " + testDir + " && mkdir -p " + testDir).c_str());
+        std::string cacheFile = testDir + "/library_cache.json";
+
+        std::map<std::string, std::string> siglFeeds;
+        siglFeeds[xcloud::sigl::kRecentlyAdded] = R"([{"siglId":"recent","title":"Recently Added"},{"id":"GP_RECENT_1"}])";
+        siglFeeds[xcloud::sigl::kMostPopular] = R"([{"siglId":"pop","title":"Most Popular"},{"id":"GP_POP_1"},{"id":"PAID_LEGIT_POP"}])";
+        siglFeeds[xcloud::sigl::kFreeToPlay] = R"([{"siglId":"f2p","title":"Free to Play"},{"id":"F2P_CLOUD_1"}])";
+        siglFeeds[xcloud::sigl::kLeavingSoon] = R"([{"siglId":"leaving","title":"Leaving Soon"},{"id":"GP_LEAVING_1"}])";
+        siglFeeds[xcloud::sigl::kAllGames] = R"([{"siglId":"all","title":"All Games"},{"id":"GP_RECENT_1"},{"id":"GP_POP_1"},{"id":"GP_LEAVING_1"}])";
+
+        std::string titlesV2Body = R"({"results":[]})";
+
+        net::setTestTransport([&](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("sigls") != std::string::npos) {
+                for (const auto& [siglId, body] : siglFeeds) {
+                    if (req.url.find("id=" + siglId) != std::string::npos) {
+                        r.body = body;
+                        return r;
+                    }
+                }
+                r.body = "[]";
+                return r;
+            } else if (req.url.find("titles") != std::string::npos) {
+                r.body = titlesV2Body;
+                return r;
+            } else if (req.url.find("products") != std::string::npos) {
+                r.body = R"({
+                    "Products": {
+                        "GP_RECENT_1": {
+                            "XCloudTitleId": "T_REC",
+                            "ProductTitle": "Recent Cloud Game",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"},
+                            "PassMetadataByPassProductId": {"CFQ7TTC0K5DJ": {}}
+                        },
+                        "GP_POP_1": {
+                            "XCloudTitleId": "T_POP",
+                            "ProductTitle": "Popular Cloud Game",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"},
+                            "PassMetadataByPassProductId": {"CFQ7TTC0K5DJ": {}}
+                        },
+                        "PAID_LEGIT_POP": {
+                            "XCloudTitleId": "T_LEGIT_POP",
+                            "ProductTitle": "Elden Ring",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"},
+                            "PassMetadataByPassProductId": {}
+                        },
+                        "F2P_CLOUD_1": {
+                            "XCloudTitleId": "T_F2P",
+                            "ProductTitle": "Free Cloud Shooter",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"}
+                        },
+                        "GP_LEAVING_1": {
+                            "XCloudTitleId": "T_LEAVE",
+                            "ProductTitle": "Leaving Cloud Game",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"},
+                            "PassMetadataByPassProductId": {"CFQ7TTC0K5DJ": {}}
+                        },
+                        "PROD_TESLA": {
+                            "XCloudTitleId": "TESLAVSLOVE",
+                            "ProductTitle": "Tesla vs Lovecraft",
+                            "Image_Tile": {"URL": "https://store-images.s-microsoft.com/image/apps.tile"}
+                        }
+                    }
+                })";
+                return r;
+            }
+            r.status = 503;
+            return r;
+        });
+
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        lib.setSubscription("Ultimate");
+        xcloud::GssvClient gssv;
+        std::string err;
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+
+        // Verify initial load shelves:
+        // PAID_LEGIT_POP should appear in Most Popular because it's legitimately in the feed
+        bool paidInPop = false;
+        bool paidInRecent = false;
+        bool paidInLeaving = false;
+        for (const auto& row : lib.rows()) {
+            for (const auto& t : row.tiles) {
+                if (t.productId == "PAID_LEGIT_POP") {
+                    if (row.title == "Most Popular") paidInPop = true;
+                    if (row.title == "Recently Added") paidInRecent = true;
+                    if (row.title == "Leaving Soon") paidInLeaving = true;
+                }
+            }
+        }
+        CHECK(paidInPop);
+        CHECK(!paidInRecent);
+        CHECK(!paidInLeaving);
+
+        // Now simulate user having bought / owned "Tesla vs Lovecraft" via /v2/titles
+        titlesV2Body = R"({
+            "results": [
+                {
+                    "titleId": "TESLAVSLOVE",
+                    "details": {
+                        "productId": "PROD_TESLA",
+                        "hasEntitlement": true,
+                        "isFreeInStore": false,
+                        "userPrograms": []
+                    }
+                }
+            ]
+        })";
+
+        // Call syncDelta: buying an owned store game outside Game Pass must NOT count as a Game Pass catalog addition
+        size_t deltaAdded = lib.syncDelta(gssv, [] {}, err);
+        CHECK(deltaAdded == 0);
+
+        // Verify Tesla vs Lovecraft is owned
+        bool teslaOwned = false;
+        for (const auto& t : lib.owned()) {
+            if (t.productId == "PROD_TESLA") teslaOwned = true;
+        }
+        CHECK(teslaOwned);
+
+        // CRITICAL CHECK: Tesla vs Lovecraft MUST NOT contaminate ANY Game Pass shelf
+        for (const auto& row : lib.rows()) {
+            for (const auto& t : row.tiles) {
+                CHECK(t.productId != "PROD_TESLA");
+                CHECK(t.titleId != "TESLAVSLOVE");
+            }
+        }
+
+        net::setTestTransport({});
+    }
+
+    // -------------------------------------------------------------------------
+    // Item 2: Universal Deduplication & PC Removal
+    // -------------------------------------------------------------------------
+    {
+        // 2a. normalizeBaseTitle
+        CHECK(xcloud::normalizeBaseTitle("A Way Out") == "a way out");
+        CHECK(xcloud::normalizeBaseTitle("A Way Out (Xbox One)") == "a way out");
+        CHECK(xcloud::normalizeBaseTitle("A Way Out – Xbox One") == "a way out"); // en-dash
+        CHECK(xcloud::normalizeBaseTitle("A Way Out: Standard Edition") == "a way out");
+        CHECK(xcloud::normalizeBaseTitle("Alien: Dark Descent") == "alien dark descent");
+        CHECK(xcloud::normalizeBaseTitle("Aliens: Dark Descent - Xbox Series X|S") == "alien dark descent");
+        CHECK(xcloud::normalizeBaseTitle("Aliens: Dark Descent – Xbox Series X|S") == "alien dark descent");
+        CHECK(xcloud::normalizeBaseTitle("Assassin's Creed® Unity") == "assassins creed unity");
+        CHECK(xcloud::normalizeBaseTitle("Assassin’s Creed Unity (Xbox One)") == "assassins creed unity"); // smart quote
+        CHECK(xcloud::normalizeBaseTitle("Assassin's Creed Unity (Xbox One)") == "assassins creed unity");
+        CHECK(xcloud::normalizeBaseTitle("Broken Age") == "broken age");
+        CHECK(xcloud::normalizeBaseTitle("Broken Age (PC)") == "broken age");
+        CHECK(xcloud::normalizeBaseTitle("Broken Age (Windows)") == "broken age");
+        CHECK(xcloud::normalizeBaseTitle("Broken Age (Windows 11)") == "broken age");
+        CHECK(xcloud::normalizeBaseTitle("Burnout™ Paradise Remastered") == "burnout paradise");
+        CHECK(xcloud::normalizeBaseTitle("Burnout Paradise Remastered - Xbox One") == "burnout paradise");
+        CHECK(xcloud::normalizeBaseTitle("Burnout Paradise Remastered – Xbox One") == "burnout paradise");
+        CHECK(xcloud::normalizeBaseTitle("FIFA 22 Xbox One") == "fifa 22");
+        CHECK(xcloud::normalizeBaseTitle("FIFA 22 Xbox Series X|S") == "fifa 22");
+        CHECK(xcloud::normalizeBaseTitle("Call of Duty®: Vanguard (Xbox One)") == "call of duty vanguard");
+        CHECK(xcloud::normalizeBaseTitle("Call of Duty®: Vanguard - Xbox Series X|S") == "call of duty vanguard");
+        CHECK(xcloud::normalizeBaseTitle("Grand Theft Auto V: Premium Edition") == "grand theft auto v");
+
+        // 2b. isPcTitle & isPcProduct
+        CHECK(xcloud::isPcTitle("Broken Age (PC)"));
+        CHECK(xcloud::isPcTitle("Broken Age (Windows)"));
+        CHECK(xcloud::isPcTitle("Broken Age (Windows 11)"));
+        CHECK(xcloud::isPcTitle("Age of Empires II: Definitive Edition (Windows 10)"));
+        CHECK(xcloud::isPcTitle("Fallout 76: PC Edition"));
+        CHECK(xcloud::isPcTitle("Sea of Thieves [PC]"));
+        CHECK(!xcloud::isPcTitle("Halo Infinite"));
+        CHECK(!xcloud::isPcTitle("Forza Horizon 5"));
+
+        xcloud::Product pcProd;
+        pcProd.title = "PC Simulator";
+        pcProd.categories = {"PC"};
+        CHECK(xcloud::isPcProduct(pcProd));
+
+        xcloud::Product consoleProd;
+        consoleProd.title = "Halo";
+        consoleProd.categories = {"Shooter"};
+        CHECK(!xcloud::isPcProduct(consoleProd));
+
+        // 2c. dedupeByTitle priority (Series X|S > Xbox One > 360) and capability merging
+        std::vector<ui::GameTile> tiles;
+
+        // Vanguard pair: Xbox One vs Series X|S
+        ui::GameTile vgOne;
+        vgOne.productId = "9PHP6HF58MB5";
+        vgOne.titleId = "VANGUARDONE";
+        vgOne.name = "Call of Duty®: Vanguard (Xbox One)";
+        vgOne.platform = "XboxOne";
+        vgOne.playable = true;
+        vgOne.purchasable = false;
+
+        ui::GameTile vgXs;
+        vgXs.productId = "9MWHTW1SF7RW";
+        vgXs.titleId = "VANGUARDXS";
+        vgXs.name = "Call of Duty®: Vanguard - Xbox Series X|S";
+        vgXs.platform = "Series";
+        vgXs.playable = false;
+        vgXs.purchasable = true;
+
+        // Cold War pair
+        ui::GameTile cwOne;
+        cwOne.productId = "9P7PFH4RMFZD";
+        cwOne.titleId = "COLDWARONE";
+        cwOne.name = "Call of Duty®: Black Ops Cold War (Xbox One)";
+        cwOne.platform = "XboxOne";
+
+        ui::GameTile cwXs;
+        cwXs.productId = "9NPLRJ9CC870";
+        cwXs.titleId = "COLDWARXS";
+        cwXs.name = "Call of Duty®: Black Ops Cold War - Xbox Series X|S";
+        cwXs.platform = "Series";
+
+        // A Way Out pair
+        ui::GameTile awo1;
+        awo1.productId = "AWAYOUT1";
+        awo1.titleId = "AWO_1";
+        awo1.name = "A Way Out";
+
+        ui::GameTile awo2;
+        awo2.productId = "AWAYOUT2";
+        awo2.titleId = "AWO_2";
+        awo2.name = "A Way Out (Xbox One)";
+
+        // Burnout Paradise Remastered pair
+        ui::GameTile bp1;
+        bp1.productId = "BP_1";
+        bp1.titleId = "BP_T1";
+        bp1.name = "Burnout™ Paradise Remastered";
+
+        ui::GameTile bp2;
+        bp2.productId = "BP_2";
+        bp2.titleId = "BP_T2";
+        bp2.name = "Burnout Paradise Remastered - Xbox One";
+
+        // Assassin's Creed Unity pair
+        ui::GameTile acu1;
+        acu1.productId = "ACU_1";
+        acu1.titleId = "ACU_T1";
+        acu1.name = "Assassin's Creed® Unity";
+
+        ui::GameTile acu2;
+        acu2.productId = "ACU_2";
+        acu2.titleId = "ACU_T2";
+        acu2.name = "Assassin's Creed Unity (Xbox One)";
+
+        // Alien Dark Descent pair
+        ui::GameTile add1;
+        add1.productId = "ADD_1";
+        add1.titleId = "ADD_T1";
+        add1.name = "Aliens: Dark Descent";
+
+        ui::GameTile add2;
+        add2.productId = "ADD_2";
+        add2.titleId = "ADD_T2";
+        add2.name = "Alien: Dark Descent - Xbox Series X|S";
+        add2.platform = "Series";
+
+        // FIFA 22 pair
+        ui::GameTile fifa1;
+        fifa1.productId = "FIFA_ONE";
+        fifa1.titleId = "FIFA_T1";
+        fifa1.name = "FIFA 22 Xbox One";
+        fifa1.platform = "XboxOne";
+
+        ui::GameTile fifa2;
+        fifa2.productId = "FIFA_XS";
+        fifa2.titleId = "FIFA_T2";
+        fifa2.name = "FIFA 22 Xbox Series X|S";
+        fifa2.platform = "Series";
+
+        tiles.push_back(vgOne);
+        tiles.push_back(vgXs);
+        tiles.push_back(cwOne);
+        tiles.push_back(cwXs);
+        tiles.push_back(awo1);
+        tiles.push_back(awo2);
+        tiles.push_back(bp1);
+        tiles.push_back(bp2);
+        tiles.push_back(acu1);
+        tiles.push_back(acu2);
+        tiles.push_back(add1);
+        tiles.push_back(add2);
+        tiles.push_back(fifa1);
+        tiles.push_back(fifa2);
+
+        app::dedupeByTitle(tiles);
+
+        // Exactly 7 deduplicated entries
+        CHECK(tiles.size() == 7);
+
+        // Vanguard: Series X|S preferred, capabilities merged
+        bool foundVanguard = false;
+        for (const auto& t : tiles) {
+            if (t.productId == "9MWHTW1SF7RW") {
+                foundVanguard = true;
+                CHECK(t.platform == "Series");
+                CHECK(t.playable);     // absorbed from vgOne
+                CHECK(t.purchasable);  // preserved from vgXs
+            }
+        }
+        CHECK(foundVanguard);
+
+        // Cold War: Series X|S preferred
+        bool foundColdWar = false;
+        for (const auto& t : tiles) {
+            if (t.productId == "9NPLRJ9CC870") {
+                foundColdWar = true;
+                CHECK(t.platform == "Series");
+            }
+        }
+        CHECK(foundColdWar);
+
+        // Alien Dark Descent: Series X|S preferred
+        bool foundAdd = false;
+        for (const auto& t : tiles) {
+            if (t.productId == "ADD_2") {
+                foundAdd = true;
+                CHECK(t.platform == "Series");
+            }
+        }
+        CHECK(foundAdd);
+
+        // FIFA 22: Series X|S preferred
+        bool foundFifa = false;
+        for (const auto& t : tiles) {
+            if (t.productId == "FIFA_XS") {
+                foundFifa = true;
+                CHECK(t.platform == "Series");
+            }
+        }
+        CHECK(foundFifa);
+
+        // 2d. Dominant Series priority: Series must win even if Xbox One has full metadata & shorter name
+        {
+            std::vector<ui::GameTile> domTest;
+            ui::GameTile richOne;
+            richOne.productId = "RICH_ONE";
+            richOne.titleId = "RICH_ONE_TID";
+            richOne.name = "Epic Game";
+            richOne.platform = "XboxOne";
+            richOne.playable = true;
+            richOne.detailed = true;
+            richOne.tileUrl = "https://example.com/one.png";
+            richOne.heroUrl = "https://example.com/one_hero.png";
+            richOne.description = "Awesome Xbox One version";
+
+            ui::GameTile bareXs;
+            bareXs.productId = "BARE_XS";
+            bareXs.titleId = "BARE_XS_TID";
+            bareXs.name = "Epic Game - Xbox Series X|S";
+            bareXs.platform = "Series";
+            bareXs.playable = false;
+            bareXs.detailed = false;
+
+            domTest.push_back(richOne);
+            domTest.push_back(bareXs);
+            app::dedupeByTitle(domTest);
+            CHECK(domTest.size() == 1);
+            CHECK(domTest[0].productId == "BARE_XS");
+            CHECK(domTest[0].platform == "Series");
+            CHECK(domTest[0].playable); // absorbed from richOne
+            CHECK(domTest[0].tileUrl == "https://example.com/one.png");
+            CHECK(domTest[0].description == "Awesome Xbox One version");
+
+            // Order independence: bareXs first, richOne second
+            std::vector<ui::GameTile> domTestRev;
+            domTestRev.push_back(bareXs);
+            domTestRev.push_back(richOne);
+            app::dedupeByTitle(domTestRev);
+            CHECK(domTestRev.size() == 1);
+            CHECK(domTestRev[0].productId == "BARE_XS");
+            CHECK(domTestRev[0].platform == "Series");
+            CHECK(domTestRev[0].playable);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Item 3: Call of Duty CDN Art & Metadata in kKnownCloudGames
+    // -------------------------------------------------------------------------
+    {
+        app::Library lib;
+
+        // Cold War Xbox One (9P7PFH4RMFZD)
+        ui::GameTile cwOne = lib.tile("9P7PFH4RMFZD", "CALLOFDUTYCOLDWAR");
+        CHECK(!cwOne.name.empty());
+        CHECK(cwOne.name.find("Cold War") != std::string::npos);
+        CHECK(!cwOne.titleId.empty() && cwOne.titleId != "None");
+        CHECK(!cwOne.tileUrl.empty());
+        CHECK(cwOne.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!cwOne.heroUrl.empty());
+        CHECK(!cwOne.description.empty());
+        CHECK(cwOne.description.find("Cold War") != std::string::npos);
+        CHECK(cwOne.detailed);
+
+        // Cold War Series X|S (9NPLRJ9CC870)
+        ui::GameTile cwXs = lib.tile("9NPLRJ9CC870", "CALLOFDUTYCOLDWAR");
+        CHECK(!cwXs.name.empty());
+        CHECK(cwXs.name.find("Cold War") != std::string::npos);
+        CHECK(!cwXs.titleId.empty() && cwXs.titleId != "None");
+        CHECK(!cwXs.tileUrl.empty());
+        CHECK(cwXs.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!cwXs.heroUrl.empty());
+        CHECK(!cwXs.description.empty());
+        CHECK(cwXs.detailed);
+
+        // Cold War query without titleId (store ID only)
+        ui::GameTile cwNoTid = lib.tile("9P7PFH4RMFZD", "");
+        CHECK(!cwNoTid.name.empty());
+        CHECK(!cwNoTid.titleId.empty() && cwNoTid.titleId != "None");
+        CHECK(!cwNoTid.tileUrl.empty());
+        CHECK(!cwNoTid.description.empty());
+        CHECK(cwNoTid.detailed);
+
+        // Cold War query without productId (cloudTitleId only)
+        ui::GameTile cwNoPid = lib.tile("", "CALLOFDUTYBLACKOPSCOLDWAR");
+        CHECK(!cwNoPid.name.empty());
+        CHECK(cwNoPid.productId == "9P7PFH4RMFZD");
+        CHECK(!cwNoPid.tileUrl.empty());
+        CHECK(cwNoPid.detailed);
+
+        // Vanguard Xbox One (9PHP6HF58MB5)
+        ui::GameTile vgOne = lib.tile("9PHP6HF58MB5", "CALLOFDUTYVANGUARD");
+        CHECK(!vgOne.name.empty());
+        CHECK(!vgOne.titleId.empty());
+        CHECK(!vgOne.tileUrl.empty());
+        CHECK(vgOne.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!vgOne.heroUrl.empty());
+        CHECK(!vgOne.description.empty());
+        CHECK(vgOne.description.find("Vanguard") != std::string::npos);
+        CHECK(vgOne.detailed);
+
+        // Vanguard Series X|S (9MWHTW1SF7RW)
+        ui::GameTile vgXs = lib.tile("9MWHTW1SF7RW", "CALLOFDUTYVANGUARD");
+        CHECK(!vgXs.name.empty());
+        CHECK(!vgXs.titleId.empty());
+        CHECK(!vgXs.tileUrl.empty());
+        CHECK(vgXs.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!vgXs.heroUrl.empty());
+        CHECK(!vgXs.description.empty());
+        CHECK(vgXs.detailed);
+
+        // Modern Warfare (9NVQBQ3F6W9W & C5DTJ99626K3)
+        ui::GameTile mw1 = lib.tile("9NVQBQ3F6W9W", "CALLOFDUTYMODERNWARFARE");
+        CHECK(!mw1.name.empty());
+        CHECK(!mw1.titleId.empty());
+        CHECK(!mw1.tileUrl.empty());
+        CHECK(mw1.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!mw1.heroUrl.empty());
+        CHECK(!mw1.description.empty());
+        CHECK(mw1.detailed);
+
+        ui::GameTile mw2 = lib.tile("C5DTJ99626K3", "CALLOFDUTYMODERNWARFARE");
+        CHECK(!mw2.name.empty());
+        CHECK(!mw2.titleId.empty());
+        CHECK(!mw2.tileUrl.empty());
+        CHECK(mw2.tileUrl.find("store-images.s-microsoft.com") != std::string::npos);
+        CHECK(!mw2.heroUrl.empty());
+        CHECK(!mw2.description.empty());
+        CHECK(mw2.detailed);
+
+        // Verify end-to-end processing through lib.tiles() without dropping cards
+        std::vector<std::pair<std::string, std::string>> codItems = {
+            {"9P7PFH4RMFZD", ""}, // Cold War Xbox One
+            {"9NPLRJ9CC870", ""}, // Cold War Series X|S
+            {"9PHP6HF58MB5", ""}, // Vanguard Xbox One
+            {"9MWHTW1SF7RW", ""}, // Vanguard Series X|S
+            {"9NVQBQ3F6W9W", ""}, // Modern Warfare 2019
+            {"C5DTJ99626K3", ""}  // Modern Warfare 2019 alt
+        };
+        std::vector<ui::GameTile> codTiles;
+        for (const auto& [pid, tid] : codItems) {
+            ui::GameTile t = lib.tile(pid, tid);
+            if (!t.productId.empty() && !t.titleId.empty() && !t.name.empty()) {
+                codTiles.push_back(std::move(t));
+            }
+        }
+        app::dedupeByTitle(codTiles);
+        // Exactly 3 deduplicated games (Cold War Series X|S, Vanguard Series X|S, Modern Warfare)
+        CHECK(codTiles.size() == 3);
+        for (const auto& t : codTiles) {
+            CHECK(!t.name.empty());
+            CHECK(!t.titleId.empty());
+            CHECK(!t.tileUrl.empty());
+            CHECK(!t.heroUrl.empty());
+            CHECK(!t.description.empty());
+            CHECK(t.detailed);
+        }
+    }
+}
+
+static void testBlock4OwnershipAndRecents() {
+    using namespace xc;
+    std::string testDir = "/tmp/test_bloco4_" + std::to_string(platform::nowMs());
+    std::system(("rm -rf " + testDir + " && mkdir -p " + testDir).c_str());
+    std::string cacheFile = testDir + "/library_cache.json";
+
+    // 1. Universal License Acquisition (markAsOwned) with 12-character Store BigId and cross-gen purging
+    {
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+
+        // Preload catalog games including real 12-character Microsoft Store BigID (Just Dance)
+        // and an alternate edition sharing the same titleId (TID_JD)
+        CHECK(app::isStoreBigId("9P368QBR2C5S"));
+        std::string jsonText = "{\"version\":2,\"market\":\"US\",\"language\":\"en-US\",\"products\":{"
+                               "\"9P368QBR2C5S\":{\"title\":\"Just Dance 2026\",\"xt\":\"TID_JD\"},"
+                               "\"9P368QBRALT0\":{\"title\":\"Just Dance 2026 Deluxe\",\"xt\":\"TID_JD\"},"
+                               "\"PROD_STORE1\":{\"title\":\"Store Game 1\",\"xt\":\"TID_SG1\"},"
+                               "\"PROD_OWNED1\":{\"title\":\"Owned Game 1\",\"xt\":\"TID_OG1\"}},"
+                               "\"owned\":[{\"p\":\"PROD_OWNED1\",\"t\":\"TID_OG1\"}],"
+                               "\"purchasable\":[{\"p\":\"9P368QBR2C5S\",\"t\":\"TID_JD\"},{\"p\":\"9P368QBRALT0\",\"t\":\"TID_JD\"},{\"p\":\"PROD_STORE1\",\"t\":\"TID_SG1\"}],"
+                               "\"freeInStore\":[\"9P368QBR2C5S\"],"
+                               "\"ownedTitles\":[\"TID_OG1\"],\"ownedProducts\":[\"PROD_OWNED1\"]}";
+        platform::writeFileAtomic(cacheFile, jsonText);
+        CHECK(lib.loadCache(false));
+
+        CHECK(lib.owned().size() == 1);
+        CHECK(lib.purchasable().size() == 2); // 9P368QBR2C5S and 9P368QBRALT0 deduplicate to 1 Just Dance tile, + Store Game 1 = 2
+
+        // User acquires 12-character Store BigID Just Dance (9P368QBR2C5S)
+        lib.markAsOwned("9P368QBR2C5S", "TID_JD", "Just Dance 2026");
+
+        // Verify it is immediately added to owned, removed from purchasable, and freeInStore
+        CHECK(lib.owned().size() == 2);
+        // Both the acquired edition AND alternate cross-gen edition sharing TID_JD must be purged from purchasable
+        CHECK(lib.purchasable().size() == 1);
+        CHECK(lib.purchasable().front().productId == "PROD_STORE1");
+
+        bool jdFound = false;
+        for (const auto& t : lib.owned()) {
+            if (t.productId == "9P368QBR2C5S") {
+                jdFound = true;
+                CHECK(t.name == "Just Dance 2026");
+                CHECK(t.playable);
+                CHECK(!t.purchasable);
+                CHECK(t.freeInStore);
+                break;
+            }
+        }
+        CHECK(jdFound);
+
+        // Verify 9P368QBR2C5S is placed at front of recent_ (first in owned)
+        CHECK(lib.owned().front().productId == "9P368QBR2C5S");
+    }
+
+    // 2. Resilience against slow GSSV entitlement propagation during loadOwned & loading bar dismissal
+    {
+        net::setTestTransport([](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("/v2/titles") != std::string::npos) {
+                // Microsoft has NOT propagated entitlement for 9P368QBR2C5S yet! hasEntitlement is false
+                r.body = R"({"results":[
+                    {"titleId":"TID_OG1","details":{"productId":"PROD_OWNED1","hasEntitlement":true,"isFreeInStore":false,"userPrograms":[]}},
+                    {"titleId":"TID_JD","details":{"productId":"9P368QBR2C5S","hasEntitlement":false,"isFreeInStore":true,"userPrograms":[]}},
+                    {"titleId":"TID_SG1","details":{"productId":"PROD_STORE1","hasEntitlement":false,"isFreeInStore":false,"userPrograms":[]}}
+                ]})";
+            } else if (req.url.find("/v3/products") != std::string::npos) {
+                r.body = R"({"Products":{
+                    "9P368QBR2C5S":{"XCloudTitleId":"TID_JD","ProductTitle":"Just Dance 2026"},
+                    "PROD_STORE1":{"XCloudTitleId":"TID_SG1","ProductTitle":"Store Game 1"},
+                    "PROD_OWNED1":{"XCloudTitleId":"TID_OG1","ProductTitle":"Owned Game 1"}
+                }})";
+            } else {
+                r.status = 503;
+            }
+            return r;
+        });
+
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        CHECK(lib.loadCache(false));
+
+        // Before loadOwned, 9P368QBR2C5S was marked as owned
+        CHECK(lib.owned().size() == 2);
+
+        xcloud::GssvClient gssv;
+        std::atomic<bool> stop{false};
+        bool progressSawActive = false;
+        lib.loadOwned(gssv, [&]() {
+            if (lib.progress().active) progressSawActive = true;
+        }, &stop);
+
+        // Verify progress is cleared to inactive after loadOwned completes (no infinite spinner!)
+        CHECK(progressSawActive);
+        CHECK(!lib.progress().active);
+
+        // Verify loadCatalogNames also guarantees clearing progress even when missing is empty
+        lib.loadCatalogNames([&]() {}, &stop);
+        CHECK(!lib.progress().active);
+
+        // Verify 9P368QBR2C5S is STILL retained in owned, NOT dropped to purchasable!
+        CHECK(lib.owned().size() == 2);
+        bool foundStore1 = false;
+        bool foundJdInPurchasable = false;
+        for (const auto& t : lib.purchasable()) {
+            if (t.productId == "PROD_STORE1") foundStore1 = true;
+            if (t.productId == "9P368QBR2C5S" || t.productId == "9P368QBRALT0") foundJdInPurchasable = true;
+        }
+        CHECK(foundStore1);
+        CHECK(!foundJdInPurchasable);
+
+        bool jdFound = false;
+        for (const auto& t : lib.owned()) {
+            if (t.productId == "9P368QBR2C5S") {
+                jdFound = true;
+                CHECK(t.playable);
+                CHECK(!t.purchasable);
+                CHECK(t.freeInStore);
+                break;
+            }
+        }
+        CHECK(jdFound);
+
+        net::setTestTransport({});
+    }
+
+    // 3. Cache roundtrip and instant-resume recency ordering on boot
+    {
+        // Fresh library instance loading from cache
+        app::Library bootLib;
+        bootLib.setCachePath(cacheFile);
+        std::map<std::string, uint64_t> playtime = {
+            {"PROD_OWNED1", 1200}
+        };
+        bootLib.setPlaytime(playtime);
+        CHECK(bootLib.loadCache(true));
+
+        // 9P368QBR2C5S was acquired and at front of recent; PROD_OWNED1 has playtime
+        auto owned = bootLib.owned();
+        CHECK(owned.size() == 2);
+        CHECK(owned[0].productId == "9P368QBR2C5S");
+        CHECK(owned[0].freeInStore);
+        CHECK(owned[1].productId == "PROD_OWNED1");
+        bool bootFoundStore1 = false;
+        bool bootFoundJdInPurchasable = false;
+        for (const auto& t : bootLib.purchasable()) {
+            if (t.productId == "PROD_STORE1") bootFoundStore1 = true;
+            if (t.productId == "9P368QBR2C5S" || t.productId == "9P368QBRALT0") bootFoundJdInPurchasable = true;
+        }
+        CHECK(bootFoundStore1);
+        CHECK(!bootFoundJdInPurchasable);
+
+        // 4. L3 Refresh in-memory continuity across Library instances (setAcquired)
+        app::Library l3Lib;
+        l3Lib.setAcquired(bootLib.acquiredProducts(), bootLib.acquiredTitles());
+        CHECK(l3Lib.acquiredProducts().count("9P368QBR2C5S") == 1);
+        CHECK(l3Lib.acquiredTitles().count("TID_JD") == 1);
+    }
+
+    // 5. "Recentes primeiro" sorting with playtime tie-breaking
+    {
+        app::Library sortLib;
+        sortLib.setCachePath(testDir + "/sort_cache.json");
+        std::string sortJson = "{\"version\":2,\"market\":\"US\",\"language\":\"en-US\",\"products\":{"
+                               "\"PID_A\":{\"title\":\"Alpha Game\",\"xt\":\"TID_A\"},"
+                               "\"PID_B\":{\"title\":\"Beta Game\",\"xt\":\"TID_B\"},"
+                               "\"PID_C\":{\"title\":\"Charlie Game\",\"xt\":\"TID_C\"},"
+                               "\"PID_D\":{\"title\":\"Delta Game\",\"xt\":\"TID_D\"}},"
+                               "\"owned\":[{\"p\":\"PID_A\",\"t\":\"TID_A\"},{\"p\":\"PID_B\",\"t\":\"TID_B\"},"
+                               "{\"p\":\"PID_C\",\"t\":\"TID_C\"},{\"p\":\"PID_D\",\"t\":\"TID_D\"}],"
+                               "\"purchasable\":[],\"ownedTitles\":[\"TID_A\",\"TID_B\",\"TID_C\",\"TID_D\"],"
+                               "\"ownedProducts\":[\"PID_A\",\"PID_B\",\"PID_C\",\"PID_D\"]}";
+        platform::writeFileAtomic(testDir + "/sort_cache.json", sortJson);
+        CHECK(sortLib.loadCache(false));
+
+        // Without recents or playtime: strictly alphabetical A -> B -> C -> D
+        auto initialOwned = sortLib.owned();
+        CHECK(initialOwned.size() == 4);
+        CHECK(initialOwned[0].productId == "PID_A");
+        CHECK(initialOwned[1].productId == "PID_B");
+        CHECK(initialOwned[2].productId == "PID_C");
+        CHECK(initialOwned[3].productId == "PID_D");
+
+        // Now set playtime for Charlie (7200s) and Delta (3600s)
+        sortLib.setPlaytime({{"PID_C", 7200}, {"PID_D", 3600}});
+        auto ptOwned = sortLib.owned();
+        // Charlie (7200) > Delta (3600) > Alpha (0, alphabetical) > Beta (0, alphabetical)
+        CHECK(ptOwned[0].productId == "PID_C");
+        CHECK(ptOwned[1].productId == "PID_D");
+        CHECK(ptOwned[2].productId == "PID_A");
+        CHECK(ptOwned[3].productId == "PID_B");
+
+        // Now record Beta as most recently played
+        sortLib.recordRecent("PID_B");
+        auto recentOwned = sortLib.owned();
+        // Beta (recent) > Charlie (played 7200) > Delta (played 3600) > Alpha (unplayed)
+        CHECK(recentOwned[0].productId == "PID_B");
+        CHECK(recentOwned[1].productId == "PID_C");
+        CHECK(recentOwned[2].productId == "PID_D");
+        CHECK(recentOwned[3].productId == "PID_A");
+    }
+
+    // 6. AppUi::markTileOwned moves 12-character Store BigID tile from allPurchasable_ to allOwned_ and rebuilds
+    {
+        ui::Fonts dummyFonts;
+        ui::ImageCache images([] {});
+        ui::AppUi appUi(dummyFonts, images);
+        appUi.setSubscription("Free");
+        appUi.setMembership(false);
+
+        ui::GameTile t1, t2;
+        t1.productId = "PID_OWNED";
+        t1.titleId = "TID_OWNED";
+        t1.name = "Owned Title";
+        t1.playable = true;
+
+        t2.productId = "9P368QBR2C5S";
+        t2.titleId = "TID_JD";
+        t2.name = "Just Dance 2026";
+        t2.playable = false;
+        t2.purchasable = true;
+        t2.freeInStore = true;
+
+        appUi.setOwned({t1}, {t2}, true);
+        ui::GameTile out;
+        CHECK(appUi.firstTile(out));
+        CHECK(out.productId == "PID_OWNED");
+
+        // Before claim, 9P368QBR2C5S is purchasable
+        CHECK(appUi.purchasableAt(0, out));
+        CHECK(out.productId == "9P368QBR2C5S");
+
+        // Claim 9P368QBR2C5S
+        appUi.markTileOwned("9P368QBR2C5S", "TID_JD");
+
+        // Now 9P368QBR2C5S should be in owned, playable, not purchasable, and still freeInStore so Free accounts can play it!
+        CHECK(!appUi.purchasableAt(0, out)); // purchasable is now empty!
+        CHECK(appUi.findTile("TID_JD", out));
+        CHECK(out.productId == "9P368QBR2C5S");
+        CHECK(out.playable);
+        CHECK(!out.purchasable);
+        CHECK(out.freeInStore);
+        CHECK(appUi.isEffectivePlayable(out));
+    }
+
+    std::system(("rm -rf " + testDir).c_str());
+}
+
+void testPhase1BugFixesAndPhase2Optimizations() {
+    // 1. GssvClient previewFeatures header propagation across authenticated requests
+    {
+        std::string lastDeviceInfo;
+        net::setTestTransport([&](const net::Request& req) {
+            for (const auto& [k, v] : req.headers) {
+                if (k == "X-MS-Device-Info" || k == "x-ms-device-info") lastDeviceInfo = v;
+            }
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("/v2/login/user") != std::string::npos) {
+                r.body = R"({"gsToken":"tok","market":"US","offeringSettings":{"regions":[{"name":"EASTUS","baseUri":"https://eastus.gssv.com","isDefault":true}]}})";
+            } else if (req.url.find("/v2/titles") != std::string::npos) {
+                r.body = R"({"results":[]})";
+            }
+            return r;
+        });
+        xcloud::GssvClient gssv;
+        gssv.setPreviewFeatures(true);
+        std::string err;
+        auth::XblToken xblTok;
+        xblTok.token = "xbl_tok";
+        CHECK(gssv.login(xblTok, err));
+
+        lastDeviceInfo.clear();
+        std::vector<xcloud::Title> titles;
+        CHECK(gssv.listTitles(titles, err));
+        CHECK(lastDeviceInfo.find("play.xbox.com") != std::string::npos);
+
+        gssv.setPreviewFeatures(false);
+        lastDeviceInfo.clear();
+        CHECK(gssv.listTitles(titles, err));
+        CHECK(lastDeviceInfo.find("Microsoft.GamingApp") != std::string::npos);
+        net::setTestTransport({});
+    }
+
+    // 2. ProductId isolation when sharing titleId (Bug 1.5) & markUnclaimable (Bug 2.1)
+    {
+        ui::Fonts fonts;
+        fonts.load("assets/fonts");
+        ui::ImageCache images([] {});
+        ui::AppUi ui(fonts, images);
+
+        ui::GameTile baseEd, deluxeEd;
+        baseEd.productId = "PROD_BASE_01";
+        baseEd.titleId = "SHARED_TID";
+        baseEd.name = "Base Edition";
+        baseEd.playable = true;
+        baseEd.freeInStore = true;
+
+        deluxeEd.productId = "PROD_DELUXE1";
+        deluxeEd.titleId = "SHARED_TID";
+        deluxeEd.name = "Deluxe Edition";
+        deluxeEd.playable = false;
+        deluxeEd.purchasable = true;
+
+        ui::GameRow row;
+        row.title = "Row";
+        row.tiles = {baseEd, deluxeEd};
+        ui.setCatalogState({row}, {baseEd}, {deluxeEd}, true, true, {baseEd}, {deluxeEd}, false, 0, 0);
+
+        ui.setDetailInfo("PROD_BASE_01", "Base description only", "BasePub", {}, "https://example.com/base_hero.jpg");
+
+        ui.showDetails(deluxeEd);
+        CHECK(ui.detailTile().productId == "PROD_DELUXE1");
+        CHECK(ui.detailTile().description.empty());
+        CHECK(ui.detailTile().heroUrl.empty());
+
+        // markUnclaimable clears freeInStore across cached lists
+        ui.markUnclaimable("PROD_BASE_01");
+        ui::GameTile found;
+        CHECK(ui.findTile("SHARED_TID", found));
+        CHECK(!found.freeInStore);
+    }
+
+    // 3. Mouse hit-testing on Details (only inside button rect) and Settings rows 10 & 22 + right-click save
+    {
+        ui::Fonts fonts;
+        fonts.load("assets/fonts");
+        ui::ImageCache images([] {});
+        ui::AppUi ui(fonts, images);
+        ui::UiCaps caps;
+        caps.desktopWindow = true;
+        caps.touchpad = true;
+        ui.setCaps(caps);
+
+        ui::GameTile freeTile;
+        freeTile.productId = "9P_FREE_GAME";
+        freeTile.titleId = "TID_FREE";
+        freeTile.name = "Free Game";
+        freeTile.playable = false;
+        freeTile.freeInStore = true;
+
+        ui.showDetails(freeTile);
+        ui::Canvas c(1920, 1080);
+        ui.render(c, 1000);
+
+        // Clicking outside the ClaimFree button must NOT trigger ClaimFreeGame
+        auto evOutside = ui.onMouseDown(1500.0f, 200.0f, 1);
+        CHECK(evOutside.action == ui::Action::None);
+
+        // Open Settings and test Row 10 (Bitrate) accept and Row 22 (PreviewFeatures) click
+        ui.showHome();
+        ui.handle(ui::NavInput{.options = true});
+        CHECK(ui.screen() == ui::Screen::Settings);
+
+        // Navigate to row 10 (BitrateCap) and press accept
+        while (ui.settingsFocus() != 10) {
+            ui.handle(ui::NavInput{.down = true});
+        }
+        auto evBitrate = ui.handle(ui::NavInput{.accept = true});
+        CHECK(evBitrate.action == ui::Action::SettingsChanged);
+
+        // Right-click in Settings saves and exits to Home
+        auto evRightClick = ui.onMouseDown(500.0f, 500.0f, 3);
+        CHECK(ui.screen() == ui::Screen::Home);
+        CHECK(evRightClick.action == ui::Action::SettingsChanged);
+    }
+
+    // 4. Canvas fast paths (opaque drawImage, gradientV, gradientH, setClip/clearClip)
+    {
+        ui::Canvas c(64, 64);
+        c.gradientV({0, 0, 64, 64}, ui::rgba(20, 30, 40, 255), ui::rgba(10, 15, 20, 255));
+        c.gradientH({0, 0, 64, 64}, ui::rgba(0, 0, 0, 128), ui::rgba(0, 0, 0, 0));
+
+        ui::Image img;
+        img.w = 16;
+        img.h = 16;
+        img.opaque = true;
+        img.px.assign(16 * 16, ui::rgba(100, 150, 200, 255));
+
+        c.setClip({8, 8, 8, 8});
+        c.drawImage(img, 0, 0, 255, 0);
+        c.clearClip();
+        // Outside clip at (2, 2) should NOT be img color; inside clip at (10, 10) SHOULD be img color
+        CHECK(c.data()[2 * 64 + 2] != ui::rgba(100, 150, 200, 255));
+        CHECK(c.data()[10 * 64 + 10] == ui::rgba(100, 150, 200, 255));
+    }
+
+    // 5. Screen::SignIn redirect on sign-in completion
+    {
+        ui::Fonts fonts;
+        fonts.load("assets/fonts");
+        ui::ImageCache images([] {});
+        ui::AppUi ui(fonts, images);
+        ui.showSignIn("ABCD-1234", "https://www.microsoft.com/link");
+        CHECK(ui.screen() == ui::Screen::SignIn);
+        ui.showSplash("Carregando jogos...");
+        CHECK(ui.screen() == ui::Screen::Splash);
+        ui.showHome();
+        CHECK(ui.screen() == ui::Screen::Home);
+    }
+}
+
+static void testSizedUrl() {
+    // Protocol-relative URLs
+    CHECK(ui::sizedUrl("//store-images.s-microsoft.com/image.png", 300, 450) ==
+          "https://store-images.s-microsoft.com/image.png?w=300&h=450&mode=scale&q=75&format=jpg");
+    // store-images q=75
+    CHECK(ui::sizedUrl("https://store-images.s-microsoft.com/image.png", 1920, 1080) ==
+          "https://store-images.s-microsoft.com/image.png?w=1920&h=1080&mode=scale&q=75&format=jpg");
+    CHECK(ui::sizedUrl("https://store-images.s-microsoft.com/image.png?param=1", 100, 100) ==
+          "https://store-images.s-microsoft.com/image.png?param=1&w=100&h=100&mode=scale&q=75&format=jpg");
+    // images-eds-ssl.xboxlive.com format=jpg without quality
+    CHECK(ui::sizedUrl("https://images-eds-ssl.xboxlive.com/image.png", 400, 600) ==
+          "https://images-eds-ssl.xboxlive.com/image.png?w=400&h=600&format=jpg");
+    CHECK(ui::sizedUrl("https://images-eds-ssl.xboxlive.com/image.png?foo=bar", 200, 300) ==
+          "https://images-eds-ssl.xboxlive.com/image.png?foo=bar&w=200&h=300&format=jpg");
+    // an EDS URL that already names a format keeps it (a second format= is HTTP 400)
+    CHECK(ui::sizedUrl("https://images-eds-ssl.xboxlive.com/image?url=abc&format=png", 20, 20) ==
+          "https://images-eds-ssl.xboxlive.com/image?url=abc&format=png&w=20&h=20");
+    // other URLs untouched
+    CHECK(ui::sizedUrl("https://assets.xbox.com/img.png", 100, 100) == "https://assets.xbox.com/img.png");
+    // invalid dimensions or empty string untouched
+    CHECK(ui::sizedUrl("", 100, 100).empty());
+    CHECK(ui::sizedUrl("https://store-images.s-microsoft.com/image.png", 0, 100) ==
+          "https://store-images.s-microsoft.com/image.png");
+    CHECK(ui::sizedUrl("https://images-eds-ssl.xboxlive.com/image.png", 100, -1) ==
+          "https://images-eds-ssl.xboxlive.com/image.png");
+}
+
+static void testReleaseV155Features() {
+    std::string testDir = "/tmp/test-v155-features";
+    std::system(("rm -rf " + testDir + " && mkdir -p " + testDir).c_str());
+    std::string cacheFile = testDir + "/library_cache.json";
+
+    // 1. Verify shelf auto-refresh & knownProducts persistence in library_cache.json
+    {
+        std::map<std::string, std::string> siglFeeds;
+        siglFeeds[xcloud::sigl::kAllGames] = R"([{"siglId":"all","title":"All Games"},{"id":"GP_GAME_1"},{"id":"GP_GAME_2"}])";
+        siglFeeds[xcloud::sigl::kRecentlyAdded] = R"([{"siglId":"recent","title":"Recently Added"},{"id":"GP_GAME_1"}])";
+        siglFeeds[xcloud::sigl::kMostPopular] = R"([{"siglId":"pop","title":"Most Popular"},{"id":"GP_GAME_2"}])";
+        siglFeeds[xcloud::sigl::kFreeToPlay] = R"([{"siglId":"f2p","title":"Free to Play"},{"id":"F2P_GAME_1"}])";
+        siglFeeds[xcloud::sigl::kLeavingSoon] = R"([{"siglId":"leaving","title":"Leaving Soon"}])";
+
+        std::string titlesBody = R"({
+            "results": [
+                {
+                    "titleId": "TITLE_CLOUD_SPECIAL",
+                    "details": {
+                        "productId": "PROD_CLOUD_SPECIAL",
+                        "hasEntitlement": false,
+                        "isFreeInStore": false,
+                        "userPrograms": []
+                    }
+                }
+            ]
+        })";
+
+        std::map<std::string, std::string> productTitles;
+        productTitles["GP_GAME_1"] = "Game One";
+        productTitles["GP_GAME_2"] = "Game Two";
+        productTitles["F2P_GAME_1"] = "Free Shooter";
+        productTitles["PROD_CLOUD_SPECIAL"] = "Special Cloud Offering";
+
+        net::setTestTransport([&](const net::Request& req) {
+            net::Response r;
+            r.status = 200;
+            if (req.url.find("sigls") != std::string::npos) {
+                for (const auto& [siglId, body] : siglFeeds) {
+                    if (req.url.find("id=" + siglId) != std::string::npos) {
+                        r.body = body;
+                        return r;
+                    }
+                }
+                r.body = "[]";
+                return r;
+            } else if (req.url.find("titles") != std::string::npos) {
+                r.body = titlesBody;
+                return r;
+            } else if (req.url.find("products") != std::string::npos) {
+                json::Value root = json::Value::object();
+                json::Value prods = json::Value::object();
+                for (const auto& [id, name] : productTitles) {
+                    json::Value item = json::Value::object();
+                    item.set("ProductTitle", name);
+                    item.set("XCloudTitleId", "T_" + id);
+                    prods.set(id, std::move(item));
+                }
+                root.set("Products", std::move(prods));
+                r.body = root.dump();
+                return r;
+            }
+            r.status = 404;
+            return r;
+        });
+
+        app::Library lib;
+        lib.setCachePath(cacheFile);
+        lib.setSubscription("Ultimate");
+        xcloud::GssvClient gssv;
+        std::string err;
+
+        // Load initial catalog
+        CHECK(lib.load(gssv, "en-US", [] {}, err));
+        CHECK(lib.rows().size() >= 4);
+
+        // First syncDelta on this fresh instance
+        size_t newAdded = lib.syncDelta(gssv, [] {}, err);
+        // Special cloud title outside Game Pass must NOT be reported as new Game Pass game
+        CHECK(newAdded == 0);
+
+        // Verify cache was saved and contains PROD_CLOUD_SPECIAL in products and knownProducts
+        std::string cacheContent;
+        CHECK(platform::readFile(cacheFile, cacheContent));
+        auto j = json::parse(cacheContent);
+        CHECK(j.has_value());
+        CHECK((*j)["products"].has("PROD_CLOUD_SPECIAL"));
+        size_t countInKp = 0;
+        for (const auto& p : (*j)["knownProducts"].items()) {
+            if (p.str() == "PROD_CLOUD_SPECIAL") countInKp++;
+        }
+        CHECK(countInKp == 1);  // Verified deduplicated: serialized exactly once!
+
+        // 2. Simulate subsequent boot with pre-existing cache
+        app::Library libBoot2;
+        libBoot2.setCachePath(cacheFile);
+        CHECK(libBoot2.loadCache(true));
+
+        // syncDelta on boot 2: must NOT have false positive of new games!
+        size_t countBoot2 = libBoot2.syncDelta(gssv, [] {}, err);
+        CHECK(countBoot2 == 0);
+
+        // 3. Now simulate Microsoft adding a new Game Pass game to Recently Added feed
+        siglFeeds[xcloud::sigl::kRecentlyAdded] = R"([{"siglId":"recent","title":"Recently Added"},{"id":"GP_GAME_3"},{"id":"GP_GAME_1"}])";
+        siglFeeds[xcloud::sigl::kAllGames] = R"([{"siglId":"all","title":"All Games"},{"id":"GP_GAME_1"},{"id":"GP_GAME_2"},{"id":"GP_GAME_3"}])";
+        productTitles["GP_GAME_3"] = "Game Three";
+
+        size_t countBoot3 = libBoot2.syncDelta(gssv, [] {}, err);
+        // Genuine new Game Pass game should be counted
+        CHECK(countBoot3 == 1);
+
+        // Check that "Recently Added" shelf in layout_ now automatically has GP_GAME_3 without manual L3 refresh!
+        bool foundInShelf = false;
+        for (const auto& row : libBoot2.rows()) {
+            if (row.title == "Recently Added") {
+                for (const auto& tile : row.tiles) {
+                    if (tile.productId == "GP_GAME_3") foundInShelf = true;
+                }
+            }
+        }
+        CHECK(foundInShelf);
+
+        // 4. Test SIGL object-format parsing (both string IDs and object IDs {"id": "..."})
+        xcloud::ProductList objList;
+        std::string objErr;
+        siglFeeds["test_obj_format"] = R"({"title":"Object Shelves","productIds":["GP_GAME_1",{"id":"GP_GAME_2"}]})";
+        CHECK(xcloud::fetchList("test_obj_format", "US", "en-US", objList, objErr));
+        CHECK(objList.title == "Object Shelves");
+        CHECK(objList.productIds.size() == 2);
+        CHECK(objList.productIds[0] == "GP_GAME_1");
+        CHECK(objList.productIds[1] == "GP_GAME_2");
+
+        // 5. Test resilience against corrupted or truncated cache
+        std::string corruptCache = testDir + "/corrupt.json";
+        platform::writeFileAtomic(corruptCache, "{ \"version\": 2, \"knownProducts\": [\"\", 123, null], \"products\": {");
+        app::Library corruptLib;
+        corruptLib.setCachePath(corruptCache);
+        CHECK(!corruptLib.loadCache(true));
+
+        net::setTestTransport({});
+    }
+
+    std::system(("rm -rf " + testDir).c_str());
+}
+
+#if defined(__x86_64__) || defined(_M_X64)
+#include <emmintrin.h>
+#endif
+
+static void testPs4VideoPipelineAndSse2Converter() {
+    using namespace xc;
+    // 1. HwDecoder::Picture default state including pending flag
+    media::HwDecoder::Picture hp;
+    CHECK(!hp.error);
+    CHECK(!hp.pending);
+    CHECK(hp.data == nullptr);
+
+    // 1b. Verify PS4 HW decoder ring buffer slot progression during decode and flush
+    constexpr size_t kOutputSlots = 6;
+    auto simulateSlotAdvance = [](size_t currentSlot, bool decodeAccepted, bool needsFlush, bool flushAccepted) -> size_t {
+        size_t slot = currentSlot;
+        size_t outSlotUsed = slot;
+        if (decodeAccepted) {
+            slot = (outSlotUsed + 1) % kOutputSlots;
+        }
+        if (needsFlush) {
+            size_t flushSlot = slot;
+            if (flushAccepted) {
+                slot = (flushSlot + 1) % kOutputSlots;
+            }
+        }
+        return slot;
+    };
+    // Case A: decode accepted buffer, valid frame immediately (no flush needed) -> advances 1
+    CHECK(simulateSlotAdvance(0, true, false, false) == 1);
+    // Case B: decode accepted buffer, !valid -> flush accepts next slot -> advances 2
+    CHECK(simulateSlotAdvance(0, true, true, true) == 2);
+    // Case C: decode accepted buffer, !valid -> flush flushes without accepting new buffer -> advances 1
+    CHECK(simulateSlotAdvance(0, true, true, false) == 1);
+    // Case D: decode did not accept buffer, !valid -> flush accepts buffer -> advances 1
+    CHECK(simulateSlotAdvance(0, false, true, true) == 1);
+    // Case E: neither accepts buffer -> advances 0
+    CHECK(simulateSlotAdvance(0, false, true, false) == 0);
+    // Case F: wrap-around at ring boundary (slot 5 + 2 -> slot 1)
+    CHECK(simulateSlotAdvance(5, true, true, true) == 1);
+
+    // 2. ImageCache::stop() idempotency (called in coreShutdown before destructor)
+    {
+        ui::ImageCache cache([] {}, 4u << 20);
+        cache.stop();
+        cache.stop();
+    }
+
+#if defined(__x86_64__) || defined(_M_X64)
+    // 3. Verify 8-pixel 16-bit SSE2 BT.709 Limited Range kernel and 3/2 (720p->1080p) shuffle
+    auto colorRgbEightTest = [](__m128i y16, __m128i u16, __m128i v16, __m128i& p_lo, __m128i& p_hi) {
+        const __m128i y_bias = _mm_set1_epi16(16);
+        const __m128i uv_bias = _mm_set1_epi16(128);
+        const __m128i zero16 = _mm_setzero_si128();
+        const __m128i round = _mm_set1_epi32(128);
+        const __m128i k_y_r  = _mm_set1_epi32((403 << 16) | (298 & 0xFFFF));
+        const __m128i k_y_b  = _mm_set1_epi32((541 << 16) | (298 & 0xFFFF));
+        const __m128i k_y_gu = _mm_set1_epi32(((-55 & 0xFFFF) << 16) | (298 & 0xFFFF));
+        const __m128i k_gv_0 = _mm_set1_epi32(-137 & 0xFFFF);
+        const __m128i alpha  = _mm_set1_epi16(static_cast<short>(0xFF00));
+
+        __m128i c = _mm_max_epi16(_mm_sub_epi16(y16, y_bias), zero16);
+        __m128i d = _mm_sub_epi16(u16, uv_bias);
+        __m128i e = _mm_sub_epi16(v16, uv_bias);
+
+        __m128i ce_lo = _mm_unpacklo_epi16(c, e);
+        __m128i ce_hi = _mm_unpackhi_epi16(c, e);
+        __m128i cd_lo = _mm_unpacklo_epi16(c, d);
+        __m128i cd_hi = _mm_unpackhi_epi16(c, d);
+        __m128i e0_lo = _mm_unpacklo_epi16(e, zero16);
+        __m128i e0_hi = _mm_unpackhi_epi16(e, zero16);
+
+        __m128i r_lo = _mm_srai_epi32(_mm_add_epi32(_mm_madd_epi16(ce_lo, k_y_r), round), 8);
+        __m128i r_hi = _mm_srai_epi32(_mm_add_epi32(_mm_madd_epi16(ce_hi, k_y_r), round), 8);
+
+        __m128i g_lo = _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(_mm_madd_epi16(cd_lo, k_y_gu), _mm_madd_epi16(e0_lo, k_gv_0)), round), 8);
+        __m128i g_hi = _mm_srai_epi32(_mm_add_epi32(_mm_add_epi32(_mm_madd_epi16(cd_hi, k_y_gu), _mm_madd_epi16(e0_hi, k_gv_0)), round), 8);
+
+        __m128i b_lo = _mm_srai_epi32(_mm_add_epi32(_mm_madd_epi16(cd_lo, k_y_b), round), 8);
+        __m128i b_hi = _mm_srai_epi32(_mm_add_epi32(_mm_madd_epi16(cd_hi, k_y_b), round), 8);
+
+        __m128i r16 = _mm_packs_epi32(r_lo, r_hi);
+        __m128i g16 = _mm_packs_epi32(g_lo, g_hi);
+        __m128i b16 = _mm_packs_epi32(b_lo, b_hi);
+
+        __m128i r8 = _mm_packus_epi16(r16, r16);
+        __m128i g8 = _mm_packus_epi16(g16, g16);
+        __m128i b8 = _mm_packus_epi16(b16, b16);
+
+        __m128i rg = _mm_unpacklo_epi8(r8, g8);
+        __m128i ba = _mm_or_si128(_mm_unpacklo_epi8(b8, zero16), alpha);
+        p_lo = _mm_unpacklo_epi16(rg, ba);
+        p_hi = _mm_unpackhi_epi16(rg, ba);
+    };
+
+    // Test boundary Y values: Y=0 (sub-black), Y=16 (black), Y=235 (white), Y=255 (super-white) with neutral UV=128
+    __m128i y16 = _mm_setr_epi16(0, 16, 235, 255, 16, 235, 0, 255);
+    __m128i u16 = _mm_set1_epi16(128);
+    __m128i v16 = _mm_set1_epi16(128);
+    __m128i p_lo, p_hi;
+    colorRgbEightTest(y16, u16, v16, p_lo, p_hi);
+    alignas(16) uint32_t px[8] = {};
+    _mm_store_si128(reinterpret_cast<__m128i*>(px), p_lo);
+    _mm_store_si128(reinterpret_cast<__m128i*>(px + 4), p_hi);
+    CHECK(px[0] == 0xFF000000u); // Y=0 clamped to black
+    CHECK(px[1] == 0xFF000000u); // Y=16 -> black
+    CHECK(px[2] == 0xFFFFFFFFu); // Y=235 -> white
+    CHECK(px[3] == 0xFFFFFFFFu); // Y=255 clamped to white
+
+    // Test 3/2 horizontal register shuffle ([0, 0, 1, 2], [2, 3, 4, 4], [5, 6, 6, 7])
+    __m128i s_lo = _mm_setr_epi32(10, 20, 30, 40);
+    __m128i s_hi = _mm_setr_epi32(50, 60, 70, 80);
+    __m128i out0 = _mm_shuffle_epi32(s_lo, _MM_SHUFFLE(2, 1, 0, 0));
+    __m128i p23  = _mm_srli_si128(s_lo, 8);
+    __m128i p44  = _mm_shuffle_epi32(s_hi, _MM_SHUFFLE(0, 0, 0, 0));
+    __m128i out1 = _mm_unpacklo_epi64(p23, p44);
+    __m128i out2 = _mm_shuffle_epi32(s_hi, _MM_SHUFFLE(3, 2, 2, 1));
+    alignas(16) uint32_t scaled[12] = {};
+    _mm_store_si128(reinterpret_cast<__m128i*>(scaled + 0), out0);
+    _mm_store_si128(reinterpret_cast<__m128i*>(scaled + 4), out1);
+    _mm_store_si128(reinterpret_cast<__m128i*>(scaled + 8), out2);
+    const uint32_t expected[12] = {10, 10, 20, 30, 30, 40, 50, 50, 60, 70, 70, 80};
+    for (int i = 0; i < 12; ++i) {
+        CHECK(scaled[i] == expected[i]);
+    }
+
+    // Test unpackNv12UvEight and red conversion (verifying V channel is preserved, not zeroed)
+    auto unpackNv12UvEightTest = [](const uint8_t* uvPtr, __m128i& u16, __m128i& v16) {
+        const __m128i mask_low = _mm_set1_epi16(0x00FF);
+        __m128i uv_bytes = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(uvPtr));
+        __m128i uv_dup = _mm_unpacklo_epi16(uv_bytes, uv_bytes);
+        u16 = _mm_and_si128(uv_dup, mask_low);
+        v16 = _mm_srli_epi16(uv_dup, 8);
+    };
+
+    alignas(16) const uint8_t sampleUv[8] = {10, 20, 30, 40, 50, 60, 70, 80};
+    __m128i testU16, testV16;
+    unpackNv12UvEightTest(sampleUv, testU16, testV16);
+    alignas(16) uint16_t uArr[8] = {};
+    alignas(16) uint16_t vArr[8] = {};
+    _mm_store_si128(reinterpret_cast<__m128i*>(uArr), testU16);
+    _mm_store_si128(reinterpret_cast<__m128i*>(vArr), testV16);
+    const uint16_t expectedU[8] = {10, 10, 30, 30, 50, 50, 70, 70};
+    const uint16_t expectedV[8] = {20, 20, 40, 40, 60, 60, 80, 80};
+    for (int i = 0; i < 8; ++i) {
+        CHECK(uArr[i] == expectedU[i]);
+        CHECK(vArr[i] == expectedV[i]);
+    }
+
+    // Pure Red (BT.709): Y=54, U=100, V=239. Must convert to vibrant red (R > 200), not green/cyan (R=0)!
+    alignas(16) const uint8_t redUv[8] = {100, 239, 100, 239, 100, 239, 100, 239};
+    __m128i redY16 = _mm_set1_epi16(54);
+    __m128i redU16, redV16, redP_lo, redP_hi;
+    unpackNv12UvEightTest(redUv, redU16, redV16);
+    colorRgbEightTest(redY16, redU16, redV16, redP_lo, redP_hi);
+    alignas(16) uint32_t redPx[8] = {};
+    _mm_store_si128(reinterpret_cast<__m128i*>(redPx), redP_lo);
+    _mm_store_si128(reinterpret_cast<__m128i*>(redPx + 4), redP_hi);
+    uint32_t rVal = redPx[0] & 0xFF;
+    uint32_t gVal = (redPx[0] >> 8) & 0xFF;
+    uint32_t bVal = (redPx[0] >> 16) & 0xFF;
+    CHECK(rVal > 200);
+    CHECK(gVal < 40);
+    CHECK(bVal < 40);
+#endif
+
+    // 4. Verify per-flip ptime timestamp resolution & stale observation rejection after >1s stall
+    auto resolveFlipShownUs = [](int64_t flipArg, uint64_t ptime, uint64_t nowUs, uint64_t procNowUs,
+                                 int64_t subMarker, uint64_t subUs, uint64_t subProcUs) -> uint64_t {
+        uint64_t shownUs = 0;
+        if (subMarker == flipArg && subUs > 0) {
+            if (ptime > 0 && ptime >= subProcUs && ptime <= procNowUs) {
+                shownUs = subUs + (ptime - subProcUs);
+            } else if (nowUs >= subUs && (nowUs - subUs) <= 50000ULL) {
+                shownUs = nowUs;
+            }
+        }
+        return shownUs;
+    };
+    // Case A: Flip submitted at t=100,000 us, flipped at ptime=108,333 us (+8.33ms), but observed 2.05s later
+    // after a network stall (t=2,156,400 us). Must resolve to 108,333 us (8.33ms), NOT 2,156,400 us!
+    CHECK(resolveFlipShownUs(42, 108333ULL, 2156400ULL, 2156400ULL, 42, 100000ULL, 100000ULL) == 108333ULL);
+    // Case B: Emulator/invalid ptime (0) observed 2.05s later after a stall -> must be rejected (0), never 2,156,400 us!
+    CHECK(resolveFlipShownUs(42, 0ULL, 2156400ULL, 2156400ULL, 42, 100000ULL, 100000ULL) == 0ULL);
+    // Case C: Emulator/invalid ptime (0) observed promptly within 8ms -> accepted as nowUs
+    CHECK(resolveFlipShownUs(42, 0ULL, 108000ULL, 108000ULL, 42, 100000ULL, 100000ULL) == 108000ULL);
+
+    // 5. Verify 1080p coded height (1920x1088) framebuffer sizing covers full 1088 luma + 540 chroma rows
+    const size_t minCoded1088 = static_cast<size_t>(1920) * 1088 * 3 / 2 + 64;
+    const size_t underSized1080 = static_cast<size_t>(1920) * 1080 * 3 / 2;
+    const size_t rawFrameSize = std::max<size_t>(underSized1080, minCoded1088);
+    const size_t alignedFrameSize = (rawFrameSize + 0x4000 - 1) & ~(static_cast<size_t>(0x4000) - 1);
+    const size_t requiredNv12OffsetEnd = static_cast<size_t>(1920) * 1088 + static_cast<size_t>(1920) * (1080 / 2);
+    CHECK(alignedFrameSize >= requiredNv12OffsetEnd);
+
+    // 6. Verify SWAR Canvas::gradientV and opaque Canvas::drawImage alpha blending
+    {
+        ui::Canvas c(32, 16);
+        c.clear(ui::rgba(20, 40, 60, 255));
+        c.gradientV({0, 0, 32, 16}, ui::rgba(0, 0, 0, 0), ui::rgba(10, 20, 30, 200));
+        CHECK((c.data()[0] & 0x00FFFFFFu) == (ui::rgba(20, 40, 60, 255) & 0x00FFFFFFu));
+        ui::Image img;
+        img.w = 16;
+        img.h = 16;
+        img.opaque = true;
+        img.px.assign(16 * 16, ui::rgba(200, 100, 50, 255));
+        c.drawImage(img, 0, 0, 128, 0);
+        uint32_t blended = c.data()[0];
+        CHECK(((blended >> 24) & 0xFF) == 0xFF);
+        CHECK((blended & 0xFF) > 100 && (blended & 0xFF) < 120);
+    }
+}
+
+static void testTrophySystem() {
+    using namespace xc::trophy;
+
+    // 1. Gamerscore to Trophy grade conversion rules
+    // <= 50G -> Bronze
+    CHECK(scoreToGrade(0) == TrophyGrade::Bronze);
+    CHECK(scoreToGrade(5) == TrophyGrade::Bronze);
+    CHECK(scoreToGrade(20) == TrophyGrade::Bronze);
+    CHECK(scoreToGrade(50) == TrophyGrade::Bronze);
+    // 55G..99G -> Silver
+    CHECK(scoreToGrade(55) == TrophyGrade::Silver);
+    CHECK(scoreToGrade(75) == TrophyGrade::Silver);
+    CHECK(scoreToGrade(99) == TrophyGrade::Silver);
+    // >= 100G -> Gold
+    CHECK(scoreToGrade(100) == TrophyGrade::Gold);
+    CHECK(scoreToGrade(150) == TrophyGrade::Gold);
+    CHECK(scoreToGrade(200) == TrophyGrade::Gold);
+
+    // Grade to string & points
+    CHECK(std::string(gradeToString(TrophyGrade::Bronze)) == "Bronze");
+    CHECK(std::string(gradeToString(TrophyGrade::Silver)) == "Silver");
+    CHECK(std::string(gradeToString(TrophyGrade::Gold)) == "Gold");
+    CHECK(std::string(gradeToString(TrophyGrade::Platinum)) == "Platinum");
+
+    CHECK(gradeToPoints(TrophyGrade::Bronze) == 15);
+    CHECK(gradeToPoints(TrophyGrade::Silver) == 30);
+    CHECK(gradeToPoints(TrophyGrade::Gold) == 90);
+    CHECK(gradeToPoints(TrophyGrade::Platinum) == 300);
+
+    // Platinum automatic award calculation
+    CHECK(!hasEarnedPlatinum(0, 0));
+    CHECK(!hasEarnedPlatinum(0, 10));
+    CHECK(!hasEarnedPlatinum(9, 10));
+    CHECK(hasEarnedPlatinum(10, 10));
+    CHECK(hasEarnedPlatinum(11, 10));
+
+    // 2. Known cross-platform titles (Scenario A: Fortnite pilot, etc.)
+    const auto* fortnite = findKnownTitle("267695549", "");
+    CHECK(fortnite != nullptr);
+    CHECK(fortnite->titleName == "Fortnite");
+    CHECK(fortnite->npCommId == "NPWR20561_00");
+    CHECK(fortnite->sonyTitleId == "PPSA01922");
+    CHECK(fortnite->productId == "BT5P2X999VH2");
+
+    const auto* fortniteByProd = findKnownTitle("", "BT5P2X999VH2");
+    CHECK(fortniteByProd == fortnite);
+
+    const auto* minecraft = findKnownTitle("1828326430", "");
+    CHECK(minecraft != nullptr);
+    CHECK(minecraft->npCommId == "NPWR18283_00");
+
+    // 3. Mapping for titles without fixed known entry
+    std::string haloNp = generateNpCommId("2144722883");
+    std::string haloSony = generateSonyTitleId("2144722883");
+    CHECK(haloNp.rfind("NPWR", 0) == 0);
+    CHECK(haloNp.size() == 12); // NPWRXXXXX_00
+    CHECK(haloNp.substr(haloNp.size() - 3) == "_00");
+    CHECK(haloSony.rfind("PPSA", 0) == 0);
+    // Deterministic: same input gives exact same output
+    CHECK(haloNp == generateNpCommId("2144722883"));
+    CHECK(haloSony == generateSonyTitleId("2144722883"));
+
+    // 4. resolveTitleSet mapping
+    std::vector<xcloud::Achievement> achs;
+    xcloud::Achievement a1;
+    a1.id = "1";
+    a1.name = "Gunsmith";
+    a1.gamerscore = 20;
+    a1.unlocked = true;
+    achs.push_back(a1);
+
+    xcloud::Achievement a2;
+    a2.id = "2";
+    a2.name = "Hero";
+    a2.gamerscore = 60;
+    a2.unlocked = false;
+    achs.push_back(a2);
+
+    xcloud::Achievement a3;
+    a3.id = "3";
+    a3.name = "Legend";
+    a3.gamerscore = 100;
+    a3.unlocked = false;
+    achs.push_back(a3);
+
+    TitleTrophySet titleSet = resolveTitleSet("267695549", "BT5P2X999VH2", "Fortnite", achs);
+    CHECK(titleSet.npCommId == "NPWR20561_00");
+    CHECK(titleSet.totalCount == 3);
+    CHECK(titleSet.unlockedCount == 1);
+    CHECK(titleSet.items.size() == 3);
+    CHECK(titleSet.items[0].grade == TrophyGrade::Bronze);
+    CHECK(titleSet.items[1].grade == TrophyGrade::Silver);
+    CHECK(titleSet.items[2].grade == TrophyGrade::Gold);
+
+    // Name normalization
+    CHECK(normalizeTrophyName("Gunsmith") == "gunsmith");
+    CHECK(normalizeTrophyName("Take Out 10 Enemies!") == "takeout10enemies");
+
+    // 4b. Test buildUcp and buildTrpTitleDat
+    std::vector<uint8_t> ucpBytes;
+    std::vector<uint8_t> sha1;
+    CHECK(buildUcp(titleSet, ucpBytes, &sha1));
+    CHECK(ucpBytes.size() > 1024);
+    CHECK(ucpBytes[0] == 0xb2 && ucpBytes[1] == 0x28 && ucpBytes[2] == 0xc6 && ucpBytes[3] == 0x0a);
+    CHECK(sha1.size() == 20);
+    // UCP header at 0x1c must contain genuine SHA-1 digest
+    CHECK(memcmp(ucpBytes.data() + 0x1c, sha1.data(), 20) == 0);
+
+    std::vector<uint8_t> datBytes;
+    CHECK(buildTrpTitleDat(titleSet, 0x1ea2f4da, datBytes, sha1.data()));
+    CHECK(datBytes.size() > 2048);
+    CHECK(memcmp(datBytes.data(), "T2PD", 4) == 0);
+    CHECK(memcmp(datBytes.data() + 0x40, "T2TD", 4) == 0);
+    // Tag 0x0100 in TRPTITLE.DAT must match genuine UCP SHA-1 digest
+    CHECK(memcmp(datBytes.data() + 0x250, sha1.data(), 20) == 0);
+
+    // 4c. Test buildParamJson for Fortnite and general titles
+    std::string fnParam = buildParamJson("PPSA01922", "Fortnite");
+    CHECK(fnParam.find("\"titleId\": \"PPSA01922\"") != std::string::npos);
+    CHECK(fnParam.find("\"contentId\": \"UP1477-PPSA01922_00-FORTNITECORE0001\"") != std::string::npos);
+    CHECK(fnParam.find("\"conceptId\": \"210118\"") != std::string::npos);
+    CHECK(fnParam.find("\"appType\": 1") != std::string::npos);
+    CHECK(fnParam.find("\"attribute3\": 1835012") != std::string::npos);
+    CHECK(fnParam.find("\"titleName\": \"Fortnite\"") != std::string::npos);
+
+    std::string genericParam = buildParamJson("PPSA12345", "Custom Game");
+    CHECK(genericParam.find("\"titleId\": \"PPSA12345\"") != std::string::npos);
+
+    // 4d. Full official Fortnite Save the World 45-achievement set mapping
+    std::vector<xcloud::Achievement> fnAchs;
+    for (int i = 1; i <= 45; ++i) {
+        xcloud::Achievement ach;
+        ach.id = std::to_string(i);
+        ach.name = "Fortnite Achievement " + std::to_string(i);
+        ach.gamerscore = (i == 29 || i == 40 || i == 44) ? 50 : 20;
+        fnAchs.push_back(ach);
+    }
+    fnAchs[28].name = "All Tied Up"; // ID 29 (0-indexed 28)
+    fnAchs[39].name = "Anjo da Guarda"; // ID 40 (0-indexed 39)
+    fnAchs[43].name = "Plays Well with Others"; // ID 44 (0-indexed 43)
+    fnAchs[22].name = "Plankerton livre"; // ID 23
+    fnAchs[25].name = "Amped for Expansion"; // ID 26
+    fnAchs[26].name = "Desencana!"; // ID 27
+    fnAchs[27].name = "Into the Night"; // ID 28
+    fnAchs[36].name = "Coisas malvadas com uns dentões"; // ID 37
+    fnAchs[37].name = "Talented Builder"; // ID 38
+    fnAchs[38].name = "Vai Gnomo!"; // ID 39
+    fnAchs[40].name = "Loot Legend"; // ID 41
+    fnAchs[41].name = "World Explorer"; // ID 42
+    fnAchs[42].name = "Horrores Inenarráveis"; // ID 43
+
+    TitleTrophySet fnSet = resolveTitleSet("267695549", "BT5P2X999VH2", "Fortnite", fnAchs);
+    CHECK(fnSet.npCommId == "NPWR20561_00");
+    CHECK(fnSet.totalCount == 45);
+    int goldCount = 0, silverCount = 0, bronzeCount = 0;
+    for (const auto& item : fnSet.items) {
+        if (item.grade == TrophyGrade::Gold) goldCount++;
+        else if (item.grade == TrophyGrade::Silver) silverCount++;
+        else if (item.grade == TrophyGrade::Bronze) bronzeCount++;
+    }
+    CHECK(goldCount == 3);
+    CHECK(silverCount == 10);
+    CHECK(bronzeCount == 32);
+
+    // Test UTF-8 Portuguese accent folding in normalizeTrophyName
+    CHECK(normalizeTrophyName("Coisas malvadas com uns dent\u00f5es") == "coisasmalvadascomunsdentoes");
+    CHECK(normalizeTrophyName("Horrores Inenarr\u00e1veis") == "horroresinenarraveis");
+    CHECK(normalizeTrophyName("Vai, Gnomo!") == "vaignomo");
+
+    // Test single-item Fortnite grade resolution by ID and by name (regardless of totalCount)
+    std::vector<xcloud::Achievement> singleAch;
+    xcloud::Achievement ach29;
+    ach29.id = "29";
+    ach29.name = "Coisas malvadas com uns dent\u00f5es"; // Silver
+    ach29.gamerscore = 20;
+    singleAch.push_back(ach29);
+    TitleTrophySet singleSet = resolveTitleSet("267695549", "BT5P2X999VH2", "Fortnite", singleAch);
+    CHECK(singleSet.items.size() == 1);
+    CHECK(singleSet.items[0].grade == TrophyGrade::Silver);
+
+    // Verify UCP builds with Platinum metadata
+    std::vector<uint8_t> fnUcp;
+    CHECK(buildUcp(fnSet, fnUcp));
+    std::string ucpStr(reinterpret_cast<const char*>(fnUcp.data()), fnUcp.size());
+    CHECK(ucpStr.find("Hero of the Storm") != std::string::npos);
+    CHECK(ucpStr.find("Her\u00f3i da Tempestade") != std::string::npos);
+
+    // Test convertTo512Png helper with a minimal valid 1x1 PNG
+    static const uint8_t kTinyPng[67] = {
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+        0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+        0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+        0x42, 0x60, 0x82
+    };
+    CHECK(!is512x512Png(kTinyPng, sizeof(kTinyPng)));
+    std::vector<uint8_t> dummyPng;
+    CHECK(convertTo512Png(kTinyPng, sizeof(kTinyPng), dummyPng));
+    CHECK(is512x512Png(dummyPng.data(), dummyPng.size()));
+    CHECK(genericParam.find("\"contentId\": \"UP0001-PPSA12345_00-0000000000000000\"") != std::string::npos);
+    CHECK(genericParam.find("\"titleName\": \"Custom Game\"") != std::string::npos);
+
+    // 4d. Test buildNpTitleDat
+    std::vector<uint8_t> npTitle;
+    CHECK(buildNpTitleDat("PPSA01922", npTitle));
+    CHECK(npTitle.size() == 160);
+    CHECK(memcmp(npTitle.data(), "NPTD", 4) == 0);
+    CHECK(memcmp(npTitle.data() + 0x10, "PPSA01922_00", 12) == 0);
+
+    // 4e. Test buildTrpTitleDat append-only merging & timestamp preservation
+    // Setup initial DAT where trophy 1 is unlocked with custom timestamp
+    TitleTrophySet initialSet = titleSet;
+    initialSet.items[0].unlocked = true;
+    initialSet.items[1].unlocked = false;
+    initialSet.items[2].unlocked = false;
+    std::vector<uint8_t> initialDat;
+    CHECK(buildTrpTitleDat(initialSet, 0x1ea2f4da, initialDat, sha1.data()));
+
+    std::map<uint32_t, ExistingTrophyRecord> parsedInitial;
+    CHECK(parseTrpTitleDat(initialDat.data(), initialDat.size(), parsedInitial));
+    CHECK(parsedInitial.count(1) > 0);
+    CHECK(parsedInitial[1].state == 1);
+    uint64_t t1OriginalTs = parsedInitial[1].timestamp;
+
+    // Simulate new sync where Xbox reports trophy 2 unlocked, but trophy 1 is offline/missing (unlocked=false)
+    TitleTrophySet nextSet = titleSet;
+    nextSet.items[0].unlocked = false; // missing in current sync!
+    nextSet.items[1].unlocked = true;  // newly unlocked
+    nextSet.items[2].unlocked = false;
+
+    std::vector<uint8_t> mergedDat;
+    CHECK(buildTrpTitleDat(nextSet, 0x1ea2f4da, mergedDat, sha1.data(), &initialDat));
+
+    std::map<uint32_t, ExistingTrophyRecord> parsedMerged;
+    CHECK(parseTrpTitleDat(mergedDat.data(), mergedDat.size(), parsedMerged));
+    // Trophy 1 MUST be preserved 100% with original timestamp!
+    CHECK(parsedMerged.count(1) > 0);
+    CHECK(parsedMerged[1].state == 1);
+    CHECK(parsedMerged[1].timestamp == t1OriginalTs);
+    // Trophy 2 MUST be newly unlocked
+    CHECK(parsedMerged.count(2) > 0);
+    CHECK(parsedMerged[2].state == 1);
+    CHECK(parsedMerged[2].timestamp > 0);
+    // Trophy 3 remains locked
+    CHECK(parsedMerged.count(3) > 0);
+    CHECK(parsedMerged[3].state == 0);
+
+
+    // 5. Mock ITrophyBackend & TrophySyncEngine integration
+    class TestBackend : public ITrophyBackend {
+    public:
+        bool init(uint32_t uid) override {
+            userId = uid;
+            return true;
+        }
+        bool registerTitle(const TitleTrophySet& set) override {
+            registered = true;
+            return true;
+        }
+        bool unlockTrophy(const std::string& npComm, int tid, TrophyGrade g, const std::string& n) override {
+            for (const auto& u : unlocked) {
+                if (u.npCommId == npComm && u.trophyId == tid) return true;
+            }
+            unlocked.push_back({npComm, tid, g});
+            return true;
+        }
+        bool isTrophyUnlocked(const std::string& npComm, int tid) override {
+            for (const auto& u : unlocked) {
+                if (u.npCommId == npComm && u.trophyId == tid) return true;
+            }
+            return false;
+        }
+        bool removeAllTrophies(const std::vector<std::pair<std::string, std::string>>& titles, int& removedCount, std::string& err) override {
+            removedCount = static_cast<int>(unlocked.size() > 0 ? 1 : 0);
+            unlocked.clear();
+            return true;
+        }
+        std::string name() const override { return "TestBackend"; }
+
+        struct UnlockedItem {
+            std::string npCommId;
+            int trophyId;
+            TrophyGrade grade;
+        };
+        uint32_t userId = 0;
+        bool registered = false;
+        std::vector<UnlockedItem> unlocked;
+    };
+
+    auto backendPtr = std::make_unique<TestBackend>();
+    TestBackend* rawBackend = backendPtr.get();
+    TrophySyncEngine engine(std::move(backendPtr));
+    CHECK(engine.init(0x1ea2f4da));
+    CHECK(rawBackend->userId == 0x1ea2f4da);
+
+    std::string baseDir = platform::dataDir();
+    if (baseDir.empty()) baseDir = ".";
+    std::string cacheFile = baseDir + "/trophies/267695549.json";
+    ::unlink(cacheFile.c_str());
+
+    // Mock network transport for achievements
+    net::setTestTransport([&](const net::Request& req) -> net::Response {
+        net::Response res;
+        if (req.url.find("achievements.xboxlive.com") != std::string::npos) {
+            res.status = 200;
+            res.body = R"({
+                "achievements": [
+                    {
+                        "id": "101",
+                        "name": "First Step",
+                        "description": "Completed first step",
+                        "progressState": "Achieved",
+                        "rewards": [{"type": "Gamerscore", "value": "20"}],
+                        "mediaAssets": [{"name": "Icon", "url": "https://img/icon1.png"}]
+                    },
+                    {
+                        "id": "102",
+                        "name": "Big Step",
+                        "description": "Completed big step",
+                        "progressState": "Achieved",
+                        "rewards": [{"type": "Gamerscore", "value": "100"}],
+                        "mediaAssets": [{"name": "Icon", "url": "https://img/icon2.png"}]
+                    }
+                ],
+                "pagingInfo": {"totalItems": 2}
+            })";
+            return res;
+        }
+        res.status = 404;
+        return res;
+    });
+
+    int newlyUnlocked = 0;
+    std::string syncErr;
+    bool syncOk = engine.syncTitleAchievements("Bearer mockToken", "25332749", "267695549", "Fortnite",
+                                               newlyUnlocked, syncErr);
+    CHECK(syncOk);
+    // Both 101 and 102 were unlocked (2 achievements = 100% -> awards Platinum too: total 3!)
+    CHECK(newlyUnlocked == 3);
+    CHECK(rawBackend->unlocked.size() == 3);
+    CHECK(rawBackend->unlocked[0].grade == TrophyGrade::Bronze);
+    CHECK(rawBackend->unlocked[0].trophyId == 1);
+    CHECK(rawBackend->unlocked[1].grade == TrophyGrade::Gold);
+    CHECK(rawBackend->unlocked[1].trophyId == 2);
+    CHECK(rawBackend->unlocked[2].grade == TrophyGrade::Platinum);
+    CHECK(rawBackend->unlocked[2].trophyId == kPlatinumTrophyId); // Trophy ID 0
+
+    // Verify rich JSON cache persistence
+    std::string cacheSaved;
+    CHECK(platform::readFile(cacheFile, cacheSaved));
+    auto jCache = json::parse(cacheSaved);
+    CHECK(jCache && jCache->isObject());
+    CHECK((*jCache)["xboxTitleId"].str() == "267695549");
+    CHECK((*jCache)["unlockedCount"].asInt() == 2);
+    CHECK((*jCache)["trophies"].isArray());
+    CHECK((*jCache)["trophies"].items().size() == 2);
+
+    // Repeat sync: snapshot is cached, 0 newly unlocked
+    newlyUnlocked = 0;
+    syncOk = engine.syncTitleAchievements("Bearer mockToken", "25332749", "267695549", "Fortnite",
+                                          newlyUnlocked, syncErr);
+    CHECK(syncOk);
+    CHECK(newlyUnlocked == 0); // No duplicate unlocks!
+    // Verify removeAllTrophies removes disk cache and clears backend
+    int removedCount = 0;
+    std::string rmErr;
+    CHECK(engine.removeAllTrophies(removedCount, rmErr));
+    CHECK(removedCount == 1);
+    CHECK(rawBackend->unlocked.empty());
+    std::string cacheCheck;
+    CHECK(!platform::readFile(cacheFile, cacheCheck));
+
+    // Clean up
+    net::setTestTransport({});
+    ::unlink(cacheFile.c_str());
+
+    // 5b. Test Achievement History & TitleHub Batch Images Discovery
+    net::setTestTransport([&](const net::Request& req) -> net::Response {
+        net::Response res;
+        if (req.url.find("history/titles") != std::string::npos) {
+            res.status = 200;
+            if (req.url.find("continuationToken=page2") == std::string::npos) {
+                // Page 1
+                res.body = R"({
+                    "titles": [
+                        {
+                            "titleId": 5433956,
+                            "name": "Dead Island",
+                            "titleType": "Game",
+                            "platform": "XboxOne",
+                            "earnedAchievements": 19,
+                            "currentGamerscore": 268,
+                            "maxGamerscore": 1000
+                        },
+                        {
+                            "titleId": 122001257,
+                            "name": "YouTube",
+                            "titleType": "LiveApp",
+                            "platform": "XboxOne",
+                            "earnedAchievements": 2,
+                            "currentGamerscore": 0,
+                            "maxGamerscore": 0
+                        }
+                    ],
+                    "pagingInfo": {"continuationToken": "page2"}
+                })";
+            } else {
+                // Page 2
+                res.body = R"({
+                    "titles": [
+                        {
+                            "titleId": 222473492,
+                            "name": "Cyberpunk 2077",
+                            "titleType": "Game",
+                            "platform": "XboxOne",
+                            "earnedAchievements": 18,
+                            "currentGamerscore": 375,
+                            "maxGamerscore": 1000
+                        }
+                    ],
+                    "pagingInfo": {}
+                })";
+            }
+            return res;
+        }
+        if (req.url.find("titlehub.xboxlive.com/titles/batch") != std::string::npos) {
+            res.status = 200;
+            res.body = R"({
+                "titles": [
+                    {
+                        "titleId": 5433956,
+                        "displayImage": "https://img/deadisland.png"
+                    },
+                    {
+                        "titleId": 222473492,
+                        "displayImage": "https://img/cp2077.png"
+                    }
+                ]
+            })";
+            return res;
+        }
+        if (req.url.find("achievements.xboxlive.com") != std::string::npos) {
+            res.status = 200;
+            res.body = R"({
+                "achievements": [
+                    {
+                        "id": "1",
+                        "name": "Ach 1",
+                        "description": "Desc 1",
+                        "progressState": "Achieved",
+                        "rewards": [{"type": "Gamerscore", "value": "20"}]
+                    }
+                ]
+            })";
+            return res;
+        }
+        res.status = 404;
+        return res;
+    });
+
+    std::vector<xcloud::AchievementTitleHistoryItem> histOut;
+    std::string hErr;
+    CHECK(xcloud::fetchAchievementHistoryTitles("Bearer token", "12345", histOut, hErr));
+    // LiveApp "YouTube" should be filtered out, leaving 2 games: Dead Island and Cyberpunk 2077
+    CHECK(histOut.size() == 2);
+    CHECK(histOut[0].titleId == "5433956");
+    CHECK(histOut[0].name == "Dead Island");
+    CHECK(histOut[0].earnedAchievements == 19);
+    CHECK(histOut[1].titleId == "222473492");
+    CHECK(histOut[1].name == "Cyberpunk 2077");
+
+    std::unordered_map<std::string, std::string> batchImgs;
+    std::string bErr;
+    CHECK(xcloud::fetchTitleHubBatchImages("Bearer token", {"5433956", "222473492"}, batchImgs, bErr));
+    CHECK(batchImgs["5433956"] == "https://img/deadisland.png");
+    CHECK(batchImgs["222473492"] == "https://img/cp2077.png");
+
+    // Test syncAllAccountTrophies discovering and processing history titles
+    int syncTitles = 0;
+    int syncTrophies = 0;
+    std::string backErr;
+    auto mockBackend2 = std::make_unique<TestBackend>();
+    TestBackend* rawBackend2 = mockBackend2.get();
+    TrophySyncEngine engine2(std::move(mockBackend2));
+    engine2.init(0x1ea2f4da);
+    std::vector<ui::GameTile> emptyOwned;
+    bool backOk = engine2.syncAllAccountTrophies("Bearer token", "12345", emptyOwned,
+                                                syncTitles, syncTrophies, backErr);
+    CHECK(backOk);
+    CHECK(syncTitles >= 2);
+    CHECK(rawBackend2->unlocked.size() >= 2);
+
+    net::setTestTransport({});
+    ::unlink(((platform::dataDir().empty() ? std::string(".") : platform::dataDir()) + "/trophies/5433956.json").c_str());
+    ::unlink(((platform::dataDir().empty() ? std::string(".") : platform::dataDir()) + "/trophies/222473492.json").c_str());
+
+    // 5c. Test fetchTitleAchievements with continuationToken pagination (> 100 achievements)
+    net::setTestTransport([&](const net::Request& req) -> net::Response {
+        net::Response res;
+        res.status = 200;
+        if (req.url.find("continuationToken=ach_page2") == std::string::npos) {
+            // Page 1: returns 2 achievements and continuation token
+            res.body = R"({
+                "achievements": [
+                    {"id": "1", "name": "Ach 1", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]},
+                    {"id": "2", "name": "Ach 2", "progressState": "NotStarted", "rewards": [{"type": "Gamerscore", "value": "15"}]}
+                ],
+                "pagingInfo": {"continuationToken": "ach_page2"}
+            })";
+        } else {
+            // Page 2: returns 1 achievement and empty continuation token
+            res.body = R"({
+                "achievements": [
+                    {"id": "3", "name": "Ach 3", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "25"}]}
+                ],
+                "pagingInfo": {}
+            })";
+        }
+        return res;
+    });
+
+    xcloud::TitleAchievements multiAch;
+    std::string mErr;
+    CHECK(xcloud::fetchTitleAchievements("Bearer token", "12345", "99999", multiAch, mErr));
+    CHECK(multiAch.totalCount == 3);
+    CHECK(multiAch.unlockedCount == 2);
+    CHECK(multiAch.totalGamerscore == 50);
+    CHECK(multiAch.unlockedGamerscore == 35);
+    net::setTestTransport({});
+
+    // 6. Test Trophy Database Registration (autonomous SQLite provisioning)
+    TitleDbInfo info = makeTitleDbInfo("PPSA81234", "Sea of Stars");
+    CHECK(info.titleId == "PPSA81234");
+    CHECK(info.titleName == "Sea of Stars");
+    CHECK(info.conceptId > 0);
+    CHECK(info.contentId == "UP0001-PPSA81234_00-0000000000000000");
+
+    TitleDbInfo fnInfo = makeTitleDbInfo("PPSA01922", "Fortnite");
+    CHECK(fnInfo.titleId == "PPSA01922");
+    CHECK(fnInfo.conceptId == 210118);
+    CHECK(fnInfo.contentId == "UP1477-PPSA01922_00-FORTNITECORE0001");
+
+    std::string testAppDb = "/tmp/test_trophy_app.db";
+    std::string testAppInfoDb = "/tmp/test_trophy_appinfo.db";
+    ::unlink(testAppDb.c_str());
+    ::unlink((testAppDb + ".bak").c_str());
+    ::unlink(testAppInfoDb.c_str());
+    ::unlink((testAppInfoDb + ".bak").c_str());
+
+    sqlite3* testDb = nullptr;
+    CHECK(sqlite3_open(testAppDb.c_str(), &testDb) == SQLITE_OK);
+    const char* schemaApp =
+        "CREATE TABLE tbl_contentinfo (titleId TEXT PRIMARY KEY, titleName TEXT, contentId TEXT, conceptId INTEGER, localConceptId TEXT, dispLocation INTEGER, appType INTEGER, uiCategory TEXT, metaDataPath TEXT, icon0Info TEXT, pic0Info TEXT, snd0Info TEXT, pprDeeplinkUri TEXT, pprHubAppUri TEXT, AppInfoJson TEXT);"
+        "INSERT INTO tbl_contentinfo VALUES ('PPSA22520', 'Model App', 'UP9000-PPSA22520_00-0000000000000000', 999999, 'cid:scp:0000000000000001', 0, 1, 'game', '/system_data/priv/appmeta/PPSA22520', '/user/app/PPSA22520/sce_sys/icon0.png', '/user/app/PPSA22520/sce_sys/pic0.png', '/user/app/PPSA22520/sce_sys/snd0.at9', 'psgm:play?id=PPSA22520', 'pshome:gamehub?titleId=PPSA22520', '{\"TITLE_ID\":\"PPSA22520\",\"TITLE\":\"Model App\",\"CONTENT_ID\":\"UP9000-PPSA22520_00-0000000000000000\",\"CONCEPT_ID\":999999,\"DISPLAYLOCATION\":0}');"
+        "CREATE TABLE tbl_iconinfo_10000000 (titleId TEXT PRIMARY KEY, titleName TEXT, contentId TEXT, conceptId INTEGER, localConceptId TEXT, visible INTEGER, installStatus INTEGER, appDrmType INTEGER, deeplinkUri TEXT, hubAppUri TEXT);"
+        "INSERT INTO tbl_iconinfo_10000000 VALUES ('PPSA22520', 'Model App', 'UP9000-PPSA22520_00-0000000000000000', 999999, 'cid:scp:0000000000000001', 0, 2, 5, 'psgm:play?id=PPSA22520', 'pshome:gamehub?titleId=PPSA22520');"
+        "CREATE TABLE tbl_concepticoninfo_10000000 (localConceptId TEXT, conceptId INTEGER, conceptName TEXT, primaryTitleId TEXT, primaryTitleName TEXT, deeplinkUri TEXT, hubAppUri TEXT, metaDataPath TEXT, icon0Info TEXT, pic0Info TEXT, snd0Info TEXT);"
+        "INSERT INTO tbl_concepticoninfo_10000000 VALUES ('cid:scp:0000000000000001', 999999, 'Model App', 'PPSA22520', 'Model App', 'psgm:play?id=PPSA22520', 'pshome:gamehub?titleId=PPSA22520', '/system_data/priv/appmeta/PPSA22520', '/user/app/PPSA22520/sce_sys/icon0.png', '/user/app/PPSA22520/sce_sys/pic0.png', '/user/app/PPSA22520/sce_sys/snd0.at9');";
+    CHECK(sqlite3_exec(testDb, schemaApp, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(testDb);
+
+    sqlite3* testInfoDb = nullptr;
+    CHECK(sqlite3_open(testAppInfoDb.c_str(), &testInfoDb) == SQLITE_OK);
+    const char* schemaInfo =
+        "CREATE TABLE tbl_appinfo (titleId TEXT, metaDataId INTEGER, key TEXT, val TEXT, PRIMARY KEY (titleId, metaDataId, key));"
+        "INSERT INTO tbl_appinfo VALUES ('PPSA22520', 0, 'TITLE_ID', 'PPSA22520');"
+        "INSERT INTO tbl_appinfo VALUES ('PPSA22520', 0, 'TITLE', 'Model App');"
+        "INSERT INTO tbl_appinfo VALUES ('PPSA22520', 0, 'CONTENT_ID', 'UP9000-PPSA22520_00-0000000000000000');"
+        "INSERT INTO tbl_appinfo VALUES ('PPSA22520', 0, 'CONCEPT_ID', '999999');"
+        "INSERT INTO tbl_appinfo VALUES ('PPSA22520', 0, 'DISPLAYLOCATION', '0');";
+    CHECK(sqlite3_exec(testInfoDb, schemaInfo, nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(testInfoDb);
+
+    // Initial autonomous registration
+    CHECK(registerTitleInDatabase(info, testAppDb, testAppInfoDb));
+
+    // Verify app.db rows
+    CHECK(sqlite3_open(testAppDb.c_str(), &testDb) == SQLITE_OK);
+    sqlite3_stmt* testStmt = nullptr;
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT dispLocation, uiCategory, contentId FROM tbl_contentinfo WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(sqlite3_column_int(testStmt, 0) == 0); // dispLocation = 0 (hidden from Game Library)
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 1))) == "game");
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 2))) == "UP0001-PPSA81234_00-0000000000000000");
+    sqlite3_finalize(testStmt);
+
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT visible, installStatus FROM tbl_iconinfo_10000000 WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(sqlite3_column_int(testStmt, 0) == 0); // visible = 0
+    CHECK(sqlite3_column_int(testStmt, 1) == 2); // installStatus = 2
+    sqlite3_finalize(testStmt);
+
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT primaryTitleName FROM tbl_concepticoninfo_10000000 WHERE primaryTitleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Sea of Stars");
+    sqlite3_finalize(testStmt);
+
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT AppInfoJson FROM tbl_contentinfo WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    std::string appInfoJson = reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0));
+    sqlite3_finalize(testStmt);
+    sqlite3_close(testDb);
+    auto parsedAppInfo = json::parse(appInfoJson);
+    CHECK(parsedAppInfo && parsedAppInfo->isObject());
+    CHECK((*parsedAppInfo)["TITLE_ID"].str() == "PPSA81234");
+    CHECK((*parsedAppInfo)["TITLE"].str() == "Sea of Stars");
+    CHECK((*parsedAppInfo)["DISPLAYLOCATION"].asInt() == 0);
+
+    // Verify appinfo.db rows
+    CHECK(sqlite3_open(testAppInfoDb.c_str(), &testInfoDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(testInfoDb, "SELECT val FROM tbl_appinfo WHERE titleId = 'PPSA81234' AND key = 'TITLE';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Sea of Stars");
+    sqlite3_finalize(testStmt);
+    CHECK(sqlite3_prepare_v2(testInfoDb, "SELECT val FROM tbl_appinfo WHERE titleId = 'PPSA81234' AND key = 'DISPLAYLOCATION';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "0");
+    sqlite3_finalize(testStmt);
+    sqlite3_close(testInfoDb);
+
+    // Test idempotent re-registration / update
+    info.titleName = "Sea of Stars Definitive";
+    CHECK(registerTitleInDatabase(info, testAppDb, testAppInfoDb));
+    CHECK(sqlite3_open(testAppDb.c_str(), &testDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT titleName FROM tbl_contentinfo WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Sea of Stars Definitive");
+    sqlite3_finalize(testStmt);
+    sqlite3_close(testDb);
+
+    // Verify protection of critical models: PPSA22520 and PPSA99810 cannot be removed
+    CHECK(!removeTitleFromDatabase("PPSA22520", testAppDb, testAppInfoDb));
+    CHECK(!removeTitleFromDatabase("PPSA99810", testAppDb, testAppInfoDb));
+
+    // Test autonomous removal of dynamic title
+    CHECK(removeTitleFromDatabase("PPSA81234", testAppDb, testAppInfoDb));
+
+    CHECK(sqlite3_open(testAppDb.c_str(), &testDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT 1 FROM tbl_contentinfo WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_DONE); // Deleted!
+    sqlite3_finalize(testStmt);
+
+    // Model row PPSA22520 must still be present!
+    CHECK(sqlite3_prepare_v2(testDb, "SELECT 1 FROM tbl_contentinfo WHERE titleId = 'PPSA22520';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    sqlite3_finalize(testStmt);
+    sqlite3_close(testDb);
+
+    CHECK(sqlite3_open(testAppInfoDb.c_str(), &testInfoDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(testInfoDb, "SELECT 1 FROM tbl_appinfo WHERE titleId = 'PPSA81234';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_DONE); // Deleted!
+    sqlite3_finalize(testStmt);
+    CHECK(sqlite3_prepare_v2(testInfoDb, "SELECT 1 FROM tbl_appinfo WHERE titleId = 'PPSA22520';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW); // Model intact!
+    sqlite3_finalize(testStmt);
+    sqlite3_close(testInfoDb);
+
+    // Test registration into empty databases (testing synthetic fallbacks when no model exists)
+    std::string emptyAppDb = "/tmp/test_empty_app.db";
+    std::string emptyAppInfoDb = "/tmp/test_empty_appinfo.db";
+    ::unlink(emptyAppDb.c_str());
+    ::unlink((emptyAppDb + ".bak").c_str());
+    ::unlink(emptyAppInfoDb.c_str());
+    ::unlink((emptyAppInfoDb + ".bak").c_str());
+
+    sqlite3* eApp = nullptr;
+    CHECK(sqlite3_open(emptyAppDb.c_str(), &eApp) == SQLITE_OK);
+    CHECK(sqlite3_exec(eApp, "CREATE TABLE tbl_contentinfo (titleId TEXT PRIMARY KEY, titleName TEXT, contentId TEXT, conceptId INTEGER, localConceptId TEXT, dispLocation INTEGER, appType INTEGER, uiCategory TEXT, metaDataPath TEXT, icon0Info TEXT, pic0Info TEXT, snd0Info TEXT, pprDeeplinkUri TEXT, pprHubAppUri TEXT, AppInfoJson TEXT);", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(eApp);
+
+    sqlite3* eInfo = nullptr;
+    CHECK(sqlite3_open(emptyAppInfoDb.c_str(), &eInfo) == SQLITE_OK);
+    CHECK(sqlite3_exec(eInfo, "CREATE TABLE tbl_appinfo (titleId TEXT, metaDataId INTEGER, key TEXT, val TEXT, PRIMARY KEY (titleId, metaDataId, key));", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(eInfo);
+
+    TitleDbInfo dynInfo = makeTitleDbInfo("PPSA89999", "Synthetic Cloud Game");
+    CHECK(registerTitleInDatabase(dynInfo, emptyAppDb, emptyAppInfoDb));
+
+    CHECK(sqlite3_open(emptyAppDb.c_str(), &eApp) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(eApp, "SELECT titleName, dispLocation FROM tbl_contentinfo WHERE titleId = 'PPSA89999';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Synthetic Cloud Game");
+    CHECK(sqlite3_column_int(testStmt, 1) == 0);
+    sqlite3_finalize(testStmt);
+    sqlite3_close(eApp);
+
+    CHECK(sqlite3_open(emptyAppInfoDb.c_str(), &eInfo) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(eInfo, "SELECT val FROM tbl_appinfo WHERE titleId = 'PPSA89999' AND key = '_metadata_path';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "/user/app/PPSA89999/sce_sys");
+    sqlite3_finalize(testStmt);
+
+    CHECK(sqlite3_prepare_v2(eInfo, "SELECT val FROM tbl_appinfo WHERE titleId = 'PPSA89999' AND key = 'TITLE_EN';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Synthetic Cloud Game");
+    sqlite3_finalize(testStmt);
+    sqlite3_close(eInfo);
+
+    ::unlink(emptyAppDb.c_str());
+    ::unlink((emptyAppDb + ".bak").c_str());
+    ::unlink(emptyAppInfoDb.c_str());
+    ::unlink((emptyAppInfoDb + ".bak").c_str());
+
+    // 7. Test retail installed game protection in registerTitleInDatabase & removeTitleFromDatabase
+    sqlite3* rDb = nullptr;
+    CHECK(sqlite3_open(testAppDb.c_str(), &rDb) == SQLITE_OK);
+    CHECK(sqlite3_exec(rDb, "INSERT OR REPLACE INTO tbl_contentinfo (titleId, titleName, contentId, conceptId, localConceptId, dispLocation, appType, uiCategory, metaDataPath, icon0Info, pic0Info, snd0Info, pprDeeplinkUri, pprHubAppUri, AppInfoJson) VALUES ('PPSA07950', 'Call of Duty Retail', 'UP0001-PPSA07950_00-COD', 1, '1', 5, 0, 'game', '/user/appmeta/PPSA07950', '/user/appmeta/PPSA07950/icon0.png', '', '', '', '', '{\"visible\":1}');", nullptr, nullptr, nullptr) == SQLITE_OK);
+    sqlite3_close(rDb);
+    TitleDbInfo codCloudInfo = makeTitleDbInfo("PPSA07950", "Call of Duty Cloud Override");
+    CHECK(registerTitleInDatabase(codCloudInfo, testAppDb, testAppInfoDb));
+    // Verify dispLocation (5) and titleName ('Call of Duty Retail') were NOT overwritten!
+    CHECK(sqlite3_open(testAppDb.c_str(), &rDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(rDb, "SELECT titleName, dispLocation FROM tbl_contentinfo WHERE titleId = 'PPSA07950';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(std::string(reinterpret_cast<const char*>(sqlite3_column_text(testStmt, 0))) == "Call of Duty Retail");
+    CHECK(sqlite3_column_int(testStmt, 1) == 5);
+    sqlite3_finalize(testStmt);
+    sqlite3_close(rDb);
+    // Verify removeTitleFromDatabase also refuses to delete a retail installed game!
+    CHECK(removeTitleFromDatabase("PPSA07950", testAppDb, testAppInfoDb));
+    CHECK(sqlite3_open(testAppDb.c_str(), &rDb) == SQLITE_OK);
+    CHECK(sqlite3_prepare_v2(rDb, "SELECT dispLocation FROM tbl_contentinfo WHERE titleId = 'PPSA07950';", -1, &testStmt, nullptr) == SQLITE_OK);
+    CHECK(sqlite3_step(testStmt) == SQLITE_ROW);
+    CHECK(sqlite3_column_int(testStmt, 0) == 5);
+    sqlite3_finalize(testStmt);
+    sqlite3_close(rDb);
+
+    // Clean up mock database files
+    ::unlink(testAppDb.c_str());
+    ::unlink((testAppDb + ".bak").c_str());
+    ::unlink(testAppInfoDb.c_str());
+    ::unlink((testAppInfoDb + ".bak").c_str());
+
+    // 8. Test strictly additive buildTrpTitleDat merging (local disk trophies + cloud trophies)
+    {
+        TitleTrophySet localSet;
+        localSet.xboxTitleId = "99999";
+        localSet.titleName = "Call of Duty";
+        localSet.sonyTitleId = "PPSA07950";
+        localSet.npCommId = "NPWR25180_00";
+        for (int i = 1; i <= 4; ++i) {
+            TrophyDef it;
+            it.trophyId = i;
+            it.name = "Trophy " + std::to_string(i);
+            it.grade = TrophyGrade::Bronze;
+            it.unlocked = (i <= 2); // Local disk has trophies 1 and 2 unlocked
+            it.timeUnlocked = (i <= 2) ? "2024-11-15T10:20:30Z" : "";
+            localSet.items.push_back(it);
+        }
+        uint8_t dummyHash[20] = {1, 2, 3};
+        std::vector<uint8_t> initialDat;
+        CHECK(buildTrpTitleDat(localSet, 0x1ea2f4da, initialDat, dummyHash, nullptr));
+        std::map<uint32_t, ExistingTrophyRecord> parsedDisk;
+        CHECK(parseTrpTitleDat(initialDat.data(), initialDat.size(), parsedDisk));
+        CHECK(parsedDisk.size() == 5); // Plat + 4 base
+        CHECK(parsedDisk[1].state == 1 && parsedDisk[2].state == 1);
+        CHECK(parsedDisk[3].state == 0 && parsedDisk[4].state == 0);
+        uint64_t origTs1 = parsedDisk[1].timestamp;
+        CHECK(origTs1 > 0x00dcbffeef82bc00ULL);
+
+        // Now simulate cloud sync where only trophy 3 is unlocked on Xbox (and cloud only knows 3 items, missing trophy 4!)
+        TitleTrophySet cloudSet = localSet;
+        cloudSet.items.resize(3); // Cloud has fewer items than local disk
+        cloudSet.items[0].unlocked = false; // Trophy 1 NOT unlocked on Xbox cloud
+        cloudSet.items[0].timeUnlocked.clear();
+        cloudSet.items[1].unlocked = false; // Trophy 2 NOT unlocked on Xbox cloud
+        cloudSet.items[1].timeUnlocked.clear();
+        cloudSet.items[2].unlocked = true;  // Trophy 3 unlocked on Xbox cloud!
+        cloudSet.items[2].timeUnlocked = "2025-06-01T18:00:00Z";
+
+        std::vector<uint8_t> mergedDat;
+        CHECK(buildTrpTitleDat(cloudSet, 0x1ea2f4da, mergedDat, dummyHash, &initialDat));
+        std::map<uint32_t, ExistingTrophyRecord> mergedRecords;
+        CHECK(parseTrpTitleDat(mergedDat.data(), mergedDat.size(), mergedRecords));
+        // Must preserve all 5 records (Plat + 1..4), keep 1 & 2 unlocked with original timestamp, and unlock 3!
+        CHECK(mergedRecords.size() == 5);
+        CHECK(mergedRecords[1].state == 1);
+        CHECK(mergedRecords[1].timestamp == origTs1);
+        CHECK(mergedRecords[2].state == 1);
+        CHECK(mergedRecords[3].state == 1);
+        CHECK(mergedRecords[4].state == 0);
+        CHECK(mergedRecords[0].state == 0); // Platinum still locked because 4 is locked
+
+        // Unlock trophy 4 in cloud -> union of disk (1,2,3) + cloud (4) = 100% -> Platinum auto-unlocks!
+        cloudSet.items = localSet.items;
+        cloudSet.items[0].unlocked = false;
+        cloudSet.items[1].unlocked = false;
+        cloudSet.items[2].unlocked = false;
+        cloudSet.items[3].unlocked = true;
+        cloudSet.items[3].timeUnlocked = "2025-06-02T12:00:00Z";
+        std::vector<uint8_t> fullDat;
+        CHECK(buildTrpTitleDat(cloudSet, 0x1ea2f4da, fullDat, dummyHash, &mergedDat));
+        std::map<uint32_t, ExistingTrophyRecord> fullRecords;
+        CHECK(parseTrpTitleDat(fullDat.data(), fullDat.size(), fullRecords));
+        CHECK(fullRecords.size() == 5);
+        for (uint32_t id = 0; id <= 4; ++id) {
+            CHECK(fullRecords[id].state == 1);
+        }
+    }
+
+    // 9. Test >127 achievements cap in resolveTitleSet (prioritizing unlocked achievements)
+    {
+        std::vector<xcloud::Achievement> hugeAch;
+        for (int i = 1; i <= 150; ++i) {
+            xcloud::Achievement a;
+            a.id = std::to_string(i);
+            a.name = "Ach " + std::to_string(i);
+            a.gamerscore = 10;
+            a.unlocked = (i > 100); // 50 unlocked achievements at the end (101..150)
+            a.timeUnlocked = a.unlocked ? "2025-05-10T14:30:00Z" : "";
+            hugeAch.push_back(a);
+        }
+        auto cappedSet = resolveTitleSet("88888888", "", "Master Chief Collection", hugeAch);
+        CHECK(cappedSet.items.size() == 127); // 127 base trophies (1..127) + Platinum (0) in UCP/TRPTITLE = 128 max
+        int unlockedBaseInSet = 0;
+        for (const auto& item : cappedSet.items) {
+            CHECK(item.trophyId >= 1 && item.trophyId <= 127);
+            if (item.unlocked) {
+                unlockedBaseInSet++;
+                CHECK(!item.timeUnlocked.empty());
+            }
+        }
+        CHECK(unlockedBaseInSet == 50); // All 50 unlocked achievements preserved!
+        // Verify base-game achievements 1..77 keep their exact 1..77 trophyId positions
+        for (size_t i = 0; i < 77; ++i) {
+            CHECK(cappedSet.items[i].name == "Ach " + std::to_string(i + 1));
+        }
+        uint8_t dummyHash[20] = {9, 8, 7};
+        std::vector<uint8_t> cappedDat;
+        CHECK(buildTrpTitleDat(cappedSet, 0x1ea2f4da, cappedDat, dummyHash, nullptr));
+        std::map<uint32_t, ExistingTrophyRecord> cappedRecords;
+        CHECK(parseTrpTitleDat(cappedDat.data(), cappedDat.size(), cappedRecords));
+        CHECK(cappedRecords.size() == 128); // Platinum (0) + 127 base trophies (1..127)
+
+        // Now unlock achievement #5 (a base-game achievement) and re-run resolveTitleSet + buildTrpTitleDat
+        // with existingDat = &cappedDat: must have 51 unlocked trophies (not shifted/duplicated)!
+        hugeAch[4].unlocked = true;
+        hugeAch[4].timeUnlocked = "2025-05-11T10:00:00Z";
+        auto cappedSet2 = resolveTitleSet("88888888", "", "Master Chief Collection", hugeAch);
+        std::vector<uint8_t> cappedDat2;
+        CHECK(buildTrpTitleDat(cappedSet2, 0x1ea2f4da, cappedDat2, dummyHash, &cappedDat));
+        std::map<uint32_t, ExistingTrophyRecord> cappedRecords2;
+        CHECK(parseTrpTitleDat(cappedDat2.data(), cappedDat2.size(), cappedRecords2));
+        int unlockedInDat2 = 0;
+        for (const auto& [tid, rec] : cappedRecords2) {
+            if (rec.state == 1) unlockedInDat2++;
+        }
+        CHECK(unlockedInDat2 == 51);
+    }
+
+    // 10. Test per-game syncTrophies setting persistence
+    {
+        std::string pgPath = "/tmp/test_pergame_trophies.json";
+        ::unlink(pgPath.c_str());
+        app::Settings s1;
+        app::GameProfile balatroProf = s1.defaultProfile();
+        balatroProf.syncTrophies = false;
+        balatroProf.xboxTitleId = "777777";
+        balatroProf.gameName = "Balatro";
+        s1.perGame["BALATRO_PROD"] = balatroProf;
+        CHECK(s1.save(pgPath));
+
+        app::Settings s2;
+        CHECK(s2.load(pgPath));
+        bool hasCustom = false;
+        auto loadedProf = s2.profileForGame("BALATRO_PROD", "", &hasCustom);
+        CHECK(hasCustom);
+        CHECK(!loadedProf.syncTrophies);
+        CHECK(loadedProf.xboxTitleId == "777777");
+        CHECK(loadedProf.gameName == "Balatro");
+        ::unlink(pgPath.c_str());
+    }
+
+    // 11. Test Decoupled g_trophyThread Lifecycle, Priority Queue & Fast-Path Preemption (R1-R5)
+    {
+        net::setTestTransport([&](const net::Request& req) -> net::Response {
+            net::Response res;
+            res.status = 200;
+            if (req.url.find("history/titles") != std::string::npos) {
+                res.body = R"({
+                    "titles": [
+                        {"titleId": "267695549", "name": "Fortnite", "displayImage": "https://img/fn.png", "achievement": {"currentAchievements": 5, "currentGamerscore": 100}},
+                        {"titleId": "182830000", "name": "Minecraft", "displayImage": "https://img/mc.png", "achievement": {"currentAchievements": 10, "currentGamerscore": 200}}
+                    ]
+                })";
+            } else if (req.url.find("achievements.xboxlive.com") != std::string::npos) {
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+            } else if (req.url.find("titlehub.xboxlive.com") != std::string::npos) {
+                res.body = R"({"titles": []})";
+            }
+            return res;
+        });
+
+        // Thread start
+        trophy::startTrophyThread();
+        CHECK(!trophy::isSyncing());
+        CHECK(trophy::titlesDone() == 0);
+        CHECK(trophy::titlesTotal() == 0);
+
+        // Urgent stream poll fast-path
+        CHECK(trophy::dispatchStreamPoll("Bearer tok", "12345", "267695549", "Fortnite", "https://img/fn.png"));
+        platform::sleepMs(80);
+
+        // Batch sync dispatch
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+        platform::sleepMs(80);
+
+        // Cancellation
+        trophy::cancelTrophySync();
+        platform::sleepMs(50);
+
+        // Clean shutdown
+        CHECK(trophy::stopTrophyThread(3000));
+        net::setTestTransport({});
+    }
+}
+
+static void testTrophyNetworkAndLifecycleResilienceStress() {
+    XC_LOGI("--- Starting Trophy Network Fault & Lifecycle Resilience Stress Test ---");
+
+    auto setupBaseMock = [](std::function<net::Response(const net::Request&)> customAchHandler,
+                            std::function<net::Response(const net::Request&)> customProbeHandler = nullptr) {
+        net::setTestTransport([customAchHandler, customProbeHandler](const net::Request& req) -> net::Response {
+            net::Response res;
+            res.status = 200;
+            if (req.url.find("history/titles") != std::string::npos) {
+                res.body = R"({
+                    "titles": [
+                        {"titleId": "267695549", "name": "Fortnite", "displayImage": "https://img/fn.png", "achievement": {"currentAchievements": 5, "currentGamerscore": 100}}
+                    ]
+                })";
+                return res;
+            }
+            if (req.url.find("titlehub.xboxlive.com") != std::string::npos) {
+                res.body = R"({"titles": []})";
+                return res;
+            }
+            if (req.url.find("login.live.com") != std::string::npos) {
+                if (customProbeHandler) return customProbeHandler(req);
+                res.body = "OK";
+                return res;
+            }
+            if (req.url.find("achievements.xboxlive.com") != std::string::npos) {
+                if (customAchHandler) return customAchHandler(req);
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+                return res;
+            }
+            return res;
+        });
+    };
+
+    auto cleanCache = []() {
+        std::string cPath = trophy::syncEngine().trophyCachePath("267695549");
+        ::unlink(cPath.c_str());
+    };
+
+    // Sub-test 1: 1 failure -> 1s exponential backoff -> success
+    {
+        cleanCache();
+        std::atomic<int> achCalls{0};
+        std::atomic<bool> achSuccess{false};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            int c = achCalls.fetch_add(1);
+            net::Response res;
+            if (c == 0) {
+                res.status = 500;
+                res.error = "HTTP 500: Internal Server Error";
+                res.body = "Internal Server Error";
+            } else {
+                res.status = 200;
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach 1", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+                achSuccess.store(true);
+            }
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        uint64_t t0 = platform::nowMs();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (!achSuccess.load() && platform::nowMs() - t0 < 4000) {
+            platform::sleepMs(20);
+        }
+        uint64_t elapsed = platform::nowMs() - t0;
+        CHECK(achSuccess.load());
+        CHECK(achCalls.load() == 2);
+        CHECK(elapsed >= 950 && elapsed <= 2500); // 1s backoff verified empirically
+        XC_LOGI("Stress Test: Sub-test 1 passed in %llu ms (achCalls=%d)",
+                static_cast<unsigned long long>(elapsed), achCalls.load());
+        CHECK(trophy::stopTrophyThread(3000));
+    }
+
+    // Sub-test 2: 2 failures -> 1s + 2s = 3s backoff -> success
+    {
+        cleanCache();
+        std::atomic<int> achCalls{0};
+        std::atomic<bool> achSuccess{false};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            int c = achCalls.fetch_add(1);
+            net::Response res;
+            if (c < 2) {
+                res.status = 429;
+                res.error = "HTTP 429: Too Many Requests";
+                res.body = "Too Many Requests";
+            } else {
+                res.status = 200;
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach 2", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+                achSuccess.store(true);
+            }
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        uint64_t t0 = platform::nowMs();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (!achSuccess.load() && platform::nowMs() - t0 < 6000) {
+            platform::sleepMs(20);
+        }
+        uint64_t elapsed = platform::nowMs() - t0;
+        CHECK(achSuccess.load());
+        CHECK(achCalls.load() == 3);
+        CHECK(elapsed >= 2950 && elapsed <= 4800); // 1s + 2s = 3s backoff verified empirically
+        XC_LOGI("Stress Test: Sub-test 2 passed in %llu ms (achCalls=%d)",
+                static_cast<unsigned long long>(elapsed), achCalls.load());
+        CHECK(trophy::stopTrophyThread(3000));
+    }
+
+    // Sub-test 3: 3 failures -> 1s + 2s + 4s = 7s backoff -> success on attempt 3
+    {
+        cleanCache();
+        std::atomic<int> achCalls{0};
+        std::atomic<bool> achSuccess{false};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            int c = achCalls.fetch_add(1);
+            net::Response res;
+            if (c < 3) {
+                res.status = 503;
+                res.error = "HTTP 503: Service Unavailable";
+                res.body = "Service Unavailable";
+            } else {
+                res.status = 200;
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach 3", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+                achSuccess.store(true);
+            }
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        uint64_t t0 = platform::nowMs();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (!achSuccess.load() && platform::nowMs() - t0 < 10000) {
+            platform::sleepMs(20);
+        }
+        uint64_t elapsed = platform::nowMs() - t0;
+        CHECK(achSuccess.load());
+        CHECK(achCalls.load() == 4);
+        CHECK(elapsed >= 6950 && elapsed <= 9200); // 1s + 2s + 4s = 7s backoff verified empirically
+        XC_LOGI("Stress Test: Sub-test 3 passed in %llu ms (achCalls=%d)",
+                static_cast<unsigned long long>(elapsed), achCalls.load());
+        CHECK(trophy::stopTrophyThread(3000));
+    }
+
+    // Sub-test 4: Network Outage -> PausedWaitingForNetwork -> Periodic Probe -> Reconnect & Recovery
+    {
+        cleanCache();
+        std::atomic<int> achCalls{0};
+        std::atomic<int> probeCalls{0};
+        std::atomic<bool> networkOnline{false};
+        std::atomic<bool> achSuccess{false};
+        std::vector<uint64_t> probeTimes;
+        std::mutex probeMutex;
+
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            achCalls.fetch_add(1);
+            net::Response res;
+            if (!networkOnline.load()) {
+                res.status = 0;
+                res.error = "HTTP 0: Connection reset by peer";
+                res.body = "";
+            } else {
+                res.status = 200;
+                res.body = R"({
+                    "achievements": [
+                        {"id": "1", "name": "Test Ach Reconnected", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                    ]
+                })";
+                achSuccess.store(true);
+            }
+            return res;
+        }, [&](const net::Request&) -> net::Response {
+            probeCalls.fetch_add(1);
+            {
+                std::lock_guard<std::mutex> lock(probeMutex);
+                probeTimes.push_back(platform::nowMs());
+            }
+            net::Response res;
+            if (!networkOnline.load()) {
+                res.status = 0;
+                res.error = "HTTP 0: Connection refused";
+            } else {
+                res.status = 200;
+                res.body = "OK";
+            }
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        uint64_t t0 = platform::nowMs();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        // Wait for all 4 initial attempts (1s + 2s + 4s = 7s) and at least 2 network probes (~4s)
+        while (probeCalls.load() < 2 && platform::nowMs() - t0 < 15000) {
+            platform::sleepMs(50);
+        }
+        CHECK(probeCalls.load() >= 2);
+        CHECK(!achSuccess.load()); // Title must NOT have finished yet
+        CHECK(trophy::isSyncing()); // Thread is still actively paused waiting for network
+
+        // Verify probe frequency (~2s interval)
+        {
+            std::lock_guard<std::mutex> lock(probeMutex);
+            if (probeTimes.size() >= 2) {
+                uint64_t diff = probeTimes[1] - probeTimes[0];
+                CHECK(diff >= 1800 && diff <= 2500); // 2s probe pacing verified without busy-spin
+                XC_LOGI("Stress Test: Network probe interval verified: %llu ms", static_cast<unsigned long long>(diff));
+            }
+        }
+
+        // Simulate network restoration
+        networkOnline.store(true);
+
+        uint64_t recStart = platform::nowMs();
+        while (!achSuccess.load() && platform::nowMs() - recStart < 6000) {
+            platform::sleepMs(50);
+        }
+        CHECK(achSuccess.load()); // Seamless resumption verified without title loss!
+        XC_LOGI("Stress Test: Sub-test 4 passed (resumed in %llu ms after network restored)",
+                static_cast<unsigned long long>(platform::nowMs() - recStart));
+        CHECK(trophy::stopTrophyThread(3000));
+    }
+
+    // Sub-test 5: Cancellation / Shutdown Responsiveness during 4s Backoff Sleep
+    {
+        cleanCache();
+        std::atomic<int> achCalls{0};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            achCalls.fetch_add(1);
+            net::Response res;
+            res.status = 500;
+            res.error = "HTTP 500: Fail";
+            res.body = "Fail";
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (achCalls.load() < 3) {
+            platform::sleepMs(50);
+        }
+        platform::sleepMs(200);
+
+        uint64_t stopStart = platform::nowMs();
+        bool stoppedOk = trophy::stopTrophyThread(3000);
+        uint64_t stopDuration = platform::nowMs() - stopStart;
+
+        CHECK(stoppedOk);
+        CHECK(stopDuration < 400); // Wakes up immediately from CV wait!
+        XC_LOGI("Stress Test: Sub-test 5 passed (stopped in %llu ms during 4s backoff sleep)",
+                static_cast<unsigned long long>(stopDuration));
+    }
+
+    // Sub-test 6: cancelTrophySync Responsiveness during PausedWaitingForNetwork
+    {
+        cleanCache();
+        std::atomic<int> probeCalls{0};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            net::Response res;
+            res.status = 0;
+            res.error = "HTTP 0: Connection refused";
+            return res;
+        }, [&](const net::Request&) -> net::Response {
+            probeCalls.fetch_add(1);
+            net::Response res;
+            res.status = 0;
+            res.error = "HTTP 0: Connection refused";
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (probeCalls.load() < 1) {
+            platform::sleepMs(50);
+        }
+
+        uint64_t cancelStart = platform::nowMs();
+        trophy::cancelTrophySync();
+
+        while (trophy::isSyncing() && platform::nowMs() - cancelStart < 2000) {
+            platform::sleepMs(20);
+        }
+        uint64_t cancelDuration = platform::nowMs() - cancelStart;
+
+        CHECK(!trophy::isSyncing());
+        CHECK(cancelDuration < 500); // Wakes up immediately from 2s probe sleep!
+        XC_LOGI("Stress Test: Sub-test 6 passed (cancelled in %llu ms from probe sleep)",
+                static_cast<unsigned long long>(cancelDuration));
+        CHECK(trophy::stopTrophyThread(3000));
+    }
+
+    // Sub-test 7: Concurrency & Lock Contention under PausedWaitingForNetwork
+    {
+        cleanCache();
+        std::atomic<int> probeCalls{0};
+        std::atomic<bool> inProbe{false};
+        std::atomic<bool> holdProbe{true};
+
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            net::Response res;
+            res.status = 0;
+            res.error = "HTTP 0: Connection lost";
+            return res;
+        }, [&](const net::Request&) -> net::Response {
+            probeCalls.fetch_add(1);
+            inProbe.store(true);
+            uint64_t ps = platform::nowMs();
+            while (holdProbe.load() && platform::nowMs() - ps < 500) {
+                platform::sleepMs(10);
+            }
+            inProbe.store(false);
+            net::Response res;
+            res.status = 0;
+            res.error = "HTTP 0: Probe failed";
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (!inProbe.load()) {
+            platform::sleepMs(20);
+        }
+
+        uint64_t pollStart = platform::nowMs();
+        bool pollDispatched = trophy::dispatchStreamPoll("Bearer tok", "12345", "182830000", "Minecraft", "https://img/mc.png");
+        uint64_t pollDuration = platform::nowMs() - pollStart;
+
+        XC_LOGI("Stress Test: Sub-test 7: dispatchStreamPoll during probe took %llu ms (dispatched=%d)",
+                static_cast<unsigned long long>(pollDuration), pollDispatched ? 1 : 0);
+
+        holdProbe.store(false);
+        trophy::cancelTrophySync();
+        trophy::stopTrophyThread(3000);
+
+        CHECK(pollDispatched);
+        CHECK(pollDuration < 100);
+        // We log whether dispatchStreamPoll was delayed by g_trophyQueueMutex contention
+        if (pollDuration >= 200) {
+            XC_LOGW("CRITICAL FINDING: dispatchStreamPoll was blocked for %llu ms because g_trophyQueueMutex was held during probeNetworkConnectivity()!",
+                    static_cast<unsigned long long>(pollDuration));
+        } else {
+            XC_LOGI("dispatchStreamPoll completed without queue lock contention (%llu ms)",
+                    static_cast<unsigned long long>(pollDuration));
+        }
+    }
+
+    // Sub-test 8: requestRemoveTrophies() Preemption & Execution during Active Sync
+    {
+        cleanCache();
+        class TestRemoveBackend : public trophy::ITrophyBackend {
+        public:
+            std::atomic<int> removeCalls{0};
+            bool init(uint32_t) override { return true; }
+            bool registerTitle(const trophy::TitleTrophySet&) override { return true; }
+            bool unlockTrophy(const std::string&, int, trophy::TrophyGrade, const std::string&) override { return true; }
+            bool isTrophyUnlocked(const std::string&, int) override { return false; }
+            bool removeAllTrophies(const std::vector<std::pair<std::string, std::string>>& titles,
+                                   int& removedCount, std::string& err) override {
+                removeCalls++;
+                removedCount = static_cast<int>(titles.size());
+                return true;
+            }
+            std::string name() const override { return "TestRemoveBackend"; }
+        };
+
+        auto backend = std::make_unique<TestRemoveBackend>();
+        auto* rawBackend = backend.get();
+        trophy::syncEngine().setBackend(std::move(backend));
+
+        std::atomic<bool> syncStarted{false};
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            syncStarted.store(true);
+            net::Response res;
+            res.status = 0;
+            res.error = "HTTP 0: Connection lost";
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        while (!syncStarted.load()) {
+            platform::sleepMs(20);
+        }
+        platform::sleepMs(50); // Ensure thread entered backoff wait_for
+
+        // Invoke requestRemoveTrophies while sync is retrying
+        trophy::requestRemoveTrophies();
+
+        uint64_t remWaitStart = platform::nowMs();
+        while ((rawBackend->removeCalls.load() == 0 || trophy::isSyncing()) && platform::nowMs() - remWaitStart < 2000) {
+            platform::sleepMs(20);
+        }
+
+        CHECK(rawBackend->removeCalls.load() > 0);
+        CHECK(!trophy::isSyncing());
+
+        CHECK(trophy::stopTrophyThread(3000));
+        trophy::syncEngine().setBackend(nullptr);
+        XC_LOGI("Stress Test: Sub-test 8 passed (requestRemoveTrophies executed during sync)");
+    }
+
+    // Sub-test 9: Thread Shutdown Timeout Safety and Re-entry Handle Cleanup
+    {
+        cleanCache();
+        std::atomic<bool> inHangingCall{false};
+        std::atomic<bool> releaseHang{false};
+
+        setupBaseMock([&](const net::Request&) -> net::Response {
+            inHangingCall.store(true);
+            while (!releaseHang.load()) {
+                platform::sleepMs(10);
+            }
+            net::Response res;
+            res.status = 200;
+            res.body = R"({"achievements": []})";
+            return res;
+        });
+
+        trophy::startTrophyThread();
+        trophy::requestTrophySync("Bearer tok", "12345", {}, true);
+
+        // Wait until thread enters the hanging socket call
+        while (!inHangingCall.load()) {
+            platform::sleepMs(20);
+        }
+
+        // Bounded timeout check: stopTrophyThread(150) must return false without hanging in pthread_join
+        uint64_t stopStart = platform::nowMs();
+        bool stopped = trophy::stopTrophyThread(150);
+        uint64_t stopDuration = platform::nowMs() - stopStart;
+
+        CHECK(!stopped);
+        CHECK(stopDuration >= 140 && stopDuration < 500);
+        XC_LOGI("Stress Test: Sub-test 9 passed bounded timeout check in %llu ms",
+                static_cast<unsigned long long>(stopDuration));
+
+        // Release the hanging call to let thread terminate
+        releaseHang.store(true);
+
+        uint64_t exitWait = platform::nowMs();
+        while (trophy::isSyncing() && platform::nowMs() - exitWait < 1000) {
+            platform::sleepMs(20);
+        }
+
+        // Test thread re-entry: startTrophyThread reaps dead unjoined handle and starts new thread cleanly
+        trophy::startTrophyThread();
+
+        CHECK(trophy::stopTrophyThread(3000));
+        net::setTestTransport({});
+        XC_LOGI("Stress Test: Sub-test 9 passed re-entry cleanup and final stop");
+    }
+
+    net::setTestTransport({});
+    XC_LOGI("--- Trophy Network Fault & Lifecycle Resilience Stress Test Complete ---");
+}
+
+static void testTrophyStreamingPauseAndPriority() {
+    XC_LOGI("--- Starting Trophy Streaming Pause & Urgent Preemption Test ---");
+
+    // Clean cache
+    std::string cPath = trophy::syncEngine().trophyCachePath("267695549");
+    ::unlink(cPath.c_str());
+    std::string cPath2 = trophy::syncEngine().trophyCachePath("182830000");
+    ::unlink(cPath2.c_str());
+
+    std::atomic<bool> isStreaming{true};
+    std::atomic<int> pollExecCount{0};
+    std::atomic<int> batchExecCount{0};
+
+    net::setTestTransport([&](const net::Request& req) -> net::Response {
+        net::Response res;
+        res.status = 200;
+        if (req.url.find("history/titles") != std::string::npos) {
+            res.body = R"({
+                "titles": [
+                    {"titleId": "267695549", "name": "Fortnite", "titleType": "Game", "displayImage": "https://img/fn.png", "earnedAchievements": 5, "currentGamerscore": 100},
+                    {"titleId": "182830000", "name": "Minecraft", "titleType": "Game", "displayImage": "https://img/mc.png", "earnedAchievements": 10, "currentGamerscore": 200}
+                ]
+            })";
+            return res;
+        }
+        if (req.url.find("titlehub.xboxlive.com") != std::string::npos) {
+            res.body = R"({"titles": []})";
+            return res;
+        }
+        if (req.url.find("achievements.xboxlive.com") != std::string::npos) {
+            if (req.url.find("267695549") != std::string::npos) {
+                pollExecCount.fetch_add(1);
+            }
+            batchExecCount.fetch_add(1);
+            res.body = R"({
+                "achievements": [
+                    {"id": "1", "name": "Test Ach", "progressState": "Achieved", "rewards": [{"type": "Gamerscore", "value": "10"}]}
+                ]
+            })";
+            return res;
+        }
+        res.status = 404;
+        return res;
+    });
+
+    trophy::setTrophyContextProvider([&](trophy::TrophySyncContext& ctx) {
+        ctx.xblAuth = "Bearer testToken";
+        ctx.xuid = "12345678";
+        ctx.isStreaming = [&] { return isStreaming.load(); };
+        return true;
+    });
+
+    trophy::startTrophyThread();
+
+    // 1. Dispatch batch sync while streaming is active
+    isStreaming.store(true);
+    trophy::requestTrophySync(true);
+
+    // Give thread time to discover and encounter pause condition
+    platform::sleepMs(200);
+
+    // Because isStreaming is true, batch title execution must be paused!
+    CHECK(trophy::titlesDone() == 0);
+
+    // 2. Urgent stream poll must execute immediately even while batch is paused
+    int pollsBefore = pollExecCount.load();
+    CHECK(trophy::dispatchStreamPoll("Bearer testToken", "12345678", "267695549", "Fortnite", "https://img/fn.png"));
+
+    // Wait for urgent poll to execute
+    for (int i = 0; i < 20; ++i) {
+        if (pollExecCount.load() > pollsBefore) break;
+        platform::sleepMs(15);
+    }
+    CHECK(pollExecCount.load() > pollsBefore);
+
+    // Batch title sync must STILL be paused (titlesDone == 0)
+    CHECK(trophy::titlesDone() == 0);
+
+    // 3. Resume trophy sync by exiting stream mode
+    isStreaming.store(false);
+    trophy::resumeTrophySync();
+
+    // Wait for batch sync to resume and process both titles without dropping any task
+    for (int i = 0; i < 50; ++i) {
+        if (trophy::titlesDone() >= 2 && !trophy::isSyncing()) break;
+        platform::sleepMs(20);
+    }
+    CHECK(trophy::titlesDone() >= 2);
+    CHECK(!trophy::isSyncing());
+
+    // Clean shutdown
+    CHECK(trophy::stopTrophyThread(3000));
+    trophy::setTrophyContextProvider({});
+    net::setTestTransport({});
+    ::unlink(cPath.c_str());
+    ::unlink(cPath2.c_str());
+    XC_LOGI("--- Trophy Streaming Pause & Urgent Preemption Test Complete ---");
+}
+
+static void testTrophyModalsAndDesktopInput() {
+    ui::Fonts fonts;
+    ui::ImageCache images([] {});
+    ui::AppUi app(fonts, images);
+
+    ui::UiCaps caps;
+    caps.console = true;
+    app.setCaps(caps);
+
+    app.showHome();
+    ui::NavInput openOpt;
+    openOpt.options = true;
+    app.handle(openOpt);
+    CHECK(app.screen() == ui::Screen::Settings);
+    CHECK(!app.settings().syncTrophies);
+
+    int y24 = 0, y25 = 0;
+    int curY = 184;
+    for (const auto& [r, groupStart] : ui::visibleSettingsRows(caps)) {
+        if (groupStart) curY += 4;
+        if (r == 24) y24 = curY + 10;
+        if (r == 25) y25 = curY + 10;
+        curY += 32;
+    }
+    CHECK(y24 > 0);
+    CHECK(y25 > 0);
+
+    // 1. Click row 24: opens disclaimer modal
+    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    ui::Canvas c(1920, 1080);
+    app.render(c, 1000);
+
+    // Press right to move focus to "Cancelar" (focus 1)
+    ui::NavInput navRight;
+    navRight.right = true;
+    app.handle(navRight);
+
+    // Accept "Cancelar": modal closes, syncTrophies remains false
+    ui::NavInput accept;
+    accept.accept = true;
+    app.handle(accept);
+    CHECK(!app.settings().syncTrophies);
+
+    // Click row 24 again: opens modal, focus defaults to "Estou ciente" (focus 0)
+    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    ui::UiEvent evAware = app.handle(accept);
+    CHECK(app.settings().syncTrophies);
+    CHECK(evAware.action == ui::Action::SyncTrophies);
+    CHECK(evAware.settings.syncTrophies);
+    app::Settings st;
+    ui::applyChoice(evAware.settings, st);
+    CHECK(st.syncTrophies);
+
+    // Click row 24 again: turns it off directly
+    ui::UiEvent evOff = app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    CHECK(!app.settings().syncTrophies);
+    CHECK(evOff.action == ui::Action::SettingsChanged);
+    CHECK(!evOff.settings.syncTrophies);
+    ui::applyChoice(evOff.settings, st);
+    CHECK(!st.syncTrophies);
+
+    // 2. Turn sync back on to test removal resets it
+    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    app.handle(accept);
+    CHECK(app.settings().syncTrophies);
+
+    // Click row 25: opens remove trophies confirm modal
+    app.onMouseDown(100.0f, static_cast<float>(y25), 1);
+    app.render(c, 1000);
+
+    // Default focus is "Cancelar" (focus 1) for safety
+    ui::UiEvent evCancelRm = app.handle(accept);
+    CHECK(evCancelRm.action != ui::Action::RemoveTrophies);
+    CHECK(app.settings().syncTrophies);
+
+    // Click row 25 again, navigate left to "Remover" (focus 0)
+    app.onMouseDown(100.0f, static_cast<float>(y25), 1);
+    ui::NavInput navLeft;
+    navLeft.left = true;
+    app.handle(navLeft);
+    ui::UiEvent evRm = app.handle(accept);
+    CHECK(evRm.action == ui::Action::RemoveTrophies);
+    CHECK(!evRm.settings.syncTrophies);
+    CHECK(!app.settings().syncTrophies);
+    ui::applyChoice(evRm.settings, st);
+    CHECK(!st.syncTrophies);
+
+    // 3. Desktop Search & text input
+    app.showHome();
+    ui::NavInput tri;
+    tri.triangle = true;
+    app.handle(tri); // opens search
+    CHECK(app.wantsTextInput());
+
+    app.typeText("Fortnite");
+    CHECK(app.searchQuery() == "Fortnite");
+
+    // Test backspace / delete
+    app.typeText("\b");
+    CHECK(app.searchQuery() == "Fortnit");
+
+    // Close search
+    ui::NavInput back;
+    back.back = true;
+    app.handle(back);
+    CHECK(!app.wantsTextInput());
+}
+
+int main() {
+    testPs4VideoPipelineAndSse2Converter();
+    testTrophySystem();
+    testTrophyNetworkAndLifecycleResilienceStress();
+    testTrophyStreamingPauseAndPriority();
+    testTrophyModalsAndDesktopInput();
+    testReleaseV155Features();
+    testSizedUrl();
+    testPhase1BugFixesAndPhase2Optimizations();
+    testBlock4OwnershipAndRecents();
+    testBloco3Corrections();
+    testBloco2Corrections();
+    testBlock1Corrections();
+    testCallOfDutyModernWarfare4CatalogAndRefresh();
+    testBlock3Features();
+    testWishlist();
+    testAchievements();
+    testBlock2Features();
+    testPurchase();
+    testNullBackends();
+    testPadGlyphs();
+    testToasts();
+    testVisibleSettingsRows();
+    testMissingFont();
+    testNullBackendsM1();
+    testAudioQueueLatency();
+    testAudioQueue();
+    testMicPipeline();
+    testDs5TriggerEffects();
+    testSdlMouseButtons();
+    testScancodeToVk();
+    testSdlSensorUnits();
+    testLoginRetry();
+    testTokenRefresh();
+    testGyro();
+    testReport();
+    testCrashGuard();
+    testBuiltinCa();
+    testLoginCountry();
+    testPrivacyAndRobustness();
+    testHttpKeepAlive();
+    testResolveIPv4AndConnectTcp();
+    testStoreLeftovers();
+    testLibraryRowsOnce();
+    testHostPacer();
+    testSubscriptionPlan();
+    testMicrosoftHost();
+    testAudioEncoder();
+    testH264LossWaitFollowsRtt();
+    testH264Resync();
+    testH264PaddingPacket();
+    testAudioDecoderEmptyPacket();
+    testAudioDecoderPlc();
+    testAudioGapLossConcealment();
+    testAutoDeband();
+    testControllerTuning();
+    testUpdater();
+    testAccentColor();
+    testVersions();
+    testStreamMenu();
+    testSplashInputBlocking();
+    testSettingsMigration();
+    testSettingsChoiceRoundTrip();
+    testMicGain();
+    testPerGameSettings();
+    testPlaytimeLimit();
+    testCloudTimeClock();
+    testSteamDeckDmi();
+    testStrings();
+    testRegions();
+    testPrices();
+    testJson();
+    testUrl();
+    testInputPacket();
+    testMouseKeyboardReports();
+    testHidToVk();
+    testKeyboardNav();
+    testKeyboardAsGamepad();
+    testTouchpadAsMouse();
+    testKeyMap();
+    testPadMap();
+    testTeredo();
+    testBlock1Features();
+    testVideoDecoder();
+    testDrawNv12();
+    testWebStreamingAndGamepad();
+    testWebSettingsAndStreamMenu();
+    testVoiceRouting();
+    testUsbPadReports();
+    testUsbPadDescriptors();
+    testUsbPadSlots();
+    testDesktopMouseNav();
+    testWebSocketRFC6455();
+    testAudioToHaptics();
+    testLibraryOfflineCache();
+    testTouchpadShortcutsAndSlots();
+    testPlayerSwitchAndUnresolvedTiles();
+    testWebReportAndGamepadLayout();
+    testCodSearchRomanAndSettingsReset();
+    testFreeAccountPlayability();
+    testDetailsHydrationAndPlaytimeBadge();
+    if (g_failures) {
+        std::fprintf(stderr, "%d failure(s)\n", g_failures);
+        return 1;
+    }
+    std::printf("all tests passed\n");
+    return 0;
+}

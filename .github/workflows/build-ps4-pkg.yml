@@ -1,0 +1,109 @@
+name: Build Nawaf Cloud Gaming PS4 PKG
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "App version, for example 1.6.4"
+        required: true
+        default: "1.6.4"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-ps4-pkg:
+    runs-on: ubuntu-24.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      OO_PS4_TOOLCHAIN: ${{ github.workspace }}/ps4-toolchain
+      CC: clang-18
+      CXX: clang++-18
+
+    steps:
+      - name: Check out source and dependencies
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Select version
+        id: version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="${GITHUB_REF#refs/tags/v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Invalid version: $version" >&2
+            exit 1
+          }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building Nawaf Cloud Gaming v$version"
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            cmake ninja-build clang-18 llvm-18 lld-18 nasm pkg-config \
+            python3 python3-pip curl unzip zlib1g-dev
+
+      - name: Install .NET runtime for PkgTool
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Cache OpenOrbis toolchain
+        id: toolchain-cache
+        uses: actions/cache@v4
+        with:
+          path: ps4-toolchain
+          key: openorbis-llvm18-${{ runner.os }}
+
+      - name: Download OpenOrbis toolchain
+        if: steps.toolchain-cache.outputs.cache-hit != 'true'
+        run: bash tools/ps4/fetch-toolchain.sh "$OO_PS4_TOOLCHAIN" 18
+
+      - name: Configure PS4 Release build
+        run: |
+          cmake -S . -B build-ps4 -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/ps4.toolchain.cmake \
+            -DOO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN"
+
+      - name: Build PS4 ELF
+        run: cmake --build build-ps4 --parallel 2
+
+      - name: Package installable PKG
+        id: package
+        env:
+          XC_PS4_TITLE: "Nawaf Cloud Gaming - PS4"
+          XC_PS4_TITLE_ID: "PSBX00001"
+          XC_PS4_CONTENT_ID: "IV0000-PSBX00001_00-PSBOXCLOUDGAME00"
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          IFS=. read -r major minor patch <<< "$version"
+          export XC_PS4_VERSION
+          XC_PS4_VERSION=$(printf '%02d.%02d' "$major" "$((minor * 10 + patch))")
+          out="build-ps4/pkg-release"
+          bash tools/ps4/package.sh build-ps4 "$out"
+          mv "$out/Nawaf Cloud Gaming - PS4.pkg" "$out/NawafCloudGaming-PS4-v${version}.pkg"
+          sha256sum "$out/NawafCloudGaming-PS4-v${version}.pkg" > "$out/NawafCloudGaming-PS4-v${version}.pkg.sha256"
+          test -s "$out/NawafCloudGaming-PS4-v${version}.pkg"
+          test -s "$out/NawafCloudGaming-PS4-v${version}.pkg.sha256"
+          ls -lh "$out"/NawafCloudGaming-PS4-v${version}.pkg*
+
+      - name: Upload PKG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NawafCloudGaming-PS4-v${{ steps.version.outputs.version }}
+          path: |
+            build-ps4/pkg-release/NawafCloudGaming-PS4-v${{ steps.version.outputs.version }}.pkg
+            build-ps4/pkg-release/NawafCloudGaming-PS4-v${{ steps.version.outputs.version }}.pkg.sha256
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,318 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 RafaelNGP
+# The issue triage's rules on made-up issues: python3 -m unittest discover .github/triage
+import json
+import os
+import unittest
+
+import triage
+
+RULES = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "rules.json")))["rules"]
+
+
+def form(what="", release="", firmware="", log=""):
+    def section(title, text):
+        return f"### {title}\n\n{text or '_No response_'}\n\n"
+    return (section("What happened?", what) + section("App release", release) + section("PlayStation Firmware", firmware) +
+            section("Game(s) affected", "") + section("Network", "Wired") +
+            section("xcloud.log", f"```text\n{log}\n```" if log else ""))
+
+
+LOG = "10:00:00 [I] === PSBox Cloud Gaming starting ===\n"
+
+
+class Triage(unittest.TestCase):
+    def run_triage(self, body, title="A problem", latest="1.3.2"):
+        labels, comment, _ = triage.triage({"title": title, "body": body}, RULES, latest)
+        return labels, comment
+
+    def run_triage_full(self, body, title="A problem", latest="1.3.2"):
+        return triage.triage({"title": title, "body": body}, RULES, latest)
+
+    def test_known_error_fixed_in_newer_release(self):
+        labels, comment = self.run_triage(form("It doesn't start", "v0.9.5", "13.00",
+                                               LOG + "10:00:01 [E] TLS setup: certificates cacert.pem: (-15872)"),
+                                          latest="0.9.6")
+        self.assertIn("area: certificates", labels)
+        self.assertIn("outdated-version", labels)
+        self.assertIn("fw: 13.00", labels)
+        self.assertNotIn("needs-info", labels)
+        self.assertIn("please update to v0.9.6", comment)
+        self.assertNotIn("Does it still happen there", comment)  # already asked to update
+        self.assertTrue(comment.startswith(triage.MARKER))
+
+    def test_ps4_outdated_build_invites_redownload(self):
+        log = LOG + "10:00:01 [I] firmware 13.520.001, PSBox 1.5.5 (build dbf2078-dirty, PlayStation 4)\n"
+        labels, comment = self.run_triage(form("Low fps and the game freezes", "1.5.5", "13.52", log), latest="1.5.5")
+        self.assertIn("outdated-version", labels)
+        self.assertIn("re-download", comment)
+        self.assertNotIn("PlayStation 5", comment)
+
+    def test_ps5_current_build_not_flagged_outdated(self):
+        log = LOG + "10:00:01 [I] firmware 12.400.000, PSBox 1.5.5 (build dbf2078, PlayStation 5)\n"
+        labels, _ = self.run_triage(form("Something", "1.5.5", "12.40", log), latest="1.5.5")
+        self.assertNotIn("outdated-version", labels)
+
+    def test_clock_error_and_missing_release(self):
+        labels, comment = self.run_triage(form("error at start", "any version", "5.50",
+                                               LOG + "10:00:01 [E] TLS handshake: Certificate verification failed (-9984)"))
+        self.assertIn("area: certificates", labels)
+        self.assertIn("needs-info", labels)
+        self.assertIn("date and time", comment)
+        self.assertIn("app release", comment)
+
+    def test_controller_words_only_in_the_description(self):
+        # "vibration" in the log alone isn't a controller problem.
+        labels, _ = self.run_triage(form("It froze", "1.3.2", "13.60", LOG + "10:00:02 [I] pad 0 vibration suppression"))
+        self.assertNotIn("area: controller", labels)
+        labels, comment = self.run_triage(form("The select button does nothing", "1.3.2", "13.60", LOG))
+        self.assertIn("area: controller", labels)
+        self.assertIn("touchpad click", comment)
+
+    def test_no_false_crash_from_installed(self):
+        labels, _ = self.run_triage(form("app installed without issue", "1.3.2", "13.60", LOG))
+        self.assertNotIn("crash", labels)
+        labels, _ = self.run_triage(form("Closed unexpectedly: signal 11 (SIGSEGV) while home", "1.3.2", "13.60", LOG))
+        self.assertIn("crash", labels)
+
+    def test_up_to_date_and_complete_says_nothing(self):
+        labels, comment = self.run_triage(form("Something odd", "v1.3.2", "13.60", LOG))
+        self.assertEqual(labels, ["fw: 13.60"])
+        self.assertIsNone(comment)
+
+    def test_legacy_ps5_firmware_label_recognized(self):
+        legacy_body = ("### What happened?\n\nSomething\n\n### App release\n\nv1.3.2\n\n"
+                       "### PS5 firmware\n\n13.60\n\n### Game(s) affected\n\n_No response_\n\n"
+                       "### Network\n\nWired\n\n### xcloud.log\n\n_No response_\n\n")
+        labels, _ = self.run_triage(legacy_body)
+        self.assertIn("fw: 13.60", labels)
+
+    def test_app_version_typed_as_firmware_is_ignored(self):
+        labels, _ = self.run_triage(form("x", "0.9.5", "0.9.5", LOG))
+        self.assertFalse(any(label.startswith("fw: ") for label in labels))
+
+    def test_not_the_form_asks_for_nothing(self):
+        labels, comment = self.run_triage("Could you add favourites?", title="Idea: favourites")
+        self.assertEqual(labels, [])
+        self.assertIsNone(comment)
+
+    def test_region_and_wake(self):
+        labels, _ = self.run_triage(form("no login", "1.3.2", "", LOG + "10:00:03 [E] sign-in failed: xCloud login failed: HTTP 403"))
+        self.assertIn("area: region", labels)
+        labels, comment = self.run_triage(form("my xbox", "1.3.2", "", LOG + "10:00:03 [I] State WaitingForServerToRegister"))
+        self.assertIn("area: remote play", labels)
+        self.assertIn("Power options", comment)
+
+    def test_dns_blocked_and_xbox_profile(self):
+        labels, comment = self.run_triage(
+            form("can't sign in", "1.3.0", "13.60",
+                 LOG + "10:00:03 [E] sign-in failed: device code request failed: DNS lookup failed for login.live.com: 0x8041013d")
+        )
+        self.assertIn("area: network", labels)
+        self.assertIn("NanoDNS", comment)
+        self.assertIn("please update to v1.3.2", comment)
+
+        labels, comment = self.run_triage(
+            form("sign in failed", "1.3.0", "13.60",
+                 LOG + "10:00:03 [E] sign-in failed: XSTS authorization for http://gssv.xboxlive.com/ failed: HTTP 401 (XErr 2148916233)")
+        )
+        self.assertIn("area: auth", labels)
+        self.assertIn("Gamertag", comment)
+
+    def test_tcp_refusal_errno_61_not_flagged_as_dns_blocked(self):
+        # Issue #357: TCP connect rejection (errno 61) is not a DNS blockage / NanoDNS problem.
+        labels, comment = self.run_triage(
+            form("can't sign in", "1.6.0", "11.60",
+                 LOG + "21:43:16 [W] token refresh: connect failed to login.live.com:443 [20.190.173.67] (errno 61)\n"
+                       "21:43:19 [E] sign-in failed: token refresh failed: connect failed to login.live.com:443 [20.190.173.67] (errno 61)")
+        )
+        self.assertNotIn("area: network", labels)
+        if comment:
+            self.assertNotIn("NanoDNS", comment)
+            self.assertNotIn("DNS blocked or sinkholed", comment)
+
+    def test_multilingual_spanish_and_portuguese(self):
+        labels, comment = self.run_triage(
+            form("Error al adquirir el juego gratuito: 9P22THR57FV7", "1.3.0", "13.60", LOG),
+            title="Error al adquirir el juego gratuito"
+        )
+        self.assertIn("area: catalog", labels)
+        self.assertIn("Triaje automático", comment)
+        self.assertIn("Error al adquirir un juego gratuito", comment)
+        self.assertIn("actualiza a la v1.3.2", comment)
+
+        labels, comment = self.run_triage(
+            form("Não consigo resgatar jogo gratuito no controle", "1.3.0", "13.60",
+                 LOG + "10:00:01 [I] settings: language pt-BR, best, region auto\n10:00:05 [E] erro ao resgatar 9P22THR57FV7"),
+            title="Erro ao resgatar jogo"
+        )
+        self.assertIn("area: catalog", labels)
+        self.assertIn("Triagem automática", comment)
+        self.assertIn("Falha ao resgatar jogo gratuito", comment)
+        self.assertIn("atualize para a v1.3.2", comment)
+
+        # Fallback to log language when user text has no prose
+        labels, comment = self.run_triage(
+            form("", "1.3.0", "13.60",
+                 LOG + "10:00:01 [I] settings: language pt-BR\n10:00:02 [E] DNS lookup failed: 0x8041013d"),
+            title="0x8041013d"
+        )
+        self.assertIn("Triagem automática", comment)
+        self.assertIn("DNS bloqueado", comment)
+
+    def test_unsupported_147_english(self):
+        labels, comment, close = self.run_triage_full(
+            form("It crashed", "1.4.7", "Ps4", LOG),
+            title="Problem on 1.4.7",
+            latest="1.5.4"
+        )
+        self.assertEqual(labels, ["unsupported-platform"])
+        self.assertTrue(close)
+        self.assertIn("Automatic triage", comment)
+        self.assertIn("Unsupported version (v1.4.7 / unofficial PS4 port)", comment)
+        self.assertIn("PlayStation 5", comment)
+        self.assertNotIn("needs-info", labels)
+        self.assertNotIn("outdated-version", labels)
+
+    def test_unsupported_147_portuguese(self):
+        labels, comment, close = self.run_triage_full(
+            form("Não consigo entrar no jogo", "1.4.7", "13.00", LOG + "10:00:01 [I] settings: language pt-BR\n"),
+            title="Erro ao logar na conta",
+            latest="1.5.4"
+        )
+        self.assertEqual(labels, ["unsupported-platform"])
+        self.assertTrue(close)
+        self.assertIn("Triagem automática", comment)
+        self.assertIn("Versão não suportada (v1.4.7 / port não-oficial de PS4)", comment)
+        self.assertIn("não-oficial para PS4 desenvolvida por terceiros", comment)
+        self.assertIn("não foi feita pelo mantenedor", comment)
+
+    def test_unsupported_147_spanish(self):
+        labels, comment, close = self.run_triage_full(
+            form("No puedo iniciar sesión en el juego", "1.4.7", "13.00", LOG),
+            title="Error al iniciar sesión",
+            latest="1.5.4"
+        )
+        self.assertEqual(labels, ["unsupported-platform"])
+        self.assertTrue(close)
+        self.assertIn("Triaje automático", comment)
+        self.assertIn("Versión no admitida (v1.4.7 / port no oficial de PS4)", comment)
+
+    def test_unsupported_147_free_text(self):
+        labels, comment, close = self.run_triage_full(
+            "Estou usando a 1.4.7 e deu erro",
+            title="Ajuda com 1.4.7",
+            latest="1.5.4"
+        )
+        self.assertEqual(labels, ["unsupported-platform"])
+        self.assertTrue(close)
+        self.assertIn("Versão não suportada", comment)
+
+    def test_unsupported_147_points_to_official_ps4_latest_release(self):
+        url = "https://github.com/RafaelNGP/xbox-cloud-gaming-ps5/releases/latest"
+        cases = [
+            (form("It crashed", "1.4.7", "13.00", LOG), "Problem on 1.4.7"),
+            (form("Não consigo entrar no jogo", "1.4.7", "13.00", LOG), "Erro ao logar na conta"),
+            (form("No puedo iniciar sesión en el juego", "1.4.7", "13.00", LOG), "Error al iniciar sesión"),
+        ]
+        for body, title in cases:
+            _, comment, _ = self.run_triage_full(body, title=title, latest="1.6.1")
+            self.assertIn(url, comment)
+            self.assertIn("**PlayStation 4**", comment)
+            self.assertIn("reddit.com/r/PSBoxCloudGaming", comment)
+            self.assertNotIn("exclusiv", comment)
+
+    def test_official_ps4_user_not_closed_as_unsupported(self):
+        for fw in ("PS4", "ps4"):
+            labels, comment, close = self.run_triage_full(
+                form("Game freezes after 5 minutes", "1.6.1", fw, LOG), title="Game freezes", latest="1.6.1")
+            self.assertNotIn("unsupported-platform", labels)
+            self.assertFalse(close)
+            self.assertNotIn("1.4.7", comment or "")
+
+    def test_empty_issue_known_claim_free(self):
+        labels, comment, close = self.run_triage_full(
+            "",
+            title="Call of Duty®: Modern Warfare® II is not on your account yet. It is ",
+            latest="1.5.4"
+        )
+        self.assertIn("area: catalog", labels)
+        self.assertEqual(close, "completed")
+        self.assertIn("Automatic triage", comment)
+        self.assertIn("Claiming a free-to-play game failed", comment)
+        self.assertIn("This issue was submitted with only a title", comment)
+
+    def test_empty_issue_known_portuguese(self):
+        labels, comment, close = self.run_triage_full(
+            "",
+            title="Mecha BREAK ainda não está na sua conta. É grátis: escaneie o cód",
+            latest="1.5.4"
+        )
+        self.assertIn("area: catalog", labels)
+        self.assertEqual(close, "completed")
+        self.assertIn("Triagem automática", comment)
+        self.assertIn("Falha ao resgatar jogo gratuito", comment)
+        self.assertIn("Esta issue foi enviada apenas com o título", comment)
+
+    def test_empty_issue_known_tls_clock(self):
+        labels, comment, close = self.run_triage_full(
+            "No description provided",
+            title="Secure connections were refused because the PS5's date and time look wrong",
+            latest="1.5.4"
+        )
+        self.assertIn("area: certificates", labels)
+        self.assertEqual(close, "completed")
+        self.assertIn("Certificate verification failed", comment)
+        self.assertIn("This issue was submitted with only a title", comment)
+
+    def test_empty_issue_unknown_leaves_open(self):
+        labels, comment, close = self.run_triage_full(
+            "",
+            title="Something completely random that does not match any rule",
+            latest="1.5.4"
+        )
+        self.assertEqual(labels, [])
+        self.assertIsNone(comment)
+        self.assertFalse(close)
+
+    def test_reddit_community_invite(self):
+        # English normal triage
+        _, comment, _ = self.run_triage_full(
+            form("Sign-in problem", "1.5.0", "13.60", LOG + "10:00:03 [E] sign-in failed: DNS lookup failed for login.live.com: 0x8041013d"),
+            title="Sign-in failed",
+            latest="1.5.4"
+        )
+        self.assertIn("https://www.reddit.com/r/PSBoxCloudGaming/", comment)
+        self.assertIn("Join our community on Reddit", comment)
+
+        # Portuguese empty issue
+        _, comment_pt, _ = self.run_triage_full(
+            "",
+            title="Mecha BREAK ainda não está na sua conta. É grátis: escaneie o cód",
+            latest="1.5.4"
+        )
+        self.assertIn("https://www.reddit.com/r/PSBoxCloudGaming/", comment_pt)
+        self.assertIn("Participe da nossa comunidade no Reddit", comment_pt)
+
+        # Spanish issue
+        _, comment_es, _ = self.run_triage_full(
+            form("No puedo iniciar sesión", "1.5.0", "13.60", LOG),
+            title="Error al iniciar sesión",
+            latest="1.5.4"
+        )
+        self.assertIn("https://www.reddit.com/r/PSBoxCloudGaming/", comment_es)
+        self.assertIn("Únete a nuestra comunidad en Reddit", comment_es)
+
+    def test_rules_are_valid(self):
+        import re
+        for rule in RULES:
+            self.assertTrue(rule["label"] and rule["reply"] and rule["patterns"], rule["id"])
+            self.assertTrue(rule.get("reply_pt") and rule.get("reply_es"), rule["id"])
+            for pattern in rule["patterns"]:
+                re.compile(pattern)
+            for where in rule.get("where", []):
+                self.assertIn(where, ("title", "what", "log"))
+
+
+if __name__ == "__main__":
+    unittest.main()
