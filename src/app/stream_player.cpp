@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <condition_variable>
+#include <exception>
 #include <deque>
 #include <mutex>
 #include <set>
@@ -847,13 +848,14 @@ struct StreamPlayer::Impl {
 
         stream::StreamCallbacks cb;
         cb.video = [this](const uint8_t* d, size_t n, uint32_t rtpTimestamp, uint64_t firstPacketUs) {
-            if (n == 0) {  // the depacketizer emits these after loss
-                keyframeWanted = true;
-                return;
-            }
-            if (++videoFrames == 1) XC_LOGI("first video frame received: %zu bytes", n);
-            static int lastProfile = -1, lastLevel = -1;
-            if (lastProfile == -1) {
+            try {
+                if (n == 0) {  // the depacketizer emits these after loss
+                    keyframeWanted = true;
+                    return;
+                }
+                if (++videoFrames == 1) XC_LOGI("first video frame received: %zu bytes", n);
+                static int lastProfile = -1, lastLevel = -1;
+                if (lastProfile == -1) {
                 // The H.264 profile the server encodes with (from the first SPS).
                 for (size_t i = 0; i + 6 < n; ++i)
                     if (d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 && (d[i + 3] & 0x1F) == 7) {
@@ -867,22 +869,30 @@ struct StreamPlayer::Impl {
                         }
                         break;
                     }
-            }
-            std::lock_guard<std::mutex> lock(mutex);
-            if (frames.size() >= kMaxQueuedFrames) {
+                }
+                std::lock_guard<std::mutex> lock(mutex);
+                if (frames.size() >= kMaxQueuedFrames) {
                 // Hopelessly behind: start over from the next key frame.
                 ++queueResets;
                 frames.clear();
                 keyframeWanted = true;
+                }
+                frames.push_back(
+                    {std::vector<uint8_t>(d, d + n), rtpTimestamp, stream::clockMs(), platform::nowUs(), firstPacketUs});
+                cv.notify_one();
+            } catch (const std::exception& e) {
+                keyframeWanted = true;
+                XC_LOGE("video callback recovered from exception: %s", e.what());
+            } catch (...) {
+                keyframeWanted = true;
+                XC_LOGE("video callback recovered from unknown exception");
             }
-            frames.push_back(
-                {std::vector<uint8_t>(d, d + n), rtpTimestamp, stream::clockMs(), platform::nowUs(), firstPacketUs});
-            cv.notify_one();
         };
         cb.audio = [this](const uint8_t* d, size_t n, uint32_t rtpTimestamp) {
-            if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
-            std::lock_guard<std::mutex> lock(audioMutex_);
-            if (audioPackets_.size() < 50) {
+            try {
+                if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
+                std::lock_guard<std::mutex> lock(audioMutex_);
+                if (audioPackets_.size() < 50) {
                 auto it = audioPackets_.end();
                 while (it != audioPackets_.begin()) {
                     auto prev = it - 1;
@@ -891,8 +901,13 @@ struct StreamPlayer::Impl {
                     it = prev;
                 }
                 audioPackets_.insert(it, {std::vector<uint8_t>(d, d + n), rtpTimestamp});
+                }
+                audioCv.notify_one();
+            } catch (const std::exception& e) {
+                XC_LOGE("audio callback recovered from exception: %s", e.what());
+            } catch (...) {
+                XC_LOGE("audio callback recovered from unknown exception");
             }
-            audioCv.notify_one();
         };
         // xCloud's motors are 0..100 percent, like the web client's
         // dual-rumble effect (left = strong, right = weak). The trigger
@@ -966,19 +981,31 @@ struct StreamPlayer::Impl {
         if (const char* loss = std::getenv("XC_SIM_LOSS")) opts.simulatedVideoLoss = std::atoi(loss);
         callbacks = cb;
         options = opts;
-        {
-            std::lock_guard<std::mutex> lock(sessionMutex);
-            session = std::make_shared<stream::StreamSession>(gssv, cb, opts);
-        }
-        running = true;
-        if (!platform::startThread(videoThread, [this] { videoLoop(); }) ||
-            !platform::startThread(audioThread, [this] { audioLoop(); }, 1u << 20) ||
-            !platform::startThread(inputThread, [this] { inputLoop(); }, 256u << 10)) {
-            err = "could not start the media threads";
-            running = false;
+        try {
+            {
+                std::lock_guard<std::mutex> lock(sessionMutex);
+                session = std::make_shared<stream::StreamSession>(gssv, cb, opts);
+            }
+            running = true;
+            if (!platform::startThread(videoThread, [this] { videoLoop(); }) ||
+                !platform::startThread(audioThread, [this] { audioLoop(); }, 1u << 20) ||
+                !platform::startThread(inputThread, [this] { inputLoop(); }, 256u << 10)) {
+                err = "could not start the media threads";
+                running = false;
+                return false;
+            }
+            if (!current()->start(err)) {
+                end(err);
+                return false;
+            }
+        } catch (const std::exception& e) {
+            err = std::string("stream startup failed safely: ") + e.what();
+            XC_LOGE("%s", err.c_str());
+            end(err);
             return false;
-        }
-        if (!current()->start(err)) {
+        } catch (...) {
+            err = "stream startup failed safely: unknown exception";
+            XC_LOGE("%s", err.c_str());
             end(err);
             return false;
         }
@@ -1022,10 +1049,23 @@ struct StreamPlayer::Impl {
         old.reset();
         stream::StreamOptions opts = options;
         opts.connectTimeoutMs = 8000;
-        auto next = std::make_shared<stream::StreamSession>(gssv, callbacks, opts);
-        // Cleared first: the new session's own failure must count again.
-        reconnecting = false;
-        if (!next->start(err)) {
+        std::shared_ptr<stream::StreamSession> next;
+        try {
+            next = std::make_shared<stream::StreamSession>(gssv, callbacks, opts);
+            // Cleared first: the new session's own failure must count again.
+            reconnecting = false;
+            if (!next->start(err)) {
+                XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
+                reconnecting = true;
+                return;
+            }
+        } catch (const std::exception& e) {
+            err = std::string("reconnect exception: ") + e.what();
+            XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
+            reconnecting = true;
+            return;
+        } catch (...) {
+            err = "reconnect exception: unknown exception";
             XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
             reconnecting = true;
             return;
@@ -1206,7 +1246,19 @@ struct StreamPlayer::Impl {
 StreamPlayer::StreamPlayer(xcloud::GssvClient& gssv) : impl_(std::make_unique<Impl>(gssv)) {}
 StreamPlayer::~StreamPlayer() { impl_->stop(); }
 
-bool StreamPlayer::start(std::string& err) { return impl_->start(err); }
+bool StreamPlayer::start(std::string& err) {
+    try {
+        return impl_->start(err);
+    } catch (const std::exception& e) {
+        err = std::string("stream startup failed safely: ") + e.what();
+        XC_LOGE("%s", err.c_str());
+        return false;
+    } catch (...) {
+        err = "stream startup failed safely: unknown exception";
+        XC_LOGE("%s", err.c_str());
+        return false;
+    }
+}
 bool StreamPlayer::running() const { return impl_->running; }
 
 std::string StreamPlayer::endReason() const {

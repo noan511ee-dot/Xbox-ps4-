@@ -33,7 +33,11 @@ SBOX هو عميل ألعاب سحابية مخصص لجهاز PlayStation 4 م�
 - WebUI للتحكم عن بعد وتعديل إعدادات البث وإعادة تعيين أزرار التحكم.
 - حفظ الإعدادات وبيانات تسجيل الدخول خارج ملفات التطبيق حتى لا تضيع عادةً عند التحديث.
 
-## آخر إصدار: SBOX v1.6.7
+## آخر إصدار: SBOX v1.6.8
+
+يتضمن الإصدار `v1.6.8` إصلاحًا مهمًا لمسار دخول اللعبة: استثناءات WebRTC أو أول دفعة فيديو/صوت لا تنهي التطبيق الآن، بل تتحول إلى خطأ قابل للتشخيص أو استعادة عبر keyframe وإعادة الاتصال.
+
+كما أن تحسينات الأداء الموجودة فعليًا تشمل REMB وNACK وRTCP وطابور الإطارات والعرض غير المتزامن وإعادة الاتصال ومراقبة FPS/RTT/Bitrate/Loss. لم نضف Smart FPS أو Quick Boost كأزرار مستقلة لأن المشروع لا يملك API آمنًا لتغيير معدل إطارات الخادم أو تطبيق إعداد شامل لحظيًا.
 
 يتضمن الإصدار الأخير:
 
@@ -45,14 +49,14 @@ SBOX هو عميل ألعاب سحابية مخصص لجهاز PlayStation 4 م�
 
 ## التحميل والتثبيت على PS4
 
-1. افتح [صفحة SBOX v1.6.7](https://github.com/noan511ee-dot/Xbox/releases/tag/v1.6.7).
-2. حمّل ملف `SBOX-PS4-v1.6.7.pkg` وملف `SBOX-PS4-v1.6.7.pkg.sha256`.
+1. افتح [صفحة SBOX v1.6.8](https://github.com/noan511ee-dot/Xbox/releases/tag/v1.6.8).
+2. حمّل ملف `SBOX-PS4-v1.6.8.pkg` وملف `SBOX-PS4-v1.6.8.pkg.sha256`.
 3. انسخ ملف PKG إلى جذر USB مهيأ بنظام exFAT أو FAT32.
 4. أدخل USB في PS4.
 5. من GoldHEN افتح Package Installer وثبّت الحزمة فوق النسخة السابقة.
 6. لا تحذف بيانات التطبيق قبل التحديث؛ تثبيت الحزمة فوق النسخة السابقة يحافظ على البيانات والإعدادات عادةً.
 
-[تحميل PKG مباشر](https://github.com/noan511ee-dot/Xbox/releases/download/v1.6.7/SBOX-PS4-v1.6.7.pkg) · [صفحة جميع الإصدارات](https://github.com/noan511ee-dot/Xbox/releases)
+[تحميل PKG مباشر](https://github.com/noan511ee-dot/Xbox/releases/download/v1.6.8/SBOX-PS4-v1.6.8.pkg) · [صفحة جميع الإصدارات](https://github.com/noan511ee-dot/Xbox/releases)
 
 ## شبكة 4G و5G
 
