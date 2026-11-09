@@ -47,13 +47,13 @@ constexpr int kRowPitch = 340;
 constexpr int kRowTop = 470;  // y of the focused row's title
 constexpr uint64_t kHeroFadeMs = 300;
 
-constexpr Color kBg = rgba(14, 14, 14);
+constexpr Color kBg = rgba(8, 12, 18);
 constexpr Color kWhite = rgba(255, 255, 255);
-constexpr Color kGray = rgba(190, 190, 190);
-constexpr Color kDim = rgba(140, 140, 140);
-constexpr Color kGreen = rgba(16, 124, 16);
-constexpr Color kPanel = rgba(36, 36, 36);
-constexpr Color kPlaceholder = rgba(44, 44, 44);
+constexpr Color kGray = rgba(196, 207, 220);
+constexpr Color kDim = rgba(137, 153, 174);
+constexpr Color kGreen = rgba(35, 211, 157);
+constexpr Color kPanel = rgba(18, 27, 40);
+constexpr Color kPlaceholder = rgba(28, 40, 55);
 
 enum Icon { kIconCross, kIconCircle, kIconOptions, kIconTriangle, kIconTouchpad, kIconSquare, kIconR3, kIconL3, kIconL2R2, kIconDpadLR, kIconL1R1 };
 

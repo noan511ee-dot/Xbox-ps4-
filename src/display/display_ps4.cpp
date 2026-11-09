@@ -957,8 +957,8 @@ DisplayCaps caps() {
     // XCloud4's measured 1080p60 on a base PS4 (about 58 fps) was at 7-13 Mbps; past that
     // the hardware decoder falls behind. The user's own cap (Settings) still goes higher.
     c.defaultMaxBitrate = 13000000;
-    // XCloud4's limit: past 250 ms of backlog, drop it and wait for an IDR.
-    c.maxVideoLagMs = 250;
+    // Resynchronise before a mobile-network burst becomes a visibly old frame.
+    c.maxVideoLagMs = 220;
     return c;
 }
 void setSwapImages(int) {}

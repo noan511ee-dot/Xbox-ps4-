@@ -929,7 +929,15 @@ void AppUi::handleGameSettings(const NavInput& in, UiEvent& ev) {
 void AppUi::drawSettings(Canvas& c) {
     drawBackground(c);
     drawTopBar(c);
+    // SBOX settings are intentionally structured like a control centre rather
+    // than the old flat list: a quiet panel keeps the rows readable while the
+    // accent line and section dividers make performance/input options easy to
+    // find with either a pad or the USB mouse/keyboard.
+    c.fillRect({kMargin - 20, 148, 1200, 790}, rgba(18, 27, 40, 185), 24);
+    c.strokeRect({kMargin - 20, 148, 1200, 790}, rgba(35, 211, 157, 70), 1, 24);
+    c.fillRect({kMargin, 148, 250, 5}, kGreen, 3);
     fonts_.bold.draw(c, tr(Str::Settings), kMargin, 116, 46, kWhite);
+    fonts_.semibold.draw(c, "SBOX  /  PERFORMANCE  /  INPUT", kMargin + 280, 118, 17, kGreen);
     if (loading_) {
         drawLoadingBar(c, kW - kMargin - 480, 100, 480, lastRender_);
     }
@@ -946,7 +954,10 @@ void AppUi::drawSettings(Canvas& c) {
     Rect rows[kSettingRows];  // by row id
     int y = 184;
     for (const auto& [i, groupStart] : visibleSettingsRows(caps_)) {  // what caps_ rules out is hidden
-        if (groupStart) y += kGroupGap;
+        if (groupStart) {
+            y += kGroupGap + 8;
+            c.fillRect({kMargin, y - 9, kRowW, 2}, rgba(35, 211, 157, 55), 1);
+        }
         Rect r{kMargin, y, kRowW, kRowH};
         rows[i] = r;
         bool focused = i == settingsRow_;
@@ -971,8 +982,8 @@ void AppUi::drawSettings(Canvas& c) {
             int textX = r.x + (r.w - textW) / 2;
             fonts_.bold.draw(c, labels[i], textX, ty, kRowPx, kWhite);
         } else {
-            c.fillRect(r, focused ? rgba(255, 255, 255, 36) : rgba(255, 255, 255, 14), 12);
-            if (focused && !dropdownOpen_) c.strokeRect({r.x - 4, r.y - 4, r.w + 8, r.h + 8}, kWhite, 3, 16);
+            c.fillRect(r, focused ? rgba(35, 211, 157, 58) : rgba(255, 255, 255, 12), 12);
+            if (focused && !dropdownOpen_) c.strokeRect({r.x - 4, r.y - 4, r.w + 8, r.h + 8}, kGreen, 3, 16);
             fonts_.semibold.draw(c, labels[i], r.x + 32, ty, kRowPx, kWhite);
             float cx = static_cast<float>(r.x + r.w - 40), cy = static_cast<float>(r.y + r.h / 2);
             if (i != 7 && i != 17 && i != 18 && i != 19 && i != 25) {
