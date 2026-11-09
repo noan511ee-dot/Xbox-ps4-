@@ -72,7 +72,7 @@ elif [[ $target == ps4 ]]; then
     flags="-target x86_64-pc-freebsd12-elf -fPIC -msse4.2 -mpopcnt -mtune=btver2 -D_GNU_SOURCE -D__ORBIS__ -D__PS4__ -DXC_TARGET_PS4=1 -isystem $cache/compat -isystem $cache/ps4-toolchain/include"
     "$src/configure" "${common[@]}" \
         --enable-cross-compile --target-os=freebsd --arch=x86_64 \
-        --cc="${CC:-clang}" --ar="${AR:-llvm-ar}" --ranlib="${RANLIB:-llvm-ranlib}" --nm="${NM:-llvm-nm}" \
+        --cc="${CC:-clang-18}" --ar="${AR:-llvm-ar-18}" --ranlib="${RANLIB:-llvm-ranlib-18}" --nm="${NM:-llvm-nm-18}" \
         --ld="$cache/configure-ld.sh" \
         --extra-cflags="$flags" --extra-ldflags="" \
         --disable-pthreads --enable-pthreads
