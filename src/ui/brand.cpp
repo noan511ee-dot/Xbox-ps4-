@@ -2,12 +2,29 @@
 // Copyright (C) 2026 RafaelNGP
 #include "ui/brand.h"
 
+#include "platform/platform.h"
+#include "ui/image_cache.h"
+
 #include <cmath>
+#include <string>
 #include <vector>
 
 namespace xc::ui {
 
 namespace {
+
+const Image* localLogo() {
+    static Image logo;
+    static bool attempted = false;
+    if (!attempted) {
+        attempted = true;
+        std::string bytes;
+        if (platform::readFile(platform::assetDir() + "/nawaf_logo.png", bytes) && decodeImage(bytes, logo)) {
+            if (logo.w != 384 || logo.h != 384) logo = {};
+        }
+    }
+    return logo.w == 384 && logo.h == 384 ? &logo : nullptr;
+}
 
 // A quadratic Bezier stroke stamped with discs: thin in the middle, wide at
 // both ends, like a brush swoosh.
@@ -68,9 +85,14 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
 
     // Near-black on the left (the Shell draws text there) to deep green.
     c.gradientH({0, 0, c.width(), c.height()}, rgba(5, 9, 6), rgba(10, 64, 12));
-    // Soft green glow behind the mark: stacked translucent discs.
-    for (int i = 40; i > 0; --i) c.fillCircle(cx, cy, r * (1.0f + i * 0.09f), rgba(40, 200, 60, 4));
-    for (int i = 12; i > 0; --i) c.fillCircle(cx, cy, r * (1.0f + i * 0.03f), rgba(70, 230, 90, 5));
+    const Image* logo = localLogo();
+    // The supplied logo already contains its own blue glow. Avoid the old
+    // 52 full-screen circle passes when it is available; this saves CPU on
+    // the PS4 render thread.
+    if (!logo) {
+        for (int i = 12; i > 0; --i) c.fillCircle(cx, cy, r * (1.0f + i * 0.09f), rgba(40, 200, 60, 4));
+        for (int i = 4; i > 0; --i) c.fillCircle(cx, cy, r * (1.0f + i * 0.03f), rgba(70, 230, 90, 5));
+    }
     // Light streaks, as if moving fast through a tunnel of light.
     for (int i = 0; i < 9; ++i) {
         float y0 = h * (0.08f + 0.11f * i);
@@ -84,7 +106,16 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
                 rgba(0, 0, 0, 150));
     if (!launch) c.gradientH({0, 0, static_cast<int>(w * 0.45f), c.height()}, rgba(0, 0, 0, 140), rgba(0, 0, 0, 0));
 
-    drawBrandMark(c, cx, cy, r);
+    if (logo) {
+        // The packaged 384px logo avoids network access and repeated resizing
+        // on the render thread. The circle clip keeps the artwork clean on
+        // both the home screen and the launch transition.
+        constexpr int kLogoSize = 384;
+        c.drawImage(*logo, static_cast<int>(std::lround(cx - kLogoSize * 0.5f)),
+                    static_cast<int>(std::lround(cy - kLogoSize * 0.5f)), 255, -1);
+    } else {
+        drawBrandMark(c, cx, cy, r);
+    }
     if (launch) {
         const char* name = "Nawaf Cloud Gaming";
         int px = static_cast<int>(h * 0.065f);

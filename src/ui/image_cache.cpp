@@ -31,6 +31,12 @@ bool decodeImage(const std::string& bytes, Image& out) {
     unsigned char* data = stbi_load_from_memory(reinterpret_cast<const stbi_uc*>(bytes.data()),
                                                 static_cast<int>(bytes.size()), &w, &h, &n, 4);
     if (!data) return false;
+    // Image URLs are resized before download; reject malformed or oversized
+    // responses before allocating a large PS4-side pixel buffer.
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || static_cast<uint64_t>(w) * h > (16ull << 20)) {
+        stbi_image_free(data);
+        return false;
+    }
     out.w = w;
     out.h = h;
     out.px.resize(static_cast<size_t>(w) * h);
