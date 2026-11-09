@@ -18,7 +18,7 @@ int main(int argc, char** argv) {
     for (const char* path : {"/data/psbox/boot.log", "/data/homebrew/PSBX00001/boot.log"}) {
         int fd = ::open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd >= 0) {
-            const char msg[] = "SBOX - PS4 main() entered successfully\n";
+            const char msg[] = "PBOX - PS4 main() entered successfully\n";
             (void)::write(fd, msg, sizeof(msg) - 1);
             ::close(fd);
             break;

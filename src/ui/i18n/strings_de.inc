@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
 constexpr Column kGerman = {
-    "SBOX Cloud Gaming",
-    "SBOX CLOUD GAMING",
+    "PBOX Cloud Gaming",
+    "PBOX CLOUD GAMING",
     "Anmeldung läuft...",
     "Anmeldecode wird abgerufen...",
     "Deine Spiele werden geladen...",
@@ -158,7 +158,7 @@ constexpr Column kGerman = {
     "Signatur wird geprüft...",
     "Wird installiert...",
     "Aktualisiert. Neustart...",
-    "SBOX aktualisiert: App erneut öffnen",
+    "PBOX aktualisiert: App erneut öffnen",
     "Update fehlgeschlagen: nichts wurde geändert",
     "Farbe des Spiels",
     "Eigene Farbe",
@@ -214,7 +214,7 @@ constexpr Column kGerman = {
     "Problem melden",
     "Mit dem Handy scannen: Das Fehlerformular auf GitHub öffnet sich ausgefüllt. Du prüfst es vor dem Senden.",
     "Enthalten sind die App-Version, der Fehler und Zeilen des Logs, ohne persönliche Daten.",
-    "SBOX wurde beim letzten Mal unerwartet beendet",
+    "PBOX wurde beim letzten Mal unerwartet beendet",
     "Anmeldeland",
     "Aus (das der Konsole)",
     "Als anderes Land anmelden",
@@ -265,7 +265,7 @@ constexpr Column kGerman = {
     "Anzeigemodus", // DisplayMode
     "Fenster", // DisplayWindow
     "Vollbild", // DisplayFullscreen
-    "SBOX beenden?", // QuitTitle
+    "PBOX beenden?", // QuitTitle
     "Beenden", // QuitConfirm
     "Controller-Tasten", // ControllerButtons
     "Drücke die Taste für %s", // PadPressButton
@@ -336,8 +336,8 @@ constexpr Column kGerman = {
     "%s ist im Angebot!",                             // WishlistOnSale
     "%s ist jetzt im Game Pass!",                     // WishlistInGamePass
     "Projekt unterstützen",                           // SupportProject
-    "SBOX-Entwicklung unterstützen",                 // SupportTitle
-    "SBOX ist ein Open-Source-Projekt, das mit viel Engagement entwickelt wird, um das beste Xbox Cloud Gaming-Erlebnis auf die PlayStation 5 zu bringen. Wenn dir die App gefällt und du die Weiterentwicklung unterstützen möchtest, spendiere mir gerne einen Kaffee auf Ko-Fi!", // SupportMessage
+    "PBOX-Entwicklung unterstützen",                 // SupportTitle
+    "PBOX ist ein Open-Source-Projekt, das mit viel Engagement entwickelt wird, um das beste Xbox Cloud Gaming-Erlebnis auf die PlayStation 5 zu bringen. Wenn dir die App gefällt und du die Weiterentwicklung unterstützen möchtest, spendiere mir gerne einen Kaffee auf Ko-Fi!", // SupportMessage
     "Ko-fi",                                          // SupportKoFi
     "Mit dem Smartphone scannen",                     // ScanToDonate
     "Ton testen",                                     // TestSound
@@ -443,9 +443,9 @@ constexpr Column kGerman = {
     "Ich verstehe",                                   // TrophiesDisclaimerAware
     "Abbrechen",                                      // TrophiesDisclaimerCancel
     "Synchronisierte Trophäen entfernen",             // RemoveTrophies
-    "Entfernt alle von SBOX hinzugefügten Trophäen aus diesem lokalen Profil, um ein PSN-Bannrisiko auszuschließen. Sie können sie jederzeit wieder über Ihr Xbox-Konto synchronisieren.", // SettingDescRemoveTrophies
+    "Entfernt alle von PBOX hinzugefügten Trophäen aus diesem lokalen Profil, um ein PSN-Bannrisiko auszuschließen. Sie können sie jederzeit wieder über Ihr Xbox-Konto synchronisieren.", // SettingDescRemoveTrophies
     "Synchronisierte Trophäen entfernen?",            // RemoveTrophiesConfirmTitle
-    "Dies löscht die lokalen Trophäenpakete von SBOX für dieses Profil. Ihre Erfolge bleiben auf Ihrem Microsoft/Xbox-Konto sicher gespeichert.", // RemoveTrophiesConfirmBody
+    "Dies löscht die lokalen Trophäenpakete von PBOX für dieses Profil. Ihre Erfolge bleiben auf Ihrem Microsoft/Xbox-Konto sicher gespeichert.", // RemoveTrophiesConfirmBody
     "Entfernen",                                      // RemoveTrophiesConfirm
     "%s Trophäen-Titel aus diesem Profil entfernt.",  // TrophiesRemovedToast
     "Erfolge werden synchronisiert...",               // SyncingTrophies

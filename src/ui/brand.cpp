@@ -71,7 +71,7 @@ void drawAppIcon(Canvas& c, const Fonts& fonts) {
     // Xbox-green field, lighter at the top.
     c.gradientV({0, 0, s, s}, rgba(36, 160, 36), rgba(8, 82, 8));
     drawBrandMark(c, s * 0.5f, s * 0.40f, s * 0.27f);
-    const char* word = "Nawaf";
+    const char* word = "PBOX";
     int px = s / 7;
     int w = fonts.bold.measure(word, px);
     fonts.bold.draw(c, word, (s - w) / 2, static_cast<int>(s * 0.74f), px, rgba(255, 255, 255));
@@ -117,7 +117,7 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
         drawBrandMark(c, cx, cy, r);
     }
     if (launch) {
-        const char* name = "SBOX";
+        const char* name = "PBOX";
         int px = static_cast<int>(h * 0.065f);
         int tw = fonts.bold.measure(name, px);
         fonts.bold.draw(c, name, (c.width() - tw) / 2, static_cast<int>(cy + r * 1.45f), px, rgba(255, 255, 255));

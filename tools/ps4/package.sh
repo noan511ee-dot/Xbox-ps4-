@@ -71,7 +71,7 @@ SHIM_S
     [ -f "$_shim/libssl.so.1.1" ] && export LD_LIBRARY_PATH="$_shim${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-TITLE="${XC_PS4_TITLE:-SBOX - PS4}"
+TITLE="${XC_PS4_TITLE:-PBOX - PS4}"
 VERSION="${XC_PS4_VERSION:-01.64}"
 # PS5 backward-compatibility checks every PS4 PKG against Sony's Category1 whitelist.
 # Using a whitelisted Title ID (like CUSA00100) allows the PS4 PKG to run on PS5 backward compatibility.
@@ -176,7 +176,7 @@ echo "==> building PKG"
   python3 "$REPO_DIR/tools/ps4/gp4_rootdir.py" pkg.gp4 . && \
   "$TOOLS/PkgTool.Core" pkg_build pkg.gp4 "$OUT_DIR" )
 
-mv -f "$OUT_DIR/${CONTENT_ID}.pkg" "$OUT_DIR/SBOX - PS4.pkg"
+mv -f "$OUT_DIR/${CONTENT_ID}.pkg" "$OUT_DIR/PBOX - PS4.pkg"
 
 echo
 echo "Package generated in: $OUT_DIR"

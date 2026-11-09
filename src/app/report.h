@@ -26,7 +26,7 @@ struct Info {
 // its start (its end matters most) to fit.
 std::string issueUrl(const Info& info, size_t maxLength = 1800);
 
-// From the whole log (sessions start with "=== SBOX Cloud Gaming starting
+// From the whole log (sessions start with "=== PBOX Cloud Gaming starting
 // ==="): the current session's or, with `previousSession`, the one before
 // (the session that went down); its [E] / [W] lines and last lines.
 std::string logExcerpt(const std::string& logText, bool previousSession, size_t lastLines = 20);

@@ -1,12 +1,12 @@
-name: Build SBOX PS4 PKG
+name: Build PBOX PS4 PKG
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "App version, for example 1.6.8"
+        description: "App version, for example 1.6.9"
         required: true
-        default: "1.6.8"
+        default: "1.6.9"
   push:
     tags:
       - "v*"
@@ -44,7 +44,7 @@ jobs:
             exit 1
           }
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Building SBOX v$version"
+          echo "Building PBOX v$version"
 
       - name: Install build tools
         run: |
@@ -82,7 +82,7 @@ jobs:
       - name: Package installable PKG
         id: package
         env:
-          XC_PS4_TITLE: "SBOX - PS4"
+          XC_PS4_TITLE: "PBOX - PS4"
           XC_PS4_TITLE_ID: "PSBX00001"
           XC_PS4_CONTENT_ID: "IV0000-PSBX00001_00-PSBOXCLOUDGAME00"
         run: |
@@ -92,18 +92,18 @@ jobs:
           XC_PS4_VERSION=$(printf '%02d.%02d' "$major" "$((minor * 10 + patch))")
           out="build-ps4/pkg-release"
           bash tools/ps4/package.sh build-ps4 "$out"
-          mv "$out/SBOX - PS4.pkg" "$out/SBOX-PS4-v${version}.pkg"
-          sha256sum "$out/SBOX-PS4-v${version}.pkg" > "$out/SBOX-PS4-v${version}.pkg.sha256"
-          test -s "$out/SBOX-PS4-v${version}.pkg"
-          test -s "$out/SBOX-PS4-v${version}.pkg.sha256"
-          ls -lh "$out"/SBOX-PS4-v${version}.pkg*
+          mv "$out/PBOX - PS4.pkg" "$out/PBOX-PS4-v${version}.pkg"
+          sha256sum "$out/PBOX-PS4-v${version}.pkg" > "$out/PBOX-PS4-v${version}.pkg.sha256"
+          test -s "$out/PBOX-PS4-v${version}.pkg"
+          test -s "$out/PBOX-PS4-v${version}.pkg.sha256"
+          ls -lh "$out"/PBOX-PS4-v${version}.pkg*
 
       - name: Upload PKG artifact
         uses: actions/upload-artifact@v4
         with:
-          name: SBOX-PS4-v${{ steps.version.outputs.version }}
+          name: PBOX-PS4-v${{ steps.version.outputs.version }}
           path: |
-            build-ps4/pkg-release/SBOX-PS4-v${{ steps.version.outputs.version }}.pkg
-            build-ps4/pkg-release/SBOX-PS4-v${{ steps.version.outputs.version }}.pkg.sha256
+            build-ps4/pkg-release/PBOX-PS4-v${{ steps.version.outputs.version }}.pkg
+            build-ps4/pkg-release/PBOX-PS4-v${{ steps.version.outputs.version }}.pkg.sha256
           if-no-files-found: error
           retention-days: 30

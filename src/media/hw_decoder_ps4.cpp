@@ -431,7 +431,7 @@ bool HwDecoder::init(int maxWidth, int maxHeight) {
             XC_LOGI("hwdec: decoder cpu %zu bytes allocated in direct Onion memory", cpuBytes);
         } else {
             void* cpuMem = nullptr;
-            rc = sceKernelMapNamedFlexibleMemory(&cpuMem, cpuBytes, kProtectionRw, 0, "SBOXVdecCpu");
+            rc = sceKernelMapNamedFlexibleMemory(&cpuMem, cpuBytes, kProtectionRw, 0, "PBOXVdecCpu");
             if (rc != 0 || !cpuMem) {
                 XC_LOGW("hwdec: decoder cpu: flexible memory failed too: 0x%08x", static_cast<unsigned>(rc));
                 rollback();

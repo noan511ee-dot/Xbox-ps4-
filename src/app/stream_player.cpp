@@ -987,9 +987,20 @@ struct StreamPlayer::Impl {
                 session = std::make_shared<stream::StreamSession>(gssv, cb, opts);
             }
             running = true;
-            if (!platform::startThread(videoThread, [this] { videoLoop(); }) ||
-                !platform::startThread(audioThread, [this] { audioLoop(); }, 1u << 20) ||
-                !platform::startThread(inputThread, [this] { inputLoop(); }, 256u << 10)) {
+            auto guardedLoop = [this](auto&& loop, const char* name) {
+                try {
+                    loop();
+                } catch (const std::exception& e) {
+                    XC_LOGE("%s thread recovered from exception: %s", name, e.what());
+                    end(std::string(name) + " pipeline failed safely");
+                } catch (...) {
+                    XC_LOGE("%s thread recovered from unknown exception", name);
+                    end(std::string(name) + " pipeline failed safely");
+                }
+            };
+            if (!platform::startThread(videoThread, [this, guardedLoop] { guardedLoop([this] { videoLoop(); }, "video"); }) ||
+                !platform::startThread(audioThread, [this, guardedLoop] { guardedLoop([this] { audioLoop(); }, "audio"); }, 1u << 20) ||
+                !platform::startThread(inputThread, [this, guardedLoop] { guardedLoop([this] { inputLoop(); }, "input"); }, 256u << 10)) {
                 err = "could not start the media threads";
                 running = false;
                 return false;

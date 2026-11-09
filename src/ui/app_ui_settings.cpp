@@ -929,7 +929,7 @@ void AppUi::handleGameSettings(const NavInput& in, UiEvent& ev) {
 void AppUi::drawSettings(Canvas& c) {
     drawBackground(c);
     drawTopBar(c);
-    // SBOX settings are intentionally structured like a control centre rather
+    // PBOX settings are intentionally structured like a control centre rather
     // than the old flat list: a quiet panel keeps the rows readable while the
     // accent line and section dividers make performance/input options easy to
     // find with either a pad or the USB mouse/keyboard.
@@ -937,7 +937,7 @@ void AppUi::drawSettings(Canvas& c) {
     c.strokeRect({kMargin - 20, 148, 1200, 790}, rgba(35, 211, 157, 70), 1, 24);
     c.fillRect({kMargin, 148, 250, 5}, kGreen, 3);
     fonts_.bold.draw(c, tr(Str::Settings), kMargin, 116, 46, kWhite);
-    fonts_.semibold.draw(c, "SBOX  /  PERFORMANCE  /  INPUT", kMargin + 280, 118, 17, kGreen);
+    fonts_.semibold.draw(c, "PBOX  /  PERFORMANCE  /  INPUT", kMargin + 280, 118, 17, kGreen);
     if (loading_) {
         drawLoadingBar(c, kW - kMargin - 480, 100, 480, lastRender_);
     }

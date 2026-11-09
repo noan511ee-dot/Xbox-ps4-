@@ -235,7 +235,7 @@ bool createInstance() {
         }
     }
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-    app.pApplicationName = "SBOX Cloud Gaming";
+    app.pApplicationName = "PBOX Cloud Gaming";
     app.apiVersion = VK_API_VERSION_1_3;
     VkInstanceCreateInfo info{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     info.pApplicationInfo = &app;

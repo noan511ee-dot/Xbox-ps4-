@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
 constexpr Column kItalian = {
-    "SBOX Cloud Gaming",
-    "SBOX CLOUD GAMING",
+    "PBOX Cloud Gaming",
+    "PBOX CLOUD GAMING",
     "Accesso in corso...",
     "Richiesta di un codice di accesso...",
     "Caricamento dei tuoi giochi...",
@@ -158,7 +158,7 @@ constexpr Column kItalian = {
     "Verifica della firma...",
     "Installazione...",
     "Aggiornato. Riavvio...",
-    "SBOX aggiornato: riapri l'app",
+    "PBOX aggiornato: riapri l'app",
     "Aggiornamento non riuscito: nulla è cambiato",
     "Colore del gioco",
     "Colore personalizzato",
@@ -214,7 +214,7 @@ constexpr Column kItalian = {
     "Segnala un problema",
     "Inquadralo con il telefono: si apre il modulo dei bug di GitHub già compilato. Lo controlli prima di inviarlo.",
     "Include la versione dell'app, l'errore e righe del log, senza dati personali.",
-    "SBOX si è chiuso inaspettatamente l'ultima volta",
+    "PBOX si è chiuso inaspettatamente l'ultima volta",
     "Paese di accesso",
     "Disattivato (quello della console)",
     "Accedi come un altro paese",
@@ -265,7 +265,7 @@ constexpr Column kItalian = {
     "Modalità schermo", // DisplayMode
     "Finestra", // DisplayWindow
     "Schermo intero", // DisplayFullscreen
-    "Uscire da SBOX?", // QuitTitle
+    "Uscire da PBOX?", // QuitTitle
     "Esci", // QuitConfirm
     "Pulsanti del controller", // ControllerButtons
     "Premi il pulsante per %s", // PadPressButton
@@ -336,8 +336,8 @@ constexpr Column kItalian = {
     "%s è in saldo!",                                 // WishlistOnSale
     "%s è arrivato su Game Pass!",                    // WishlistInGamePass
     "Supporta il progetto",                           // SupportProject
-    "Supporta lo Sviluppo di SBOX",                  // SupportTitle
-    "SBOX è un progetto open source sviluppato con passione per portare la migliore esperienza di Xbox Cloud Gaming su PlayStation 5. Se ti piace l'app e vuoi sostenere lo sviluppo continuo e le nuove funzionalità, considera di offrirmi un caffè su Ko-Fi!", // SupportMessage
+    "Supporta lo Sviluppo di PBOX",                  // SupportTitle
+    "PBOX è un progetto open source sviluppato con passione per portare la migliore esperienza di Xbox Cloud Gaming su PlayStation 5. Se ti piace l'app e vuoi sostenere lo sviluppo continuo e le nuove funzionalità, considera di offrirmi un caffè su Ko-Fi!", // SupportMessage
     "Ko-fi",                                          // SupportKoFi
     "Inquadra con lo smartphone",                     // ScanToDonate
     "Prova suono",                                    // TestSound
@@ -443,9 +443,9 @@ constexpr Column kItalian = {
     "Ho capito",                                      // TrophiesDisclaimerAware
     "Annulla",                                        // TrophiesDisclaimerCancel
     "Rimuovi trofei sincronizzati",                   // RemoveTrophies
-    "Rimuove tutti i trofei aggiunti da SBOX da questo profilo locale, evitando rischi di ban su PSN. Potrai risincronizzarli in qualsiasi momento dal tuo account Xbox.", // SettingDescRemoveTrophies
+    "Rimuove tutti i trofei aggiunti da PBOX da questo profilo locale, evitando rischi di ban su PSN. Potrai risincronizzarli in qualsiasi momento dal tuo account Xbox.", // SettingDescRemoveTrophies
     "Rimuovere i trofei sincronizzati?",              // RemoveTrophiesConfirmTitle
-    "Questo cancellerà i pacchetti di trofei locali di SBOX per questo profilo. I tuoi obiettivi rimangono al sicuro sul tuo account Microsoft/Xbox.", // RemoveTrophiesConfirmBody
+    "Questo cancellerà i pacchetti di trofei locali di PBOX per questo profilo. I tuoi obiettivi rimangono al sicuro sul tuo account Microsoft/Xbox.", // RemoveTrophiesConfirmBody
     "Rimuovi",                                        // RemoveTrophiesConfirm
     "Rimossi %s titoli di trofei da questo profilo.", // TrophiesRemovedToast
     "Sincronizzazione obiettivi...",                  // SyncingTrophies

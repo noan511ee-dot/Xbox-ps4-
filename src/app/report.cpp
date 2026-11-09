@@ -12,7 +12,7 @@ namespace {
 
 constexpr const char* kForm =
     "https://github.com/noan511ee-dot/Xbox/issues/new?template=bug_report.yml";
-constexpr const char* kSessionStart = "=== SBOX Cloud Gaming starting ===";
+constexpr const char* kSessionStart = "=== PBOX Cloud Gaming starting ===";
 
 // A query value: unreserved characters and a few safe ones as they are,
 // space as '+', the rest percent-encoded.
