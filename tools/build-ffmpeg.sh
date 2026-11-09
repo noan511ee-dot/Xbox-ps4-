@@ -26,7 +26,7 @@ common=(
     --prefix="$stage" --enable-static --disable-shared --enable-pic
     --disable-programs --disable-doc --disable-network --disable-autodetect
     --disable-everything --disable-avdevice --disable-avformat --disable-avfilter
-    --disable-swscale --disable-postproc
+    --disable-swscale
     --enable-decoder=h264,opus --enable-encoder=opus --enable-parser=h264,opus
     # (the Opus decoder needs libswresample)
     --disable-debug
