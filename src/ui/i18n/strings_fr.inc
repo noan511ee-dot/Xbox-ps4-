@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
 constexpr Column kFrench = {
-    "PSBox Cloud Gaming",
-    "PSBOX CLOUD GAMING",
+    "SBOX Cloud Gaming",
+    "SBOX CLOUD GAMING",
     "Connexion...",
     "Obtention d'un code de connexion...",
     "Chargement de vos jeux...",
@@ -158,7 +158,7 @@ constexpr Column kFrench = {
     "Vérification de la signature...",
     "Installation...",
     "Mis à jour. Redémarrage...",
-    "PSBox mis à jour : rouvrez l'app",
+    "SBOX mis à jour : rouvrez l'app",
     "Échec de la mise à jour : rien n'a changé",
     "Couleur du jeu",
     "Couleur personnalisée",
@@ -214,7 +214,7 @@ constexpr Column kFrench = {
     "Signaler un problème",
     "Scannez-le avec votre téléphone : le formulaire de bug de GitHub s'ouvre, déjà rempli. Vous le relisez avant de l'envoyer.",
     "Il contient la version de l'app, l'erreur et des lignes du journal, sans données personnelles.",
-    "PSBox s'est fermé de façon inattendue la dernière fois",
+    "SBOX s'est fermé de façon inattendue la dernière fois",
     "Pays de connexion",
     "Désactivé (celui de la console)",
     "Se connecter depuis un autre pays",
@@ -265,7 +265,7 @@ constexpr Column kFrench = {
     "Mode d'affichage", // DisplayMode
     "Fenêtre", // DisplayWindow
     "Plein écran", // DisplayFullscreen
-    "Quitter PSBox ?", // QuitTitle
+    "Quitter SBOX ?", // QuitTitle
     "Quitter", // QuitConfirm
     "Boutons de la manette", // ControllerButtons
     "Appuyez sur le bouton pour %s", // PadPressButton
@@ -336,8 +336,8 @@ constexpr Column kFrench = {
     "%s est en promotion !",                          // WishlistOnSale
     "%s a rejoint le Game Pass !",                    // WishlistInGamePass
     "Soutenir le projet",                             // SupportProject
-    "Soutenir le Développement de PSBox",             // SupportTitle
-    "PSBox est un projet open source développé avec passion pour offrir la meilleure expérience Xbox Cloud Gaming sur PlayStation 5. Si vous appréciez l'application et souhaitez soutenir les mises à jour et les nouveautés, pensez à m'offrir un café sur Ko-Fi !", // SupportMessage
+    "Soutenir le Développement de SBOX",             // SupportTitle
+    "SBOX est un projet open source développé avec passion pour offrir la meilleure expérience Xbox Cloud Gaming sur PlayStation 5. Si vous appréciez l'application et souhaitez soutenir les mises à jour et les nouveautés, pensez à m'offrir un café sur Ko-Fi !", // SupportMessage
     "Ko-fi",                                          // SupportKoFi
     "Scannez avec votre téléphone",                   // ScanToDonate
     "Tester le son",                                  // TestSound
@@ -443,9 +443,9 @@ constexpr Column kFrench = {
     "Je comprends",                                   // TrophiesDisclaimerAware
     "Annuler",                                        // TrophiesDisclaimerCancel
     "Supprimer les trophées synchronisés",            // RemoveTrophies
-    "Supprime tous les trophées ajoutés par PSBox de ce profil local pour éliminer le risque de bannissement sur le PSN. Vous pourrez les synchroniser à nouveau depuis votre compte Xbox.", // SettingDescRemoveTrophies
+    "Supprime tous les trophées ajoutés par SBOX de ce profil local pour éliminer le risque de bannissement sur le PSN. Vous pourrez les synchroniser à nouveau depuis votre compte Xbox.", // SettingDescRemoveTrophies
     "Supprimer les trophées synchronisés ?",          // RemoveTrophiesConfirmTitle
-    "Cela supprimera les packs de trophées locaux de PSBox pour ce profil. Vos succès restent enregistrés sur votre compte Microsoft/Xbox.", // RemoveTrophiesConfirmBody
+    "Cela supprimera les packs de trophées locaux de SBOX pour ce profil. Vos succès restent enregistrés sur votre compte Microsoft/Xbox.", // RemoveTrophiesConfirmBody
     "Supprimer",                                      // RemoveTrophiesConfirm
     "%s titre(s) de trophées supprimé(s) de ce profil.", // TrophiesRemovedToast
     "Synchronisation des succès...",                  // SyncingTrophies

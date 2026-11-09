@@ -66,7 +66,7 @@ struct StreamOptions {
     // buffer, to exercise NACK / key frame recovery.
     int simulatedVideoLoss = 0;
     // Ceiling of the bandwidth estimate sent to the server (REMB), bits/s.
-    uint32_t maxBitrate = 25000000;
+    uint32_t maxBitrate = 18000000;
 };
 
 // "a=candidate:..." with a Teredo (2001::/32) address -> the IPv4 address and

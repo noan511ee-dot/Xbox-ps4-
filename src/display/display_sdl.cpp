@@ -260,7 +260,7 @@ bool init(bool preferGpu) {
 
     const char* forceSdl = std::getenv("XC_SDL_RENDERER");
     if (preferGpu && !(forceSdl && forceSdl[0] && forceSdl[0] != '0')) {
-        g_window = SDL_CreateWindow("PSBox Cloud Gaming", 1600, 900, flags | SDL_WINDOW_VULKAN);
+        g_window = SDL_CreateWindow("SBOX Cloud Gaming", 1600, 900, flags | SDL_WINDOW_VULKAN);
         if (g_window) {
             SDL_SetWindowMinimumSize(g_window, 640, 360);
             Uint32 extCount = 0;
@@ -297,7 +297,7 @@ bool init(bool preferGpu) {
         XC_LOGW("display: Vulkan GPU path unavailable; falling back to SDL_Renderer");
     }
 
-    g_window = SDL_CreateWindow("PSBox Cloud Gaming", 1600, 900, flags);
+    g_window = SDL_CreateWindow("SBOX Cloud Gaming", 1600, 900, flags);
     if (!g_window) {
         XC_LOGE("display: window: %s", SDL_GetError());
         SDL_QuitSubSystem(SDL_INIT_VIDEO);

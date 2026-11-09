@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
 constexpr Column kPortugueseBR = {
-    "PSBox Cloud Gaming",
-    "PSBOX CLOUD GAMING",
+    "SBOX Cloud Gaming",
+    "SBOX CLOUD GAMING",
     "Entrando...",
     "Gerando um código de login...",
     "Carregando seus jogos...",
@@ -158,7 +158,7 @@ constexpr Column kPortugueseBR = {
     "Conferindo a assinatura...",
     "Instalando...",
     "Atualizado. Reiniciando...",
-    "PSBox atualizado: abra o app de novo",
+    "SBOX atualizado: abra o app de novo",
     "A atualização falhou: nada foi alterado",
     "Cor do jogo",
     "Cor personalizada",
@@ -214,7 +214,7 @@ constexpr Column kPortugueseBR = {
     "Relatar problema",
     "Escaneie com o celular: o formulário de bug do GitHub abre preenchido. Você revisa antes de enviar.",
     "Inclui a versão do app, o erro e linhas do log, sem dados pessoais.",
-    "O PSBox fechou inesperadamente da última vez",
+    "O SBOX fechou inesperadamente da última vez",
     "País do login",
     "Desativado (o do console)",
     "Entrar como outro país",
@@ -265,7 +265,7 @@ constexpr Column kPortugueseBR = {
     "Modo de exibição", // DisplayMode
     "Janela", // DisplayWindow
     "Tela cheia", // DisplayFullscreen
-    "Sair do PSBox?", // QuitTitle
+    "Sair do SBOX?", // QuitTitle
     "Sair", // QuitConfirm
     "Botões do controle", // ControllerButtons
     "Aperte o botão para %s", // PadPressButton
@@ -336,8 +336,8 @@ constexpr Column kPortugueseBR = {
     "%s está em promoção!",                           // WishlistOnSale
     "%s entrou no Game Pass!",                        // WishlistInGamePass
     "Apoie o projeto",                                // SupportProject
-    "Apoie o Desenvolvimento do PSBox",               // SupportTitle
-    "O PSBox é um projeto de código aberto mantido com dedicação para trazer a melhor experiência do Xbox Cloud Gaming ao PlayStation 5. Se você curte o app e quer apoiar o desenvolvimento contínuo, atualizações e novos recursos, considere me pagar um café no Ko-Fi!", // SupportMessage
+    "Apoie o Desenvolvimento do SBOX",               // SupportTitle
+    "O SBOX é um projeto de código aberto mantido com dedicação para trazer a melhor experiência do Xbox Cloud Gaming ao PlayStation 5. Se você curte o app e quer apoiar o desenvolvimento contínuo, atualizações e novos recursos, considere me pagar um café no Ko-Fi!", // SupportMessage
     "Ko-fi",                                          // SupportKoFi
     "Aponte a câmera do seu celular",                 // ScanToDonate
     "Testar som",                                     // TestSound
@@ -443,9 +443,9 @@ constexpr Column kPortugueseBR = {
     "Estou ciente",                                   // TrophiesDisclaimerAware
     "Cancelar",                                       // TrophiesDisclaimerCancel
     "Remover Troféus Sincronizados",                  // RemoveTrophies
-    "Remove todos os troféus adicionados pelo PSBox da conta local, evitando o risco de banimento. Você poderá adicioná-los novamente quando quiser a partir da conta Xbox.", // SettingDescRemoveTrophies
+    "Remove todos os troféus adicionados pelo SBOX da conta local, evitando o risco de banimento. Você poderá adicioná-los novamente quando quiser a partir da conta Xbox.", // SettingDescRemoveTrophies
     "Remover Troféus Sincronizados?",                 // RemoveTrophiesConfirmTitle
-    "Isso apagará os pacotes locais de troféus adicionados pelo PSBox para este perfil. Suas conquistas continuam salvas na sua conta Microsoft/Xbox.", // RemoveTrophiesConfirmBody
+    "Isso apagará os pacotes locais de troféus adicionados pelo SBOX para este perfil. Suas conquistas continuam salvas na sua conta Microsoft/Xbox.", // RemoveTrophiesConfirmBody
     "Remover",                                        // RemoveTrophiesConfirm
     "Removido(s) %s título(s) de troféus deste perfil.", // TrophiesRemovedToast
     "Sincronizando conquistas...",                    // SyncingTrophies

@@ -117,7 +117,7 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
         drawBrandMark(c, cx, cy, r);
     }
     if (launch) {
-        const char* name = "Nawaf Cloud Gaming";
+        const char* name = "SBOX";
         int px = static_cast<int>(h * 0.065f);
         int tw = fonts.bold.measure(name, px);
         fonts.bold.draw(c, name, (c.width() - tw) / 2, static_cast<int>(cy + r * 1.45f), px, rgba(255, 255, 255));

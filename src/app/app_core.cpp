@@ -173,7 +173,7 @@ private:
 // What main() kept on its stack when it ran the loop itself: made by
 // coreStartup(), carried from one pass to the next.
 struct Core {
-    bool quitAsked_ = false;  // desktop: "Close PSBox?" confirmed on the home screen
+    bool quitAsked_ = false;  // desktop: "Close SBOX?" confirmed on the home screen
     explicit Core(bool withDisplay) : haveDisplay(withDisplay) {}
     bool frame();
     void dispatchUiAction(const ui::UiEvent& ev);
@@ -273,7 +273,7 @@ bool coreStartup() {
         XC_LOGI("data folder %s: %s", dataDir.c_str(), platform::dataDirNote().c_str());
     if (!logOk)
         XC_LOGW("could not open xcloud.log in %s: log kept in memory", dataDir.c_str());
-    XC_LOGI("=== Nawaf Cloud Gaming starting ===");
+    XC_LOGI("=== SBOX starting ===");
     XC_LOGI("firmware %s, Nawaf %s (build %s, %s)", platform::firmwareVersion().c_str(), XC_APP_VERSION, XC_BUILD_ID,
             platform::platformName().c_str());
     if (std::string res = platform::diagnostics(); !res.empty()) XC_LOGI("resources at start: %s", res.c_str());
@@ -844,7 +844,7 @@ bool coreStartup() {
 
     if (!net::initTls(g_autoplay.badCa ? platform::assetDir() + "/missing.pem" : platform::caBundlePath())) {
         // The step that failed, and where the log is: what a bug report needs.
-        platform::notify("PSBox: secure connections unavailable");
+        platform::notify("SBOX: secure connections unavailable");
         g_ui->showError("Secure connections could not be set up: " + net::tlsInitError() + ". Log: " +
                         platform::dataDir() + "/xcloud.log");
         if (g_autoplay.badCa) XC_LOGI("AUTOPLAY END: TLS setup error shown");
@@ -1489,7 +1489,7 @@ void coreShutdown() {
     // bounded (a request may hang on the network); the caller leaves with
     // _exit() afterwards, so no static destructor races a thread still
     // running.
-    XC_LOGI("=== Nawaf Cloud Gaming closing ===");
+    XC_LOGI("=== SBOX closing ===");
     stopWebServer();
     const uint64_t start = platform::nowMs();
     requestQuit();

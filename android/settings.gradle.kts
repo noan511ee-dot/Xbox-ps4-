@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Nawaf Cloud Gaming"
+rootProject.name = "SBOX"
 include(":app")

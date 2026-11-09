@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
 constexpr Column kEnglish = {
-    "PSBox Cloud Gaming",                             // AppName
-    "PSBOX CLOUD GAMING",                             // CloudGaming
+    "SBOX Cloud Gaming",                             // AppName
+    "SBOX CLOUD GAMING",                             // CloudGaming
     "Signing in...",                                  // SigningIn
     "Getting a sign-in code...",                      // RequestingCode
     "Loading your games...",                          // LoadingGames
@@ -158,7 +158,7 @@ constexpr Column kEnglish = {
     "Checking the signature...",                     // UpdateVerifying
     "Installing...",                                 // UpdateInstalling
     "Updated. Restarting...",                        // UpdateRestarting
-    "PSBox updated: open the app again",             // UpdateReopen
+    "SBOX updated: open the app again",             // UpdateReopen
     "Update failed: nothing was changed",            // UpdateFailed
     "Game colour",                                   // LightBarGame
     "Custom colour",                                 // LightBarCustom
@@ -214,7 +214,7 @@ constexpr Column kEnglish = {
     "Report a problem",                              // ReportProblem
     "Scan it with your phone: GitHub's bug form opens, filled in. You review it before sending it.", // ReportScan
     "It includes the app's version, the error and lines of its log, without personal data.", // ReportIncludes
-    "PSBox closed unexpectedly last time",           // CrashedLastTime
+    "SBOX closed unexpectedly last time",           // CrashedLastTime
     "Sign-in country",                                // LoginCountry
     "Off (this console's)",                           // LoginCountryOff
     "Sign in as another country",                     // TryOtherCountry
@@ -265,7 +265,7 @@ constexpr Column kEnglish = {
     "Display mode", // DisplayMode
     "Window", // DisplayWindow
     "Fullscreen", // DisplayFullscreen
-    "Quit PSBox?", // QuitTitle
+    "Quit SBOX?", // QuitTitle
     "Quit", // QuitConfirm
     "Controller buttons", // ControllerButtons
     "Press the button for %s", // PadPressButton
@@ -336,8 +336,8 @@ constexpr Column kEnglish = {
     "%s is on sale!",                                 // WishlistOnSale
     "%s joined Game Pass!",                           // WishlistInGamePass
     "Support the project",                            // SupportProject
-    "Support PSBox Development",                      // SupportTitle
-    "PSBox is an open-source project passionately maintained to bring the best Xbox Cloud Gaming experience to PlayStation 5. If you enjoy the app and would like to support ongoing development, frequent updates and new features, consider buying me a coffee on Ko-Fi!", // SupportMessage
+    "Support SBOX Development",                      // SupportTitle
+    "SBOX is an open-source project passionately maintained to bring the best Xbox Cloud Gaming experience to PlayStation 5. If you enjoy the app and would like to support ongoing development, frequent updates and new features, consider buying me a coffee on Ko-Fi!", // SupportMessage
     "Ko-fi",                                          // SupportKoFi
     "Scan with your phone to support",                // ScanToDonate
     "Test sound",                                     // TestSound
@@ -443,9 +443,9 @@ constexpr Column kEnglish = {
     "I understand",                                   // TrophiesDisclaimerAware
     "Cancel",                                         // TrophiesDisclaimerCancel
     "Remove Synced Trophies",                         // RemoveTrophies
-    "Removes all trophies added by PSBox from this local profile, eliminating ban risk. You can re-sync them anytime from your Xbox account.", // SettingDescRemoveTrophies
+    "Removes all trophies added by SBOX from this local profile, eliminating ban risk. You can re-sync them anytime from your Xbox account.", // SettingDescRemoveTrophies
     "Remove Synced Trophies?",                        // RemoveTrophiesConfirmTitle
-    "This will delete local trophy packages added by PSBox for this profile. Your achievements remain safe on your Microsoft/Xbox account.", // RemoveTrophiesConfirmBody
+    "This will delete local trophy packages added by SBOX for this profile. Your achievements remain safe on your Microsoft/Xbox account.", // RemoveTrophiesConfirmBody
     "Remove",                                         // RemoveTrophiesConfirm
     "Removed %s trophy title(s) from this profile.",  // TrophiesRemovedToast
     "Syncing achievements...",                        // SyncingTrophies

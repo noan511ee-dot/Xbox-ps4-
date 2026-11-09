@@ -477,7 +477,7 @@ WebServer::HttpResponse WebServer::handleRequest(const std::string& method, cons
 
             report::Info info;
             info.title = "Relatório via WebUI";
-            info.what = "Enviado através do painel WebUI do PSBox";
+            info.what = "Enviado através do painel WebUI do SBOX";
             info.release = XC_APP_VERSION;
             info.firmware = platform::firmwareVersion();
             info.platform = platform::platformName();
@@ -517,7 +517,7 @@ WebServer::HttpResponse WebServer::handleRequest(const std::string& method, cons
     if (method == "POST") {
         if (path == "/api/report-issue") {
             std::string title = "Relatório via WebUI";
-            std::string what = "Enviado através do painel WebUI do PSBox";
+            std::string what = "Enviado através do painel WebUI do SBOX";
             auto j = json::parse(body);
             if (j && j->isObject()) {
                 if ((*j).has("title") && (*j)["title"].isString() && !(*j)["title"].asString().empty()) {

@@ -1338,7 +1338,7 @@ void autoplayScreens(const ui::Canvas& canvas, uint64_t now) {
         std::string typed;
         if (!openedAt) {
             openedAt = now;
-            bool ok = platform::openSystemKeyboard("PSBox test", "hello", 64);
+            bool ok = platform::openSystemKeyboard("SBOX test", "hello", 64);
             XC_LOGI("autoplay: system keyboard %s", ok ? "opened" : "unavailable");
             if (!ok) g_autoplay.imeTest = false;
         } else if (auto st = platform::pollSystemKeyboard(typed); st != platform::KeyboardStatus::Open) {
