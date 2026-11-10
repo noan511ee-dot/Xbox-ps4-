@@ -1,4 +1,4 @@
-PSBox Cloud Gaming - version @VERSION@
+PBOX Cloud Gaming for PS5 - version @VERSION@
 ======================================
 
 Native Xbox Cloud Gaming (xCloud) client for jailbroken PS5 consoles:
@@ -77,7 +77,7 @@ compression off the picture first; "FSR + clean-up" is the default),
 sharpness (off / low / medium / high: sharpens the picture's edges),
 block smoothing (off / low / high, or auto: smooths the squares
 compression leaves in dark, flat areas, stronger as the bitrate falls),
-stream resolution (720p / 1080p, and 1440p where a stream delivered
+stream resolution (720p / 1080p / 1440p where a stream delivered
 it: the app measures it),
 and leave the game. Circle closes it (and asks for a clean picture).
 It also shows the connection (region, latency, bitrate, frame rate,
@@ -106,7 +106,8 @@ OPTIONS on the home screen; Cross opens a list of choices: language
 (English, Portugues (Brasil), Espanol, Francais, Deutsch, Italiano),
 stream resolution (720p for slower connections, 1080p, or 1440p -
 experimental, only granted where Microsoft offers it, otherwise you
-still get 1080p), server region (Automatic, or a specific Azure
+still get 1080p), output pacing (60 Hz or 120 Hz when the display supports it),
+server region (Automatic, or a specific Azure
 region, with the latency measured in your past sessions), the sticks'
 dead zone (raise it if a stick drifts), trigger vibration on or off,
 the light bar in the colour of the game in focus, and the confirm button (Cross, or Circle as on Japanese consoles: it

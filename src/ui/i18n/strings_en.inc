@@ -35,7 +35,7 @@ constexpr Column kEnglish = {
     "Automatic (%s)",                                 // RegionAuto
     "1080p (Full HD)",                                // Res1080
     "720p (uses less data)",                          // Res720
-    "Best (Auto)",                                    // ResBest
+    "1440p / Best (Auto)",                            // ResBest
     "Resolution and region apply to the next game you start.",  // SettingsNote
     "Change",                                         // Change
     "Adjust",                                         // Adjust
@@ -232,8 +232,8 @@ constexpr Column kEnglish = {
     "Your sign-in couldn't be saved on the console, so it will be asked again next time. Please report it (Settings > △).", // SignInNotSaved
     "Estimated wait: %s s", // QueueSeconds
     "Estimated wait: %s min", // QueueMinutes
-    "120 Hz output (VRR)", // HighRefresh
-    "On (in games)", // HighRefreshOn
+    "Frame output: 60 / 120 Hz (VRR)", // HighRefresh
+    "120 Hz in games", // HighRefreshOn
     "Unstable connection", // ConnectionUnstable
     "Session: %s", // SessionSummary
     "Maximum bitrate", // BitrateCap
@@ -373,7 +373,7 @@ constexpr Column kEnglish = {
     "Configures the light bar color and behavior of your DualSense controller during browsing and gameplay", // SettingDescLightBar
     "Checks for and automatically installs official app updates directly on your console without needing a PC", // SettingDescUpdates
     "Allows signing in to your Xbox account via a different geographic region to access alternative catalogs", // SettingDescLoginCountry
-    "Enables 120 Hz video output on your console for lower display lag and reduced input latency", // SettingDescHighRefresh
+    "Selects 60 Hz or 120 Hz output when the PS5 display and stream support it; this controls output pacing, not the cloud server's native FPS", // SettingDescHighRefresh
     "Sets the maximum bandwidth limit for video streaming, ensuring higher visual fidelity or saving network data", // SettingDescBitrateCap
     "Adjusts the master audio volume level played during game streaming sessions", // SettingDescGameVolume
     "Maps USB or Bluetooth keyboard keys to the corresponding Xbox controller buttons during gameplay", // SettingDescKeyboardKeys
