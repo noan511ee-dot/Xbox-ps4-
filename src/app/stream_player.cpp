@@ -73,6 +73,7 @@ struct StreamPlayer::Impl {
     std::atomic<uint32_t> reconnects{0};
     uint64_t lastRtpPackets = 0, lastAudioPackets = 0;
     int silentTicks = 0;
+    uint64_t lastSilenceKeyframeMs = 0;
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -486,7 +487,14 @@ struct StreamPlayer::Impl {
             }
 
             bool screenshot = saveSnapshotIfAsked(cur.pic);
-            std::unique_lock<std::recursive_mutex> lock(display::frameMutex());
+            // Never let a presentation stall hold the decoder forever. The
+            // input/menu thread remains responsive; a late frame is cheaper
+            // than freezing the whole stream after a GPU hiccup.
+            std::unique_lock<std::recursive_mutex> lock(display::frameMutex(), std::try_to_lock);
+            if (!lock.owns_lock()) {
+                ++lateFrames;
+                continue;
+            }
             if (!loggedFirstPresent) {
                 XC_LOGI("first draw %dx%d (%s, %s)", cur.pic.width, cur.pic.height,
                         cur.pic.format == media::Picture::Format::Nv12 ? "NV12" : "YUV420P",
@@ -800,7 +808,11 @@ struct StreamPlayer::Impl {
                 continue;
             }
             bool screenshot = saveSnapshotIfAsked(pic);
-            std::lock_guard<std::recursive_mutex> lock(display::frameMutex());
+            std::unique_lock<std::recursive_mutex> lock(display::frameMutex(), std::try_to_lock);
+            if (!lock.owns_lock()) {
+                ++lateFrames;
+                continue;
+            }
             if (decodedFrames == 1) {
                 XC_LOGI("first draw %dx%d (%s, %s)", pic.width, pic.height,
                         pic.format == media::Picture::Format::Nv12 ? "NV12" : "YUV420P",
@@ -1133,6 +1145,7 @@ struct StreamPlayer::Impl {
         silentTicks = 0;
         lastRtpPackets = 0;
         lastAudioPackets = 0;
+        lastSilenceKeyframeMs = 0;
         ++reconnects;
         keyframeWanted = true;
         platform::notify(ui::tr(ui::Str::Reconnected));
@@ -1268,6 +1281,11 @@ struct StreamPlayer::Impl {
         lastAudioPackets = audio;
         silentTicks = packets == lastRtpPackets ? silentTicks + 1 : 0;
         lastRtpPackets = packets;
+        if (silentTicks >= 1 && platform::nowMs() - lastSilenceKeyframeMs >= 1000) {
+            keyframeWanted = true;
+            lastSilenceKeyframeMs = platform::nowMs();
+            requestKeyframeIfWanted();
+        }
         // During launch the server may spend several seconds provisioning the
         // title before its first video packet. Do not reconnect that healthy
         // session prematurely; once video has started, recover quickly again.

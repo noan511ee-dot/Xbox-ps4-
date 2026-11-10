@@ -323,7 +323,10 @@ void AppUi::drawSplash(Canvas& c, uint64_t nowMs) {
         drawCentered(c, fonts_.bold, "PBOX", 520, 52, rgba(255, 255, 255, alpha));
         drawCentered(c, fonts_.regular, status_, 600, 28, kGray);
     }
-    if (age < 5200) animating_ = true;
+    // Sign-in/network startup can take longer than five seconds. Keep the
+    // Xbox-style pulse alive for the whole splash instead of leaving one
+    // frame frozen while the account and library are loading.
+    animating_ = true;
 }
 
 void AppUi::drawSignIn(Canvas& c, uint64_t nowMs) {

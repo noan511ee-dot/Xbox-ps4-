@@ -12,9 +12,80 @@
 #include "stb_truetype.h"
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <utility>
 
 namespace xc::ui {
+
+uint32_t nextCodepoint(std::string_view s, size_t& i);
+
+namespace {
+struct ArabicForm {
+    uint32_t base, isolated, final, initial, medial;
+    bool right, left;
+};
+
+// Presentation forms keep the renderer dependency-free: stb_truetype can
+// draw the shaped glyphs, while this small table handles the Arabic UI labels.
+constexpr ArabicForm kArabicForms[] = {
+    {0x0627, 0xFE8D, 0xFE8E, 0, 0, true, false}, {0x0628, 0xFE8F, 0xFE90, 0xFE91, 0xFE92, true, true},
+    {0x062A, 0xFE95, 0xFE96, 0xFE97, 0xFE98, true, true}, {0x062B, 0xFE99, 0xFE9A, 0xFE9B, 0xFE9C, true, true},
+    {0x062C, 0xFE9D, 0xFE9E, 0xFE9F, 0xFEA0, true, true}, {0x062D, 0xFEA1, 0xFEA2, 0xFEA3, 0xFEA4, true, true},
+    {0x062E, 0xFEA5, 0xFEA6, 0xFEA7, 0xFEA8, true, true}, {0x062F, 0xFEA9, 0xFEAA, 0, 0, true, false},
+    {0x0630, 0xFEAB, 0xFEAC, 0, 0, true, false}, {0x0631, 0xFEAD, 0xFEAE, 0, 0, true, false},
+    {0x0632, 0xFEAF, 0xFEB0, 0, 0, true, false}, {0x0633, 0xFEB1, 0xFEB2, 0xFEB3, 0xFEB4, true, true},
+    {0x0634, 0xFEB5, 0xFEB6, 0xFEB7, 0xFEB8, true, true}, {0x0635, 0xFEB9, 0xFEBA, 0xFEBB, 0xFEBC, true, true},
+    {0x0636, 0xFEBD, 0xFEBE, 0xFEBF, 0xFEC0, true, true}, {0x0637, 0xFEC1, 0xFEC2, 0xFEC3, 0xFEC4, true, true},
+    {0x0638, 0xFEC5, 0xFEC6, 0xFEC7, 0xFEC8, true, true}, {0x0639, 0xFEC9, 0xFECA, 0xFECB, 0xFECC, true, true},
+    {0x063A, 0xFECD, 0xFECE, 0xFECF, 0xFED0, true, true}, {0x0641, 0xFED1, 0xFED2, 0xFED3, 0xFED4, true, true},
+    {0x0642, 0xFED5, 0xFED6, 0xFED7, 0xFED8, true, true}, {0x0643, 0xFED9, 0xFEDA, 0xFEDB, 0xFEDC, true, true},
+    {0x0644, 0xFEDD, 0xFEDE, 0xFEDF, 0xFEE0, true, true}, {0x0645, 0xFEE1, 0xFEE2, 0xFEE3, 0xFEE4, true, true},
+    {0x0646, 0xFEE5, 0xFEE6, 0xFEE7, 0xFEE8, true, true}, {0x0647, 0xFEE9, 0xFEEA, 0xFEEB, 0xFEEC, true, true},
+    {0x0648, 0xFEED, 0xFEEE, 0, 0, true, false}, {0x064A, 0xFEF1, 0xFEF2, 0xFEF3, 0xFEF4, true, true},
+    {0x0629, 0xFE93, 0xFE94, 0, 0, true, false}, {0x0649, 0xFEEF, 0xFEF0, 0, 0, true, false},
+};
+
+const ArabicForm* arabicForm(uint32_t cp) {
+    for (const auto& f : kArabicForms) if (f.base == cp) return &f;
+    return nullptr;
+}
+bool isArabicMark(uint32_t cp) { return cp >= 0x064B && cp <= 0x065F; }
+void appendUtf8(std::string& out, uint32_t cp) {
+    if (cp < 0x80) out.push_back(static_cast<char>(cp));
+    else if (cp < 0x800) { out.push_back(static_cast<char>(0xC0 | (cp >> 6))); out.push_back(static_cast<char>(0x80 | (cp & 63))); }
+    else if (cp < 0x10000) { out.push_back(static_cast<char>(0xE0 | (cp >> 12))); out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63))); out.push_back(static_cast<char>(0x80 | (cp & 63))); }
+    else { out.push_back(static_cast<char>(0xF0 | (cp >> 18))); out.push_back(static_cast<char>(0x80 | ((cp >> 12) & 63))); out.push_back(static_cast<char>(0x80 | ((cp >> 6) & 63))); out.push_back(static_cast<char>(0x80 | (cp & 63))); }
+}
+
+std::string shapeArabic(std::string_view text) {
+    std::vector<uint32_t> cps;
+    for (size_t i = 0; i < text.size();) cps.push_back(nextCodepoint(text, i));
+    std::vector<uint32_t> out;
+    for (size_t i = 0; i < cps.size();) {
+        if (!arabicForm(cps[i])) { out.push_back(cps[i++]); continue; }
+        size_t end = i;
+        while (end < cps.size() && (arabicForm(cps[end]) || isArabicMark(cps[end]))) ++end;
+        std::vector<uint32_t> run;
+        for (size_t j = i; j < end; ++j) {
+            const ArabicForm* f = arabicForm(cps[j]);
+            if (!f) { run.push_back(cps[j]); continue; }
+            const ArabicForm* prev = j > i ? arabicForm(cps[j - 1]) : nullptr;
+            const ArabicForm* next = j + 1 < end ? arabicForm(cps[j + 1]) : nullptr;
+            bool joinPrev = prev && prev->right && f->left;
+            bool joinNext = next && f->right && next->left;
+            run.push_back(joinPrev && joinNext && f->medial ? f->medial : joinPrev && f->final ? f->final : joinNext && f->initial ? f->initial : f->isolated);
+        }
+        std::reverse(run.begin(), run.end());
+        out.insert(out.end(), run.begin(), run.end());
+        i = end;
+    }
+    std::string result;
+    for (uint32_t cp : out) appendUtf8(result, cp);
+    return result;
+}
+}
 
 struct Font::Impl {
     stbtt_fontinfo info{};
@@ -113,6 +184,8 @@ const Font::Glyph& Font::glyph(uint32_t cp, int px) const {
 }
 
 int Font::measure(std::string_view text, int px) const {
+    const std::string shaped = shapeArabic(text);
+    text = shaped;
     int w = 0;
     for (size_t i = 0; i < text.size();) w += glyph(nextCodepoint(text, i), px).advance;
     return w;
@@ -120,6 +193,8 @@ int Font::measure(std::string_view text, int px) const {
 
 int Font::draw(Canvas& c, std::string_view text, int x, int y, int px, Color color) const {
     if (!usable()) return x;
+    const std::string shaped = shapeArabic(text);
+    text = shaped;
     int baseline = y + static_cast<int>(std::lround(impl_->ascent * scale(px)));
     for (size_t i = 0; i < text.size();) {
         const Glyph& g = glyph(nextCodepoint(text, i), px);
@@ -164,7 +239,8 @@ std::vector<std::string> Font::wrap(std::string_view input, int px, int maxWidth
         if (ch == '\r') continue;
         cleaned += ch == '\t' ? ' ' : ch;
     }
-    std::string_view text = cleaned;
+    const std::string shaped = shapeArabic(cleaned);
+    std::string_view text = shaped;
     std::vector<std::string> lines;
     std::string current;
     size_t i = 0;
