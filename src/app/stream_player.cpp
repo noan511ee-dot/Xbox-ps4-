@@ -861,7 +861,7 @@ struct StreamPlayer::Impl {
         stream::StreamCallbacks cb;
         cb.video = [this](const uint8_t* d, size_t n, uint32_t rtpTimestamp, uint64_t firstPacketUs) {
             try {
-                if (n == 0) {  // the depacketizer emits these after loss
+                if (!d || n == 0) {  // the depacketizer emits these after loss
                     keyframeWanted = true;
                     return;
                 }
@@ -902,6 +902,7 @@ struct StreamPlayer::Impl {
         };
         cb.audio = [this](const uint8_t* d, size_t n, uint32_t rtpTimestamp) {
             try {
+                if (!d || n == 0) return;
                 if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
                 std::lock_guard<std::mutex> lock(audioMutex_);
                 if (audioPackets_.size() < 50) {
@@ -925,31 +926,53 @@ struct StreamPlayer::Impl {
         // dual-rumble effect (left = strong, right = weak). The trigger
         // motors (impulse triggers) become the adaptive triggers vibrating.
         cb.vibration = [this](const stream::Vibration& v) {
-            // The first few, and the first few with the triggers (rarer: does
-            // the service send them at all for a game?).
-            bool triggers = v.leftTrigger || v.rightTrigger;
-            if (++vibrations <= 5 || (triggers && ++triggerVibrations <= 5))
-                XC_LOGI("vibration %u/%u/%u/%u for %ums (pad %u)", v.leftMotor, v.rightMotor, v.leftTrigger,
-                        v.rightTrigger, v.durationMs, v.gamepadIndex);
-            auto scale = [](uint8_t pct) { return static_cast<uint8_t>(std::min<int>(pct, 100) * 255 / 100); };
-            input::setRumble(scale(v.leftMotor), scale(v.rightMotor), v.durationMs, v.gamepadIndex);
-            input::setTriggerRumble(scale(v.leftTrigger), scale(v.rightTrigger), v.durationMs, v.gamepadIndex);
+            try {
+                // Haptics are optional: a driver failure must never kill the
+                // WebRTC callback thread or the whole application.
+                bool triggers = v.leftTrigger || v.rightTrigger;
+                if (++vibrations <= 5 || (triggers && ++triggerVibrations <= 5))
+                    XC_LOGI("vibration %u/%u/%u/%u for %ums (pad %u)", v.leftMotor, v.rightMotor, v.leftTrigger,
+                            v.rightTrigger, v.durationMs, v.gamepadIndex);
+                auto scale = [](uint8_t pct) { return static_cast<uint8_t>(std::min<int>(pct, 100) * 255 / 100); };
+                input::setRumble(scale(v.leftMotor), scale(v.rightMotor), v.durationMs, v.gamepadIndex);
+                input::setTriggerRumble(scale(v.leftTrigger), scale(v.rightTrigger), v.durationMs, v.gamepadIndex);
+            } catch (const std::exception& e) {
+                XC_LOGW("ignored haptics callback exception: %s", e.what());
+            } catch (...) {
+                XC_LOGW("ignored unknown haptics callback exception");
+            }
         };
         cb.titleFocus = [this](bool focused) {
-            if (titleFocused.exchange(focused) != focused) XC_LOGI("title %s the focus", focused ? "has" : "lost");
+            try {
+                if (titleFocused.exchange(focused) != focused) XC_LOGI("title %s the focus", focused ? "has" : "lost");
+            } catch (...) {
+                XC_LOGW("ignored title-focus callback exception");
+            }
         };
         cb.idleWarning = [](int seconds) {
-            platform::notify(ui::trf(ui::Str::IdleWarning, std::to_string(seconds)));
+            try {
+                platform::notify(ui::trf(ui::Str::IdleWarning, std::to_string(seconds)));
+            } catch (...) {
+                XC_LOGW("ignored idle-warning callback exception");
+            }
         };
         cb.closed = [this](const std::string& reason, bool recoverable) {
-            if (std::string res = platform::diagnostics(); !res.empty())
-                XC_LOGI("resources at stream close: %s", res.c_str());
-            // A lost connection: the worker's tick() reconnects. The server
-            // ending the session (or no game left) ends the stream.
-            if (recoverable && running) {
-                if (!reconnecting.exchange(true)) XC_LOGW("connection lost (%s): reconnecting", reason.c_str());
-            } else {
-                end(reason);
+            try {
+                if (std::string res = platform::diagnostics(); !res.empty())
+                    XC_LOGI("resources at stream close: %s", res.c_str());
+                // A lost connection: the worker's tick() reconnects. The server
+                // ending the session (or no game left) ends the stream.
+                if (recoverable && running) {
+                    if (!reconnecting.exchange(true)) XC_LOGW("connection lost (%s): reconnecting", reason.c_str());
+                } else {
+                    end(reason);
+                }
+            } catch (const std::exception& e) {
+                XC_LOGE("stream-close callback failed safely: %s", e.what());
+                end("stream closed unexpectedly");
+            } catch (...) {
+                XC_LOGE("stream-close callback failed safely: unknown exception");
+                end("stream closed unexpectedly");
             }
         };
         // With the console's keyboard, the game's text fields use it;
