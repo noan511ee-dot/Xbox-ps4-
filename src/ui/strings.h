@@ -461,7 +461,7 @@ enum class Str {
     Count
 };
 
-enum class Language { English, PortugueseBR, Spanish, French, German, Italian, Count };
+enum class Language { English, PortugueseBR, Spanish, French, German, Italian, Arabic, Count };
 
 void setLanguage(Language lang);
 Language language();

@@ -28,6 +28,7 @@ constexpr std::array<LangInfo, kLangs> kInfo = {{
     {"Français", "fr", "fr-fr", "fr-FR"},
     {"Deutsch", "de", "de-de", "de-DE"},
     {"Italiano", "it", "it-it", "it-IT"},
+    {"العربية", "ar", "ar-sa", "ar-SA"},
 }};
 
 using Column = std::array<const char*, kStrs>;
@@ -38,9 +39,10 @@ using Column = std::array<const char*, kStrs>;
 #include "ui/i18n/strings_fr.inc"
 #include "ui/i18n/strings_de.inc"
 #include "ui/i18n/strings_it.inc"
+#include "ui/i18n/strings_ar.inc"
 
 constexpr std::array<const Column*, kLangs> kTable = {&kEnglish, &kPortugueseBR, &kSpanish,
-                                                      &kFrench,  &kGerman,       &kItalian};
+                                                      &kFrench,  &kGerman,       &kItalian, &kArabic};
 
 const LangInfo& info() { return kInfo[static_cast<size_t>(g_language.load())]; }
 

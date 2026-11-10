@@ -105,6 +105,7 @@ void AppUi::showSplash(const std::string& status) {
     std::lock_guard<std::mutex> lock(mutex_);
     screen_ = Screen::Splash;
     status_ = status;
+    splashSince_ = 0;
     dirty_ = true;
 }
 

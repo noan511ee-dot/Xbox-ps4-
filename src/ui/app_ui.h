@@ -803,6 +803,7 @@ private:
     uint64_t heroSince_ = 0;    // when heroUrl_ became the wanted one
     uint64_t heroShownAt_ = 0;  // when its image first drew (0: not yet)
     uint64_t lastRender_ = 0;
+    uint64_t splashSince_ = 0;
     bool animating_ = false;
     std::map<std::string, app::GameProfile> perGameSettings_;
     bool gameSettingsOpen_ = false;

@@ -299,11 +299,31 @@ bool AppUi::drawHero(Canvas& c, uint64_t nowMs, const std::string& url, bool det
 }
 
 void AppUi::drawSplash(Canvas& c, uint64_t nowMs) {
-    drawBackground(c);
-    drawLogo(c, kW / 2.0f, 400, 64);
-    drawCentered(c, fonts_.bold, tr(Str::AppName), 500, 52, kWhite);
-    drawCentered(c, fonts_.regular, status_, 590, 28, kGray);
-    drawSpinner(c, kW / 2.0f, 720, 26, nowMs);
+    if (!splashSince_) splashSince_ = nowMs;
+    const uint64_t age = nowMs - splashSince_;
+    const float reveal = std::min(1.0f, static_cast<float>(age) / 2000.0f);
+    const float pulse = 1.0f + 0.025f * std::sin(static_cast<float>(age) * 0.004f);
+    c.clear(rgba(0, 0, 0));
+    const float cx = kW / 2.0f, cy = 380.0f;
+    // Thin green light traces and a soft lens-like sweep, kept as primitives
+    // so the intro has no video decoder, large buffer, or startup I/O.
+    for (int i = 0; i < 5; ++i) {
+        const float y = cy - 170.0f + i * 86.0f + std::sin(static_cast<float>(age) * 0.003f + i) * 8.0f;
+        c.line(180.0f, y + 120.0f, kW - 180.0f, y - 120.0f, 2.0f,
+               rgba(100, 220, 150, static_cast<uint8_t>(18 + i * 5)));
+    }
+    const uint8_t alpha = static_cast<uint8_t>(std::lround(255.0f * reveal));
+    drawBrandMark(c, cx, cy, 74.0f * pulse, rgba(255, 255, 255, alpha));
+    if (age >= 1500) {
+        const float shine = std::fmod(static_cast<float>(age - 1500) / 2200.0f, 1.0f);
+        c.line(cx - 150.0f + shine * 300.0f, cy - 100.0f, cx - 70.0f + shine * 300.0f, cy + 100.0f,
+               8.0f, rgba(150, 255, 190, 70));
+    }
+    if (age >= 1900) {
+        drawCentered(c, fonts_.bold, "PBOX", 520, 52, rgba(255, 255, 255, alpha));
+        drawCentered(c, fonts_.regular, status_, 600, 28, kGray);
+    }
+    if (age < 5200) animating_ = true;
 }
 
 void AppUi::drawSignIn(Canvas& c, uint64_t nowMs) {

@@ -28,6 +28,7 @@ public:
     // assets folder.
     bool load(const std::string& path);
     bool loaded() const { return loaded_; }
+    void setFallback(const Font* fallback) { fallback_ = fallback; }
 
     int lineHeight(int px) const;
     // The `y` to draw at so that capital letters sit centred in a box of
@@ -56,6 +57,7 @@ private:
     std::unique_ptr<Impl> impl_;
     std::vector<unsigned char> data_;
     bool loaded_ = false;
+    const Font* fallback_ = nullptr;
     mutable std::mutex mutex_;
     mutable std::unordered_map<uint64_t, Glyph> cache_;
 };
@@ -63,6 +65,7 @@ private:
 // The three weights the UI uses.
 struct Fonts {
     Font regular, semibold, bold;
+    Font arabicRegular, arabicSemibold, arabicBold;
     // The console's own icon font (keyboard and mouse, controller...), read
     // from the system at run time, never shipped; hasIcons false without it.
     Font icons;

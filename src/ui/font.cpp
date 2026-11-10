@@ -95,8 +95,10 @@ const Font::Glyph& Font::glyph(uint32_t cp, int px) const {
     if (it != cache_.end()) return it->second;
     Glyph g;
     // Characters the font lacks are skipped instead of drawn as boxes.
-    if (cp != ' ' && stbtt_FindGlyphIndex(&impl_->info, static_cast<int>(cp)) == 0)
+    if (cp != ' ' && stbtt_FindGlyphIndex(&impl_->info, static_cast<int>(cp)) == 0) {
+        if (fallback_) return fallback_->glyph(cp, px);
         return cache_.emplace(key, std::move(g)).first->second;
+    }
     float s = scale(px);
     int advance, lsb;
     stbtt_GetCodepointHMetrics(&impl_->info, static_cast<int>(cp), &advance, &lsb);
@@ -199,8 +201,16 @@ std::vector<std::string> Font::wrap(std::string_view input, int px, int maxWidth
 }
 
 bool Fonts::load(const std::string& dir) {
-    return regular.load(dir + "/Inter-Regular.ttf") && semibold.load(dir + "/Inter-SemiBold.ttf") &&
-           bold.load(dir + "/Inter-Bold.ttf");
+    bool ok = regular.load(dir + "/Inter-Regular.ttf") && semibold.load(dir + "/Inter-SemiBold.ttf") &&
+              bold.load(dir + "/Inter-Bold.ttf") && arabicRegular.load(dir + "/NotoSansArabic-Regular.ttf") &&
+           arabicSemibold.load(dir + "/NotoSansArabic-SemiBold.ttf") &&
+           arabicBold.load(dir + "/NotoSansArabic-Bold.ttf");
+    if (ok) {
+        regular.setFallback(&arabicRegular);
+        semibold.setFallback(&arabicSemibold);
+        bold.setFallback(&arabicBold);
+    }
+    return ok;
 }
 
 bool Fonts::loadIcons(const std::vector<std::string>& paths) {
