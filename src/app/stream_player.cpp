@@ -1099,7 +1099,6 @@ struct StreamPlayer::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             frames.clear();
-            lagAwaitingIdr = true;
         }
         stream::StreamOptions opts = options;
         opts.connectTimeoutMs = 8000;
