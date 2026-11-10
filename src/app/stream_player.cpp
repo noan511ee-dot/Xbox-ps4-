@@ -570,7 +570,17 @@ struct StreamPlayer::Impl {
                 consumedPicSeq = 0;
                 presentStop = false;
             }
-            platform::startThread(presentThread, [this] { asyncPresentLoop(); }, 512u << 10);
+            platform::startThread(presentThread, [this] {
+                try {
+                    asyncPresentLoop();
+                } catch (const std::exception& e) {
+                    XC_LOGE("present thread recovered from exception: %s", e.what());
+                    end("display pipeline failed safely");
+                } catch (...) {
+                    XC_LOGE("present thread recovered from unknown exception");
+                    end("display pipeline failed safely");
+                }
+            }, 512u << 10);
         }
         struct PresentJoinGuard {
             Impl* self;

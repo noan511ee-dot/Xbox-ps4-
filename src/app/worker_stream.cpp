@@ -200,6 +200,8 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
     // Not the frame rate: games send fewer frames in some scenes.
     uint64_t degradedUntil = 0, lastTickAt = 0;
     bool degradedLogged = false;
+    bool autoResolutionReduced = false;
+    uint64_t lastAutoResolutionChangeMs = 0;
     uint32_t reconnectsSeen = 0;
     struct {
         uint64_t seconds = 0, badSeconds = 0, kbps = 0, rttSum = 0, rttCount = 0;
@@ -440,6 +442,18 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
                         degradedLogged = true;
                         degradedUntil = now + 3000;
                         ++session.badSeconds;
+                        // A sustained degradation on mobile networks is better handled by
+                        // asking the server for its 720 tier than by letting the decoder
+                        // accumulate old 1080 frames. This uses the existing
+                        // userRequestedResolutionUpdate protocol and is rate-limited.
+                        if (!autoResolutionReduced && gssv.resolution() != xcloud::Resolution::P720 &&
+                            session.badSeconds >= 3 && now - lastAutoResolutionChangeMs >= 15000) {
+                            player.requestResolution("720");
+                            autoResolutionReduced = true;
+                            lastAutoResolutionChangeMs = now;
+                            XC_LOGW("adaptive resolution: network degraded for %llu s; requested 720 tier",
+                                    static_cast<unsigned long long>(session.badSeconds));
+                        }
                     } else if (now >= degradedUntil) {
                         degradedLogged = false;
                     }
