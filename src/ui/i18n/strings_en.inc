@@ -373,7 +373,7 @@ constexpr Column kEnglish = {
     "Configures the light bar color and behavior of your DualSense controller during browsing and gameplay", // SettingDescLightBar
     "Checks for and automatically installs official app updates directly on your console without needing a PC", // SettingDescUpdates
     "Allows signing in to your Xbox account via a different geographic region to access alternative catalogs", // SettingDescLoginCountry
-    "Selects 60 Hz or 120 Hz output when the PS5 display and stream support it; this controls output pacing, not the cloud server's native FPS", // SettingDescHighRefresh
+    "Selects 60 Hz or 120 Hz output when supported; this controls output pacing, not the cloud server's native FPS", // SettingDescHighRefresh
     "Sets the maximum bandwidth limit for video streaming, ensuring higher visual fidelity or saving network data", // SettingDescBitrateCap
     "Adjusts the master audio volume level played during game streaming sessions", // SettingDescGameVolume
     "Maps USB or Bluetooth keyboard keys to the corresponding Xbox controller buttons during gameplay", // SettingDescKeyboardKeys

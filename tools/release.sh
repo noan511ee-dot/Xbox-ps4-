@@ -114,7 +114,7 @@ sign "$out/PPSA99810.zip"
 ok "signed: $out/PPSA99810.zip.sig"
 
 # Standard named package for PlayStation 5
-ps5_named="PSBoxCloudGaming[PS5]-$tag.zip"
+ps5_named="PBOX-PS5-$tag.zip"
 cp -f "$out/PPSA99810.zip" "$out/$ps5_named"
 cp -f "$out/PPSA99810.zip.sig" "$out/$ps5_named.sig"
 (cd "$out" && sha256sum "$ps5_named" > "$ps5_named.sha256")
@@ -150,7 +150,7 @@ ps4_ver=$(printf '%02d.%02d' "$major" "$((minor * 10 + patch))")
 ps4_out="$out/ps4_pkg"
 XC_PS4_VERSION="$ps4_ver" tools/ps4/package.sh build-ps4 "$ps4_out" >/dev/null
 
-ps4_pkg_name="PSBoxCloudGaming[PS4]-$tag.pkg"
+ps4_pkg_name="PBOX-PS4-$tag.pkg"
 mv -f "$ps4_out/PSBox Cloud Gaming - PS4.pkg" "$out/$ps4_pkg_name"
 rm -rf "$ps4_out"
 (cd "$out" && sha256sum "$ps4_pkg_name" > "$ps4_pkg_name.sha256")
@@ -211,11 +211,11 @@ fi
 echo "== all checks passed; to publish (with release notes in notes.md):"
 echo "  gh release create $tag \\"
 echo "    \"$zip\" \"$out/PPSA99810.zip.sha256\" \"$out/PPSA99810.zip.sig\" \\"
-echo "    \"$out/PSBoxCloudGaming[[]PS5]-$tag.zip#PSBoxCloudGaming[PS5]-$tag.zip\" \\"
-echo "    \"$out/PSBoxCloudGaming[[]PS5]-$tag.zip.sha256#PSBoxCloudGaming[PS5]-$tag.zip.sha256\" \\"
-echo "    \"$out/PSBoxCloudGaming[[]PS5]-$tag.zip.sig#PSBoxCloudGaming[PS5]-$tag.zip.sig\" \\"
-echo "    \"$out/PSBoxCloudGaming[[]PS4]-$tag.pkg#PSBoxCloudGaming[PS4]-$tag.pkg\" \\"
-echo "    \"$out/PSBoxCloudGaming[[]PS4]-$tag.pkg.sha256#PSBoxCloudGaming[PS4]-$tag.pkg.sha256\"$linux_assets \\"
+echo "    \"$out/PBOX-PS5-$tag.zip#PBOX-PS5-$tag.zip\" \\"
+echo "    \"$out/PBOX-PS5-$tag.zip.sha256#PBOX-PS5-$tag.zip.sha256\" \\"
+echo "    \"$out/PBOX-PS5-$tag.zip.sig#PBOX-PS5-$tag.zip.sig\" \\"
+echo "    \"$out/PBOX-PS4-$tag.pkg#PBOX-PS4-$tag.pkg\" \\"
+echo "    \"$out/PBOX-PS4-$tag.pkg.sha256#PBOX-PS4-$tag.pkg.sha256\"$linux_assets \\"
 echo "    --target $(git rev-parse HEAD) --title \"PSBox Cloud Gaming $tag\" --notes-file notes.md"
 echo
 echo "== post-release steps (Mandatory Tri-Platform Standard):"

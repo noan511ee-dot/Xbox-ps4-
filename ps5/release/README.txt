@@ -106,8 +106,7 @@ OPTIONS on the home screen; Cross opens a list of choices: language
 (English, Portugues (Brasil), Espanol, Francais, Deutsch, Italiano),
 stream resolution (720p for slower connections, 1080p, or 1440p -
 experimental, only granted where Microsoft offers it, otherwise you
-still get 1080p), output pacing (60 Hz or 120 Hz when the display supports it),
-server region (Automatic, or a specific Azure
+still get 1080p), output pacing (60 Hz or 120 Hz when supported), server region (Automatic, or a specific Azure
 region, with the latency measured in your past sessions), the sticks'
 dead zone (raise it if a stick drifts), trigger vibration on or off,
 the light bar in the colour of the game in focus, and the confirm button (Cross, or Circle as on Japanese consoles: it
