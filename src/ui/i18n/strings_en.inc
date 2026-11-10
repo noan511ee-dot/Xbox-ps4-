@@ -365,7 +365,7 @@ constexpr Column kEnglish = {
     "Background delta sync keeps your catalog and shelf lists updated automatically", // TipBackgroundSync
     // Settings descriptions
     "Changes the language of the application interface and the preferred audio and subtitles in cloud games", // SettingDescLanguage
-    "Sets the maximum streaming video resolution (1080p, 720p, or Best available). Takes effect on the next launch", // SettingDescResolution
+    "Sets the maximum stream tier (1080p, 720p, or Best available). Best can upscale to a 4K display; the cloud stream itself may remain 1080p or 1440p. Takes effect on the next launch", // SettingDescResolution
     "Selects the Microsoft datacenter region for streaming (Automatic or specific regions). Takes effect on the next launch", // SettingDescRegion
     "Adjusts the inner dead zone of DualSense analog sticks to prevent stick drift and unintended movement", // SettingDescDeadzone
     "Enables or disables impulse trigger vibration emulation on DualSense L2 and R2 adaptive triggers", // SettingDescTriggerRumble

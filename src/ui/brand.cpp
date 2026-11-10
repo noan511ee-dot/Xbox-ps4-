@@ -81,7 +81,9 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
     const float w = static_cast<float>(c.width()), h = static_cast<float>(c.height());
     const float cx = launch ? w * 0.5f : w * 0.70f;
     const float cy = launch ? h * 0.42f : h * 0.47f;
-    const float r = h * (launch ? 0.17f : 0.22f);
+    const float phase = launch ? static_cast<float>(platform::nowMs() % 2400) / 2400.0f : 0.0f;
+    const float pulse = launch ? 1.0f + 0.035f * std::sin(phase * 6.2831853f) : 1.0f;
+    const float r = h * (launch ? 0.17f : 0.22f) * pulse;
 
     // Near-black on the left (the Shell draws text there) to deep green.
     c.gradientH({0, 0, c.width(), c.height()}, rgba(5, 9, 6), rgba(10, 64, 12));
@@ -95,10 +97,16 @@ void drawHomeArt(Canvas& c, const Fonts& fonts, bool launch) {
     }
     // Light streaks, as if moving fast through a tunnel of light.
     for (int i = 0; i < 9; ++i) {
-        float y0 = h * (0.08f + 0.11f * i);
+        float y0 = h * (0.08f + 0.11f * i + (launch ? 0.018f * std::sin(phase * 6.2831853f + i) : 0.0f));
         float tilt = h * 0.22f;
         c.line(cx - w * 0.55f, y0 + tilt, cx + w * 0.55f, y0 - tilt, h * (0.002f + 0.0015f * (i % 3)),
                rgba(150, 255, 160, static_cast<uint8_t>(10 + 6 * (i % 3))));
+    }
+    if (launch) {
+        // Lightweight original pulse instead of bundling a third-party intro video.
+        const float wave = 1.0f + 0.25f * phase;
+        for (int i = 3; i > 0; --i)
+            c.fillCircle(cx, cy, r * (1.0f + wave * i * 0.08f), rgba(70, 230, 160, static_cast<uint8_t>(7 - i)));
     }
     // Darken the edges so the Shell's overlays stay readable.
     c.gradientV({0, 0, c.width(), static_cast<int>(h * 0.25f)}, rgba(0, 0, 0, 120), rgba(0, 0, 0, 0));
