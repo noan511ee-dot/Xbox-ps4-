@@ -154,6 +154,7 @@ SFO="$STAGE_DIR/sce_sys/param.sfo"
 echo "==> runtime assets"
 cp -r "$REPO_DIR/assets/." "$STAGE_DIR/assets/"
 rm -rf "$STAGE_DIR/assets/media_showcase"
+rm -rf "$STAGE_DIR/assets/legacy" "$STAGE_DIR/assets/pbox_logo_new.png"
 
 mkdir -p "$STAGE_DIR/licenses"
 cp "$REPO_DIR/LICENSE" "$STAGE_DIR/LICENSE"

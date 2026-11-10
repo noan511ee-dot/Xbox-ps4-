@@ -1093,6 +1093,14 @@ struct StreamPlayer::Impl {
         }
         if (old) old->close();
         old.reset();
+        // Do not present frames from the dead connection after a reconnect.
+        // They can be decoded with an incompatible reference picture and add
+        // visible hitching while the new WebRTC session is negotiating.
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            frames.clear();
+            lagAwaitingIdr = true;
+        }
         stream::StreamOptions opts = options;
         opts.connectTimeoutMs = 8000;
         std::shared_ptr<stream::StreamSession> next;
@@ -1261,7 +1269,10 @@ struct StreamPlayer::Impl {
         lastAudioPackets = audio;
         silentTicks = packets == lastRtpPackets ? silentTicks + 1 : 0;
         lastRtpPackets = packets;
-        int limit = audioAlive ? 15 : 3;
+        // During launch the server may spend several seconds provisioning the
+        // title before its first video packet. Do not reconnect that healthy
+        // session prematurely; once video has started, recover quickly again.
+        int limit = videoFrames == 0 ? 10 : (audioAlive ? 15 : 3);
         if (silentTicks >= limit && !reconnecting.exchange(true))
             XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
     }
