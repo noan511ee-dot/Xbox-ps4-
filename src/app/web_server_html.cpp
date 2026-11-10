@@ -34,8 +34,8 @@ const char* kIndexHtml = R"html(<!DOCTYPE html>
   --surface: #141722;
   --surface-alt: #1c2130;
   --border: #282f44;
-  --primary: #107C41;
-  --primary-hover: #169c53;
+  --primary: #18a957;
+  --primary-hover: #28c96d;
   --accent: #0070d8;
   --text: #f0f3f8;
   --text-dim: #9aa4b8;
@@ -44,9 +44,9 @@ const char* kIndexHtml = R"html(<!DOCTYPE html>
 * { box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
 html { width: 100%; max-width: 100%; background: var(--bg); }
 body { width: 100%; max-width: 100%; margin: 0; padding: 0; overflow-x: hidden; overflow-y: auto; background: var(--bg); color: var(--text); -webkit-overflow-scrolling: touch; overscroll-behavior-y: none; }
-header { box-sizing: border-box; background: var(--surface); border-bottom: 1px solid var(--border); padding-top: max(18px, env(safe-area-inset-top, 18px)); padding-bottom: 12px; padding-left: max(16px, env(safe-area-inset-left, 16px)); padding-right: max(16px, env(safe-area-inset-right, 16px)); display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; max-width: 100%; overflow-x: hidden; }
+header { box-sizing: border-box; background: linear-gradient(135deg, #141722 0%, #101d1b 100%); border-bottom: 1px solid rgba(40, 201, 109, 0.32); padding-top: max(18px, env(safe-area-inset-top, 18px)); padding-bottom: 12px; padding-left: max(16px, env(safe-area-inset-left, 16px)); padding-right: max(16px, env(safe-area-inset-right, 16px)); display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; max-width: 100%; overflow-x: hidden; box-shadow: 0 5px 24px rgba(0,0,0,.22); }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; flex: 1 1 auto; }
-.logo-icon { flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; box-shadow: 0 0 10px rgba(16, 124, 65, 0.45); }
+.logo-icon { flex-shrink: 0; width: 36px; height: 36px; border-radius: 50%; box-shadow: 0 0 14px rgba(40, 201, 109, 0.55); }
 .brand-text { min-width: 0; flex: 1 1 auto; }
 .brand-text h1 { font-size: clamp(0.76rem, 3.6vw, 0.96rem); font-weight: 700; letter-spacing: 0.5px; color: #fff; text-transform: uppercase; line-height: 1.2; white-space: nowrap; }
 .brand-subtitle { font-size: 0.70rem; color: var(--text-dim); display: block; font-weight: 500; white-space: nowrap; }
@@ -60,7 +60,7 @@ header .badge { background: var(--primary); color: #fff; font-size: 0.70rem; pad
 .subnav { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; width: 100%; max-width: 100%; }
 .subnav .btn { flex: 1 1 120px; }
 .subnav .btn.active { background: var(--primary); border-color: var(--primary); }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 14px; width: 100%; max-width: 100%; overflow-x: hidden; }
+.card { background: linear-gradient(145deg, rgba(20,23,34,.98), rgba(16,29,27,.96)); border: 1px solid rgba(40, 201, 109, .16); border-radius: 16px; padding: 14px; margin-bottom: 14px; width: 100%; max-width: 100%; overflow-x: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.18); }
 .card:last-child { margin-bottom: 0 !important; }
 .card h2 { font-size: 1.0rem; margin-bottom: 8px; font-weight: 600; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .card p { font-size: 0.82rem; color: var(--text-dim); margin-bottom: 12px; line-height: 1.4; word-break: break-word; }

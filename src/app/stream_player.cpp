@@ -38,7 +38,9 @@ namespace {
 // A shorter queue avoids displaying an old burst after mobile jitter. The
 // decoder is allowed to catch up, but the player resynchronises sooner instead
 // of turning a 4G/5G burst into visible stutter and input lag.
-constexpr size_t kMaxQueuedFrames = 72;
+// Keep less than one second of 60 fps video queued. This favors control
+// latency over replaying an old burst after mobile-network jitter.
+constexpr size_t kMaxQueuedFrames = 48;
 
 // True when an Annex B access unit holds an IDR slice (NAL type 5).
 bool hasIdrSlice(const std::vector<uint8_t>& au) {
