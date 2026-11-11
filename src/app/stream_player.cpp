@@ -1309,7 +1309,11 @@ struct StreamPlayer::Impl {
         // During launch the server may spend several seconds provisioning the
         // title before its first video packet. Do not reconnect that healthy
         // session prematurely; once video has started, recover quickly again.
-        int limit = videoFrames == 0 ? 10 : (audioAlive ? 15 : 3);
+        // Once a stream has shown video, a silent picture with audio still
+        // arriving is no longer a normal launch pause. Recover after 6 s
+        // instead of leaving the user stuck for 15 s; the keyframe requests
+        // above still give a healthy session a chance to recover first.
+        int limit = videoFrames == 0 ? 10 : (audioAlive ? 6 : 3);
         if (silentTicks >= limit && !reconnecting.exchange(true))
             XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
     }
