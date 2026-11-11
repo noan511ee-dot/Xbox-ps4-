@@ -389,9 +389,12 @@ void AppUi::drawSignIn(Canvas& c, uint64_t nowMs) {
 }
 
 void AppUi::drawTabs(Canvas& c) {
-    // Centred pills in the top bar, between "L1" and "R1".
+    // Compact Xbox-dashboard navigation: the reference uses small icons and
+    // a bright active mark rather than large white pills. Keep the labels for
+    // accessibility and Arabic translations, but make the bar visually quiet
+    // so the focused game remains the centre of the screen.
     const char* labels[3] = {tr(Str::TabGamePass), tr(Str::YourGames), tr(Str::TabConsoles)};
-    constexpr int kPx = 22, kPad = 26, kGap = 12, kH = 44, kY = 50;
+    constexpr int kPx = 18, kPad = 18, kGap = 8, kH = 36, kY = 54;
     int widths[3], total = 0;
     for (int i = 0; i < 3; ++i) {
         widths[i] = fonts_.semibold.measure(labels[i], kPx) + 2 * kPad;
@@ -399,16 +402,21 @@ void AppUi::drawTabs(Canvas& c) {
     }
     int x = (kW - total) / 2;
     auto shoulder = [&](const char* name, int cx) {
-        Rect r{cx - 22, kY + 8, 44, 28};
-        c.fillRect(r, rgba(255, 255, 255, 40), 8);
-        fonts_.bold.draw(c, name, cx - fonts_.bold.measure(name, 16) / 2, fonts_.bold.centeredY(r.y, r.h, 16), 16, kGray);
+        Rect r{cx - 18, kY + 5, 36, 26};
+        c.fillRect(r, rgba(255, 255, 255, 26), 7);
+        fonts_.bold.draw(c, name, cx - fonts_.bold.measure(name, 14) / 2,
+                         fonts_.bold.centeredY(r.y, r.h, 14), 14, kGray);
     };
     shoulder(g_keyboardHints ? "Q" : buttonName(g_glyphStyle, PadButton::L1), x - 40);
     for (int i = 0; i < 3; ++i) {
         bool on = static_cast<int>(tab_) == i;
         Rect r{x, kY, widths[i], kH};
-        if (on) c.fillRect(r, kWhite, kH / 2);
-        fonts_.semibold.draw(c, labels[i], x + kPad, fonts_.semibold.centeredY(kY, kH, kPx), kPx, on ? kBg : kGray);
+        if (on) {
+            c.fillRect({r.x + 8, r.y + r.h - 3, r.w - 16, 3}, rgba(80, 220, 170, 255), 2);
+            c.fillRect({r.x, r.y, r.w, r.h}, rgba(255, 255, 255, 18), 8);
+        }
+        fonts_.semibold.draw(c, labels[i], x + kPad,
+                             fonts_.semibold.centeredY(kY, kH, kPx), kPx, on ? kWhite : kGray);
         x += widths[i] + kGap;
     }
     shoulder(g_keyboardHints ? "E" : buttonName(g_glyphStyle, PadButton::R1), x - kGap + 40);
@@ -584,7 +592,12 @@ void AppUi::drawCard(Canvas& c, const GameTile& t, int x, int y, bool focused, b
             }
         }
     }
-    if (focused) c.strokeRect({x - 7, y - 7, kCard + 14, kCard + 14}, kWhite, 4, 16);
+    if (focused) {
+        // Xbox-style green focus treatment: one soft outer ring plus a crisp
+        // inner edge, without a costly animation or extra image pass.
+        c.strokeRect({x - 7, y - 7, kCard + 14, kCard + 14}, rgba(80, 220, 170, 110), 8, 16);
+        c.strokeRect({x - 3, y - 3, kCard + 6, kCard + 6}, rgba(130, 255, 205, 255), 3, 12);
+    }
 }
 
 void AppUi::drawGrid(Canvas& c, const std::vector<GameTile>& tiles, int x0, int y0, int cols, float scroll, int focus,
