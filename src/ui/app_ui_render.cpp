@@ -1103,6 +1103,23 @@ void AppUi::drawHome(Canvas& c, uint64_t nowMs) {
             for (size_t i = 0; i < desc.size(); ++i)
                 fonts_.regular.draw(c, desc[i], kMargin, 318 + static_cast<int>(i) * 32, 22, grayColor);
 
+            // The reference dashboard puts the primary action in the hero,
+            // not only in the bottom button hints. Keep it a visual affordance
+            // for the same Cross/select action already handled by the input UI.
+            const Rect play{kMargin, 410, 250, 62};
+            c.fillRect(play, ps5::kAccent, 18);
+            fonts_.bold.draw(c, tr(Str::Play), play.x + 62,
+                             fonts_.bold.centeredY(play.y, play.h, 26), 26, kWhite);
+            c.fillCircle(play.x + 32, play.y + play.h / 2.0f, 11.0f, kWhite);
+            c.line(play.x + 29, play.y + play.h / 2.0f - 6,
+                   play.x + 29, play.y + play.h / 2.0f + 6, 2.0f, ps5::kAccent);
+            c.line(play.x + 29, play.y + play.h / 2.0f - 6,
+                   play.x + 37, play.y + play.h / 2.0f, 2.0f, ps5::kAccent);
+            c.line(play.x + 37, play.y + play.h / 2.0f,
+                   play.x + 29, play.y + play.h / 2.0f + 6, 2.0f, ps5::kAccent);
+            c.fillCircle(play.x + play.w + 42, play.y + play.h / 2.0f, 31.0f, rgba(255, 255, 255, 30));
+            fonts_.bold.draw(c, "...", play.x + play.w + 24, play.y + 13, 25, kWhite);
+
             // A larger featured tile gives the home screen the same visual
             // hierarchy as the supplied dashboard reference. It is only a
             // second view of the already cached cover, not a new download.

@@ -50,7 +50,9 @@ struct MouseState {
 static_assert(sizeof(MouseState) == 40);
 
 constexpr int kSlots = 2;
-constexpr uint64_t kRescanMs = 3000;
+// USB devices may be connected while the app is entering a game. A short
+// retry window makes them available quickly without polling every frame.
+constexpr uint64_t kRescanMs = 500;
 constexpr uint16_t kSysmoduleKeyboard = 0x0106;
 constexpr uint16_t kSysmoduleMouse = 0x00A9; // SCE_SYSMODULE_MOUSE on PS4
 
@@ -119,6 +121,7 @@ KbmInput kbmPoll() {
             g_keyboards[i] = -1;
             g_slotHeld[i].clear();
             g_slotConnected[i] = false;
+            g_nextScanMs = 0;
             continue;
         }
         if (n > 0) {
@@ -170,6 +173,8 @@ KbmInput kbmPoll() {
         if (n < 0) {
             sceMouseClose(g_mice[i]);
             g_mice[i] = -1;
+            g_buttons = 0;
+            g_nextScanMs = 0;
             continue;
         }
         for (int j = 0; j < std::min(n, 32); ++j) {
