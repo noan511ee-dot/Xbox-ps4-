@@ -52,6 +52,20 @@ const ArabicForm* arabicForm(uint32_t cp) {
     return nullptr;
 }
 bool isArabicMark(uint32_t cp) { return cp >= 0x064B && cp <= 0x065F; }
+size_t previousArabicBase(const std::vector<uint32_t>& cps, size_t i, size_t begin) {
+    while (i > begin) {
+        --i;
+        if (!isArabicMark(cps[i])) return i;
+    }
+    return begin;
+}
+size_t nextArabicBase(const std::vector<uint32_t>& cps, size_t i, size_t end) {
+    while (i + 1 < end) {
+        ++i;
+        if (!isArabicMark(cps[i])) return i;
+    }
+    return end;
+}
 void appendUtf8(std::string& out, uint32_t cp) {
     if (cp < 0x80) out.push_back(static_cast<char>(cp));
     else if (cp < 0x800) { out.push_back(static_cast<char>(0xC0 | (cp >> 6))); out.push_back(static_cast<char>(0x80 | (cp & 63))); }
@@ -71,8 +85,10 @@ std::string shapeArabic(std::string_view text) {
         for (size_t j = i; j < end; ++j) {
             const ArabicForm* f = arabicForm(cps[j]);
             if (!f) { run.push_back(cps[j]); continue; }
-            const ArabicForm* prev = j > i ? arabicForm(cps[j - 1]) : nullptr;
-            const ArabicForm* next = j + 1 < end ? arabicForm(cps[j + 1]) : nullptr;
+            const size_t prevIndex = previousArabicBase(cps, j, i);
+            const size_t nextIndex = nextArabicBase(cps, j, end);
+            const ArabicForm* prev = prevIndex < j ? arabicForm(cps[prevIndex]) : nullptr;
+            const ArabicForm* next = nextIndex > j && nextIndex < end ? arabicForm(cps[nextIndex]) : nullptr;
             bool joinPrev = prev && prev->right && f->left;
             bool joinNext = next && f->right && next->left;
             run.push_back(joinPrev && joinNext && f->medial ? f->medial : joinPrev && f->final ? f->final : joinNext && f->initial ? f->initial : f->isolated);

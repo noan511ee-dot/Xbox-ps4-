@@ -98,17 +98,10 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
     g_gameClosedOnServer = false;
     app::StreamPlayer player(gssv);
     if (g_autoplay.dump) player.dumpVideo(platform::dataDir() + "/stream.aus", g_autoplay.seconds + 15);
-    // One thread is ideal for the low-latency path when hardware decoding is
-    // available. On PS4, however, a software fallback otherwise leaves one
-    // Jaguar core doing all H.264 work and causes frame pacing drops at 1080p.
-    // Two frame threads are a conservative fallback: enough parallelism for
-    // the decoder without competing with the network, audio, and display
-    // workers. An explicit autoplay value still wins.
-    int decodeThreads = g_autoplay.decodeThreads;
-#if defined(XC_TARGET_PS4)
-    if (decodeThreads < 2) decodeThreads = 2;
-#endif
-    player.setDecodeThreads(decodeThreads);
+    // Keep the v1.6.9 low-latency default. An explicit test/autoplay setting
+    // may still select frame threading; forcing extra threads on every PS4
+    // can increase jitter when the stream falls back from hardware decode.
+    player.setDecodeThreads(g_autoplay.decodeThreads);
     player.setSimulatedLoss(g_autoplay.videoLoss);
     player.setHwDecodeProbe(g_autoplay.hwDecode);
     {

@@ -333,12 +333,12 @@ struct StreamPlayer::Impl {
     // for good (it sat at ~100 ms).
     struct AudioLatency {
         uint64_t nextMs = 0, calmSinceMs = 0;
-        int targetMs = 40;
+        int targetMs = 64;
         bool warm = false;  // past the first 3 s, while the queue fills
         size_t lows[5] = {SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX};  // each second's lowest
         size_t lowNext = 0;
         void reset() {
-            nextMs = 0, targetMs = 40, warm = false, lowNext = 0;
+            nextMs = 0, targetMs = 64, warm = false, lowNext = 0;
             for (size_t& l : lows) l = SIZE_MAX;
             media::audioQueue().setRefill(0);
         }
@@ -363,7 +363,7 @@ struct StreamPlayer::Impl {
                 calmSinceMs = now;
                 return;
             }
-            if (now - calmSinceMs >= 60000 && targetMs > 40) {
+            if (now - calmSinceMs >= 60000 && targetMs > 64) {
                 targetMs -= 5, calmSinceMs = now;
                 XC_LOGI("audio: steady for a minute, target %d ms", targetMs);
             }
