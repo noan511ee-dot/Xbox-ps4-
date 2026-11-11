@@ -1,16 +1,56 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
+// PS5-style Home UI skin — modified
 #include "ui/app_ui_internal.h"
 #include "ui/cloud_time.h"
 
 #include <algorithm>
+#include <cmath>
+#include <ctime>
+#include <string>
+#include <vector>
 
 namespace xc::ui {
 
+// PS5 THEME CONSTANTS
+namespace ps5 {
+static const Color kAccent = rgba(0, 112, 209);
+static const Color kAccentHi = rgba(66, 165, 255);
+static const Color kText = rgba(255, 255, 255);
+static const Color kTextDim = rgba(190, 196, 205);
+static const Color kCardBg = rgba(14, 16, 22, 220);
+static const Color kCardLine = rgba(255, 255, 255, 28);
+static const Color kPillBg = rgba(255, 255, 255, 36);
+static const Color kPlayBg = rgba(255, 255, 255, 255);
+static const Color kPlayFg = rgba(10, 12, 18, 255);
+static const Color kTrophy = rgba(255, 196, 64);
+
+constexpr int kTopBarY = 22;
+constexpr int kTabPx = 22;
+constexpr int kRowY = 68;
+constexpr int kTileSmall = 72;
+constexpr int kTileBig = 104;
+constexpr int kTileGap = 14;
+constexpr int kTileRadius = 10;
+constexpr int kHeroPx = 54;
+constexpr int kTagPx = 20;
+constexpr int kCardW = 300;
+constexpr int kCardCoverH = 170;
+constexpr float kAnimSpeed = 0.22f;
+}
+
+static inline float lerpF(float a, float b, float t) {
+    return a + (b - a) * t;
+}
+
+static inline int lerpI(int a, int b, float t) {
+    return static_cast<int>(std::lround(a + (b - a) * t));
+}
+
 void AppUi::drawPads(Canvas& c) {
-    // Bottom left, on the line of the button hints (which are right-aligned).
-    drawPadRow(c, fonts_.bold, kMargin, kH - 26 - padIconHeight(48), 48, 16, pads_, kBg,
-               fonts_.hasIcons ? &fonts_.icons : nullptr);
+    drawPadRow(c, fonts_.bold, kMargin,
+        kH - 26 - padIconHeight(48), 48, 16, pads_, kBg,
+        fonts_.hasIcons ? &fonts_.icons : nullptr);
 }
 
 bool AppUi::needsRedraw(uint64_t nowMs) const {
@@ -18,65 +58,90 @@ bool AppUi::needsRedraw(uint64_t nowMs) const {
     if (screen_ == Screen::Streaming) return false;
     if (dirty_ || animating_) return true;
     if (mouseCursorVisible_ && nowMs >= mouseCursorVisibleUntil_) return true;
-    // A desktop's toast came or went (the PS5 sends system notifications).
-    if (platform::toastsEnabled() && platform::toasts().version(nowMs) != toastsDrawn_) return true;
-    // Spinners keep moving (about 30 fps is enough).
-    bool spinner = screen_ == Screen::Splash || screen_ == Screen::SignIn || screen_ == Screen::Launching ||
-                   screen_ == Screen::Updating ||
-                   (screen_ == Screen::Settings && ((tester_ == Tester::SignInCheck && signInCheck_.running) ||
-                                                    (tester_ == Tester::NetworkTest && networkTest_.running)));
+    if (platform::toastsEnabled() &&
+        platform::toasts().version(nowMs) != toastsDrawn_) return true;
+
+    if (screen_ == Screen::Home &&
+        nowMs / 60000 != lastRender_ / 60000) return true;
+
+    bool spinner = screen_ == Screen::Splash ||
+        screen_ == Screen::SignIn ||
+        screen_ == Screen::Launching ||
+        screen_ == Screen::Updating ||
+        (screen_ == Screen::Settings &&
+        ((tester_ == Tester::SignInCheck && signInCheck_.running) ||
+         (tester_ == Tester::NetworkTest && networkTest_.running)));
+
     return spinner && nowMs - lastRender_ >= 33;
 }
 
-void AppUi::drawCentered(Canvas& c, const Font& f, const std::string& text, int y, int px, Color color) {
-    f.draw(c, text, (kW - f.measure(text, px)) / 2, y, px, color);
+void AppUi::drawCentered(Canvas& c, const Font& f,
+    const std::string& text, int y, int px, Color color) {
+    f.draw(c, text, (kW - f.measure(text, px)) / 2,
+        y, px, color);
 }
 
 void AppUi::drawBackground(Canvas& c) {
     c.gradientV({0, 0, kW, kH}, rgba(24, 28, 24), kBg);
 }
 
-void AppUi::drawLogo(Canvas& c, float cx, float cy, float r) { drawBrandMark(c, cx, cy, r); }
-
-void AppUi::drawGamerscoreBadge(Canvas& c, float cx, float cy, float r) {
-    // A filled disc with a "G" cut out of it, drawn from shapes (a letter of
-    // the font never sits in the middle of a circle): a ring open at the
-    // upper right, and its bar from the centre to the ring.
-    c.fillCircle(cx, cy, r, kGray);
-    const float ring = r * 0.56f, t = r * 0.24f;
-    const float kGap = 0.95f;  // radians left open, above 3 o'clock
-    c.strokeArc(cx, cy, ring, t, 0.0f, 6.2832f - kGap, kBg);
-    c.line(cx + r * 0.05f, cy, cx + ring + t * 0.5f, cy, t, kBg);
+void AppUi::drawLogo(Canvas& c, float cx, float cy, float r) {
+    drawBrandMark(c, cx, cy, r);
 }
 
-// The account's cloud time (Xbox limits it each month since November 2026),
-// under the brand name: the left side, the account's own (name, score, plan)
-// being on the right. What is left of the month's hours and a bar; orange
-// from 2 h left, red at none. An unlimited account says so; nothing when it
-// is not known.
+void AppUi::drawGamerscoreBadge(Canvas& c, float cx, float cy, float r) {
+    c.fillCircle(cx, cy, r, kGray);
+    const float ring = r * 0.56f;
+    const float t = r * 0.24f;
+    const float kGap = 0.95f;
+    c.strokeArc(cx, cy, ring, t, 0.0f, 6.2832f - kGap, kBg);
+    c.line(cx + r * 0.05f, cy,
+        cx + ring + t * 0.5f, cy, t, kBg);
+}
+
 void AppUi::drawCloudTime(Canvas& c, int x, int y) {
     constexpr int kPx = 15, kLineH = 20;
     const int ty = fonts_.semibold.centeredY(y, kLineH, kPx);
     const float iconY = y + kLineH / 2.0f;
+
     if (playtimeUnlimited_) {
         drawClockIcon(c, x + 7.0f, iconY, 7.0f, kGray);
-        fonts_.semibold.draw(c, tr(Str::CloudTimeUnlimited), x + 20, ty, kPx, kGray);
+        fonts_.semibold.draw(c, tr(Str::CloudTimeUnlimited),
+            x + 20, ty, kPx, kGray);
         return;
     }
+
     if (playtimeRemaining_ < 0) return;
-    const Color col = playtimeRemaining_ <= 0      ? rgba(240, 100, 100)
-                      : playtimeRemaining_ < 7260 ? rgba(255, 160, 40)
-                                                   : kGray;
+
+    const Color col = playtimeRemaining_ <= 0
+        ? rgba(240, 100, 100)
+        : playtimeRemaining_ < 7260
+        ? rgba(255, 160, 40) : kGray;
+
     drawClockIcon(c, x + 7.0f, iconY, 7.0f, col);
-    int end = fonts_.semibold.draw(c, trf(Str::CloudTimeLeft, formatCloudTime(playtimeRemaining_)), x + 20, ty, kPx, col);
+
+    int end = fonts_.semibold.draw(c,
+        trf(Str::CloudTimeLeft, formatCloudTime(playtimeRemaining_)),
+        x + 20, ty, kPx, col);
+
     if (playtimeMax_ <= 0) return;
-    end = fonts_.semibold.draw(c, " " + trf(Str::CloudTimeOf, formatCloudTime(playtimeMax_)), end, ty, kPx, kDim);
-    // As wide as the brand name, or the line when that is longer.
-    const int w = std::max(fonts_.semibold.measure(tr(Str::CloudGaming), 22), end - x);
+
+    end = fonts_.semibold.draw(c,
+        " " + trf(Str::CloudTimeOf, formatCloudTime(playtimeMax_)),
+        end, ty, kPx, kDim);
+
+    const int w = std::max(
+        fonts_.semibold.measure(tr(Str::CloudGaming), 22), end - x);
+
     const Rect bar{x, y + kLineH + 2, w, 4};
     c.fillRect(bar, rgba(255, 255, 255, 36), 2);
-    const double f = std::clamp(static_cast<double>(playtimeRemaining_) / static_cast<double>(playtimeMax_), 0.0, 1.0);
-    if (const int fw = static_cast<int>(w * f + 0.5); fw > 0) c.fillRect({x, bar.y, std::max(fw, 4), bar.h}, col, 2);
+
+    const double f = std::clamp(
+        static_cast<double>(playtimeRemaining_) /
+        static_cast<double>(playtimeMax_), 0.0, 1.0);
+
+    if (const int fw = static_cast<int>(w * f + 0.5); fw > 0)
+        c.fillRect({x, bar.y, std::max(fw, 4), bar.h}, col, 2);
 }
 
 void AppUi::drawTopBar(Canvas& c) {
