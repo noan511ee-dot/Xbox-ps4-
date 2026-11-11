@@ -82,7 +82,7 @@ void AppUi::drawCentered(Canvas& c, const Font& f,
 }
 
 void AppUi::drawBackground(Canvas& c) {
-    c.gradientV({0, 0, kW, kH}, rgba(24, 28, 24), kBg);
+    c.gradientV({0, 0, kW, kH}, rgba(8, 18, 38), kBg);
 }
 
 void AppUi::drawLogo(Canvas& c, float cx, float cy, float r) {
@@ -477,7 +477,7 @@ void AppUi::drawTabs(Canvas& c) {
         bool on = static_cast<int>(tab_) == i;
         Rect r{x, kY, widths[i], kH};
         if (on) {
-            c.fillRect({r.x + 8, r.y + r.h - 3, r.w - 16, 3}, rgba(80, 220, 170, 255), 2);
+            c.fillRect({r.x + 8, r.y + r.h - 3, r.w - 16, 3}, ps5::kAccentHi, 2);
             c.fillRect({r.x, r.y, r.w, r.h}, rgba(255, 255, 255, 18), 8);
         }
         fonts_.semibold.draw(c, labels[i], x + kPad,
@@ -658,10 +658,12 @@ void AppUi::drawCard(Canvas& c, const GameTile& t, int x, int y, bool focused, b
         }
     }
     if (focused) {
-        // Xbox-style green focus treatment: one soft outer ring plus a crisp
-        // inner edge, without a costly animation or extra image pass.
-        c.strokeRect({x - 7, y - 7, kCard + 14, kCard + 14}, rgba(80, 220, 170, 110), 8, 16);
-        c.strokeRect({x - 3, y - 3, kCard + 6, kCard + 6}, rgba(130, 255, 205, 255), 3, 12);
+        // PS5-style selection: a quiet shadow, blue outer edge, and a crisp
+        // inner edge. It uses primitives only, so moving through a library
+        // does not allocate another image or add a frame of latency.
+        c.fillRect({x - 10, y - 10, kCard + 20, kCard + 20}, rgba(0, 0, 0, 90), 18);
+        c.strokeRect({x - 7, y - 7, kCard + 14, kCard + 14}, ps5::kAccentHi, 5, 16);
+        c.strokeRect({x - 3, y - 3, kCard + 6, kCard + 6}, ps5::kAccent, 2, 12);
     }
 }
 
