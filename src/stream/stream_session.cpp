@@ -450,6 +450,10 @@ struct StreamSession::Impl {
             XC_LOGI("webrtc: local ICE candidate: %s %s", named(c.type()).c_str(),
                     c.transportType() == rtc::Candidate::TransportType::Udp ? "udp" : "tcp");
             std::lock_guard<std::mutex> lock(mutex);
+            // A normal session produces only a handful. Keep a hard ceiling
+            // for broken ICE implementations that emit candidates forever.
+            constexpr size_t kMaxLocalCandidates = 256;
+            if (localCandidates.size() >= kMaxLocalCandidates) localCandidates.erase(localCandidates.begin());
             localCandidates.push_back(std::move(c));
         });
         pc->onGatheringStateChange([this](rtc::PeerConnection::GatheringState s) {

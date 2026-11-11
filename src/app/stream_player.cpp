@@ -256,6 +256,22 @@ struct StreamPlayer::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             if (endReason.empty()) endReason = reason;
+            // Release compressed frames immediately. Waiting for Impl's
+            // destructor here made a failed/restarted stream retain its last
+            // burst of 48 video access units longer than necessary.
+            frames.clear();
+            textRequests.clear();
+            textWithdrawn.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            audioPackets_.clear();
+        }
+        {
+            std::lock_guard<std::mutex> lock(inputMutex);
+            pendingKeys.clear();
+            pendingMouse.clear();
+            pendingPadDirty.fill(false);
         }
         running = false;
         cv.notify_all();
@@ -992,11 +1008,15 @@ struct StreamPlayer::Impl {
         if (platform::systemKeyboardAvailable()) {
             cb.textInput = [this](const stream::TextInputRequest& req) {
                 std::lock_guard<std::mutex> lock(mutex);
+                constexpr size_t kMaxPendingTextRequests = 32;
+                if (textRequests.size() >= kMaxPendingTextRequests) textRequests.pop_front();
                 textRequests.push_back(req);
             };
             cb.textInputCancelled = [this](const std::string& id) {
                 std::lock_guard<std::mutex> lock(mutex);
+                constexpr size_t kMaxWithdrawnTextRequests = 256;
                 textWithdrawn.insert(id);
+                while (textWithdrawn.size() > kMaxWithdrawnTextRequests) textWithdrawn.erase(textWithdrawn.begin());
             };
         }
 
