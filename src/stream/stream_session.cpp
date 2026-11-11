@@ -423,7 +423,13 @@ struct StreamSession::Impl {
         ch->onOpen([label] { XC_LOGI("data channel %s open", label); });
         ch->onClosed([this, label] {
             XC_LOGI("data channel %s closed", label);
-            if (open) fail(std::string("data channel ") + label + " closed");
+            // The input channel can briefly close during a mobile-network
+            // renegotiation while the video peer is still healthy. Treating
+            // that as a fatal stream error made USB mouse/keyboard sessions
+            // drop unnecessarily; the normal peer-state callback will still
+            // recover a genuinely lost connection.
+            if (open && std::string(label) != "input")
+                fail(std::string("data channel ") + label + " closed");
         });
         return ch;
     }
