@@ -454,10 +454,9 @@ void AppUi::drawSignIn(Canvas& c, uint64_t nowMs) {
 }
 
 void AppUi::drawTabs(Canvas& c) {
-    // Compact Xbox-dashboard navigation: the reference uses small icons and
-    // a bright active mark rather than large white pills. Keep the labels for
-    // accessibility and Arabic translations, but make the bar visually quiet
-    // so the focused game remains the centre of the screen.
+    // Home chrome inspired by the supplied console dashboard reference:
+    // Games/Media sit on the left, while the real PBOX tabs remain available
+    // beside them so navigation and accessibility are not lost.
     const char* labels[3] = {tr(Str::TabGamePass), tr(Str::YourGames), tr(Str::TabConsoles)};
     constexpr int kPx = 18, kPad = 18, kGap = 8, kH = 36, kY = 54;
     int widths[3], total = 0;
@@ -465,7 +464,13 @@ void AppUi::drawTabs(Canvas& c) {
         widths[i] = fonts_.semibold.measure(labels[i], kPx) + 2 * kPad;
         total += widths[i] + (i ? kGap : 0);
     }
-    int x = (kW - total) / 2;
+    const int gamesW = fonts_.bold.measure("Games", 30);
+    const int mediaW = fonts_.regular.measure("Media", 30);
+    fonts_.bold.draw(c, "Games", kMargin, 42, 30, kWhite);
+    fonts_.regular.draw(c, "Media", kMargin + gamesW + 54, 42, 30, kGray);
+    c.fillRect({kMargin, 82, gamesW + 12, 3}, ps5::kAccentHi, 2);
+
+    int x = kMargin + gamesW + mediaW + 110;
     auto shoulder = [&](const char* name, int cx) {
         Rect r{cx - 18, kY + 5, 36, 26};
         c.fillRect(r, rgba(255, 255, 255, 26), 7);
@@ -1097,6 +1102,27 @@ void AppUi::drawHome(Canvas& c, uint64_t nowMs) {
             auto desc = fonts_.regular.wrap(focus->description, 22, 860, 2);
             for (size_t i = 0; i < desc.size(); ++i)
                 fonts_.regular.draw(c, desc[i], kMargin, 318 + static_cast<int>(i) * 32, 22, grayColor);
+
+            // A larger featured tile gives the home screen the same visual
+            // hierarchy as the supplied dashboard reference. It is only a
+            // second view of the already cached cover, not a new download.
+            constexpr int kFeatureW = 360, kFeatureH = 430;
+            const Rect feature{kW - kMargin - kFeatureW, 168, kFeatureW, kFeatureH};
+            c.fillRect({feature.x + 8, feature.y + 10, feature.w, feature.h}, rgba(0, 0, 0, 110), 18);
+            c.fillRect(feature, rgba(10, 16, 28, 218), 18);
+            if (auto cover = images_.get(focus->tileUrl, feature.w - 24, 250)) {
+                c.drawImage(*cover, feature.x + 12, feature.y + 12, 255, 14);
+            } else {
+                c.fillRect({feature.x + 12, feature.y + 12, feature.w - 24, 250}, kPlaceholder, 14);
+            }
+            c.fillRect({feature.x + 12, feature.y + 218, feature.w - 24, 44}, rgba(0, 0, 0, 105), 0);
+            auto featureName = fonts_.semibold.fit(focus->name, 24, feature.w - 48);
+            fonts_.semibold.draw(c, featureName, feature.x + 24, feature.y + 286, 24, kWhite);
+            const char* featureTag = focus->playable ? "Full Game" : "Preview";
+            const int tagW = fonts_.regular.measure(featureTag, 16) + 24;
+            c.strokeRect({feature.x + 24, feature.y + 326, tagW, 30}, ps5::kAccentHi, 2, 6);
+            fonts_.regular.draw(c, featureTag, feature.x + 36,
+                                fonts_.regular.centeredY(feature.y + 326, 30, 16), 16, kWhite);
         }
     }
 
