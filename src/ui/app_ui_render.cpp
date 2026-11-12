@@ -1073,7 +1073,16 @@ void AppUi::drawHome(Canvas& c, uint64_t nowMs) {
             syncHeroToRowsLocked(focus->productId, focus->titleId, hero);
         }
     }
-    drawHero(c, nowMs, hero, false);
+    // Keep the featured artwork visible even when the catalog has no Hero URL
+    // or its wide image is still downloading. The tile is already requested
+    // for the featured card, so it is a safe, lightweight fallback instead of
+    // leaving a plain background behind the selected game.
+    std::string backgroundUrl = hero;
+    if (focus && !focus->tileUrl.empty()) {
+        auto heroImage = hero.empty() ? nullptr : images_.get(hero, kW, kH);
+        if (!heroImage) backgroundUrl = focus->tileUrl;
+    }
+    drawHero(c, nowMs, backgroundUrl, false);
 
     if (rows_.empty()) {
         drawCentered(c, fonts_.semibold, tr(Str::NoGames), 500, 32, kGray);
