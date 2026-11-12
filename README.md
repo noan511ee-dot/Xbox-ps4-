@@ -3,103 +3,125 @@
 </p>
 
 <h1 align="center">PBOX</h1>
-<p align="center"><strong>Cloud gaming client for PlayStation 4</strong></p>
-<p align="center">A clean, community-built interface for streaming Xbox Cloud Gaming on a homebrew-enabled PS4.</p>
+<p align="center"><strong>Independent PS4 Cloud Gaming Client</strong></p>
+<p align="center">A lightweight native dashboard and streaming client for homebrew-enabled PlayStation 4 systems.</p>
 
 <p align="center">
-  <a href="https://github.com/noan511ee-dot/Xbox/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/noan511ee-dot/Xbox?label=latest%20release&color=20c997"></a>
-  <a href="https://github.com/noan511ee-dot/Xbox/actions/workflows/build-ps4-pkg.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/noan511ee-dot/Xbox/build-ps4-pkg.yml?label=PS4%20build&color=20c997"></a>
+  <a href="https://github.com/noan511ee-dot/Xbox-ps4-/releases/latest"><img alt="latest release" src="https://img.shields.io/github/v/release/noan511ee-dot/Xbox-ps4-?label=latest%20release&color=20c997"></a>
+  <a href="https://github.com/noan511ee-dot/Xbox-ps4-/actions/workflows/build-ps4-pkg.yml"><img alt="build" src="https://img.shields.io/github/actions/workflow/status/noan511ee-dot/Xbox-ps4-/build-ps4-pkg.yml?label=PS4%20build&color=20c997"></a>
   <img alt="platform" src="https://img.shields.io/badge/platform-PS4-003791">
   <img alt="stream" src="https://img.shields.io/badge/stream-H.264%20%7C%2060fps-1464a0">
   <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
 </p>
 
-## ما هو PBOX؟
+## Overview
 
-PBOX هو عميل ألعاب سحابية مخصص لجهاز PlayStation 4 معدل. يعرض مكتبة الألعاب، يطلب جلسة البث، ويرسل تحكم DualShock 4 أو لوحة المفاتيح والماوس إلى الجلسة السحابية. المشروع **ليس محاكيًا** ولا ينسخ ألعاب Xbox أو PlayStation، ولا يوزّع محتوى الألعاب.
+PBOX is an independent PS4 cloud gaming client focused on a responsive native interface, reliable streaming, and practical controller support. It presents an Xbox-inspired Games dashboard with featured artwork, game details, a Play action, library browsing, console navigation, settings, and streaming diagnostics.
 
-يتطلب استخدام PBOX حساب Microsoft وخطة Game Pass تتضمن اللعب السحابي، كما يتطلب جهاز PS4 متوافقًا مع بيئة homebrew وGoldHEN. توفر الخدمة وجودة الاتصال يعتمدان على البلد وشبكة الإنترنت ومسار الخادم.
+PBOX is not an emulator. It does not emulate Xbox or PlayStation hardware, copy games, bypass cloud-service authentication, or distribute copyrighted game content. The client requests a streaming session from a supported cloud service and forwards the resulting video, audio, and input data to the PS4.
 
-## أبرز المميزات
+The project is designed for a homebrew-enabled PS4 environment. A compatible PS4 firmware, a compatible homebrew environment such as GoldHEN, a supported cloud account, and a suitable streaming subscription may be required. Service availability, server region, account permissions, and network quality are outside the control of this repository.
 
-- واجهة PBOX جديدة داكنة مع هوية بصرية مستقلة وبطاقات إعدادات واضحة.
-- بث H.264 مع عرض غير متزامن على PS4 لتقليل انتظار الصورة.
-- ضبط تلقائي للتعامل مع RTT وفقدان الحزم واهتزاز الشبكة.
-- NACK وJitter Buffer وRTCP لاستعادة الحزم قدر الإمكان عند تذبذب الشبكة.
-- إعادة اتصال تلقائية بعد الانقطاعات القصيرة.
-- إعدادات للدقة والـ bitrate وفك ترميز الفيديو والصوت.
-- دعم USB DualShock 4؛ إدخال الماوس والكيبورد الكامل على PS4 يحتاج طبقة HID أصلية إضافية، لذلك لا نعد بدعم كامل لهما بعد.
-- شاشة إحصائيات تعرض FPS والـ bitrate والكمون وفقدان الحزم والإطارات المسقطة.
-- WebUI للتحكم عن بعد وتعديل إعدادات البث وإعادة تعيين أزرار التحكم.
-- حركة افتتاحية أصلية خفيفة لـPBOX تعتمد على نبض الشعار والخطوط المضيئة ولا تحتاج ملف فيديو خارجي.
-- حفظ الإعدادات وبيانات تسجيل الدخول خارج ملفات التطبيق حتى لا تضيع عادةً عند التحديث.
-- خيار Best يختار أعلى tier متاح، مع رفع الصورة إلى شاشة 4K عبر GPU عند دعمها؛ هذا لا يعني أن خادم xCloud سيرسل بثًا أصليًا بدقة 4K.
+## Main Features
 
-## الإصدار الجاري: PBOX v1.6.6
+### Native Games Dashboard
 
-يتضمن `v1.6.6` حماية إضافية لـ callbacks الصوت والصورة والاهتزاز وإغلاق الجلسة، وتأخير إعادة الاتصال أثناء تجهيز اللعبة، وتفريغ الإطارات القديمة بعد انقطاع الاتصال. كما يستخدم صورة PBOX الجديدة كأيقونة وصورة داخلية. ويحتفظ بتقليل طابور الفيديو إلى 48 إطارًا وتحسين واجهة WebUI العمودية.
+- Xbox-inspired Games / Media navigation chrome.
+- Featured game artwork and a large focused-game card.
+- Play action, game details, publisher and category information.
+- Library rows and game entries populated from the connected catalog.
+- Console navigation and settings screens using the same native renderer.
+- Lightweight drawing with no HTML, JavaScript, browser runtime, or expensive blur pipeline.
+- PBOX branding, custom artwork, intro animation, and PS4 package assets.
 
-لا أستطيع ضمان عدم حدوث أي خروج بنسبة 100% قبل اختبار PKG على جهاز PS4 فعلي، لكن مسارات الانهيار المعروفة عند بدء اللعبة وأثناء أول الحزم محمية الآن.
+### Streaming and Network Handling
 
-يتضمن الإصدار `v1.6.8` إصلاحًا مهمًا لمسار دخول اللعبة: استثناءات WebRTC أو أول دفعة فيديو/صوت لا تنهي التطبيق الآن، بل تتحول إلى خطأ قابل للتشخيص أو استعادة عبر keyframe وإعادة الاتصال.
+- H.264 cloud video streaming with PS4 display output.
+- Hardware-preferred video decoding when the platform exposes a usable decoder.
+- Software decoding fallback when hardware decoding is unavailable.
+- Asynchronous presentation and frame pacing improvements.
+- Bounded video and audio queues to prevent old network bursts from creating permanent latency.
+- RTP loss tracking, NACK recovery, RTCP reporting, jitter handling, and keyframe requests.
+- Automatic reconnect behavior for short-lived connection failures.
+- Adaptive resolution behavior that can request a lower stream tier when sustained degradation is detected.
+- Bitrate limits and automatic bitrate behavior for different network conditions.
+- Runtime statistics including FPS, bitrate, RTT, packet loss, decode time, resolution, and dropped frames.
 
-كما أن تحسينات الأداء الموجودة فعليًا تشمل REMB وNACK وRTCP وطابور الإطارات والعرض غير المتزامن وإعادة الاتصال ومراقبة FPS/RTT/Bitrate/Loss. لم نضف Smart FPS أو Quick Boost كأزرار مستقلة لأن المشروع لا يملك API آمنًا لتغيير معدل إطارات الخادم أو تطبيق إعداد شامل لحظيًا.
+### Input and Responsiveness
 
-يتضمن الإصدار الأخير:
+- DualShock 4 / supported controller input.
+- Native PS4 keyboard and mouse detection and recovery after disconnects.
+- Keyboard and mouse mappings with per-game settings support.
+- Coalesced mouse motion so an old input backlog does not build up during network bursts.
+- Newest mouse-button state is preserved for responsive aiming and interaction.
+- Controller input is sent through the existing stream protocol without changing the service protocol.
+- Western confirmation is the default: Cross/X confirms and Circle/O is the alternate button. The setting can be changed explicitly instead of being changed automatically.
 
-- إعادة تصميم شاشة الإعدادات بأسلوب Control Centre مع أقسام وفواصل وألوان PBOX.
-- إبراز إعدادات الأداء والإدخال للوصول إليها باليد أو بالماوس والكيبورد.
-- تقليل تراكم الإطارات القديمة من 72 إلى 48 إطارًا لتقليل التأخير بعد تذبذب 4G أو 5G.
-- خفض حد إعادة مزامنة الفيديو على PS4 من 250ms إلى 220ms.
-- الحفاظ على العرض غير المتزامن وNACK وRTCP وإعادة الاتصال والتشخيص.
+### Arabic and Localization
 
-## التحميل والتثبيت على PS4
+- English and Arabic UI catalogs.
+- Arabic font resources and dependency-free Arabic glyph shaping for the native renderer.
+- Arabic settings, navigation, stream status, resolution, input, and connection labels.
+- Localization is designed to avoid reversing Arabic glyph order or silently changing controller mappings.
+- More text can be translated through the existing `src/ui/i18n` catalogs.
 
-1. افتح صفحة Release الخاصة بـPBOX بعد نجاح بناء `v1.6.1`.
-2. حمّل ملف `PBOX-PS4-v1.6.1.pkg` وملف `PBOX-PS4-v1.6.1.pkg.sha256`.
-3. انسخ ملف PKG إلى جذر USB مهيأ بنظام exFAT أو FAT32.
-4. أدخل USB في PS4.
-5. من GoldHEN افتح Package Installer وثبّت الحزمة فوق النسخة السابقة.
-6. لا تحذف بيانات التطبيق قبل التحديث؛ تثبيت الحزمة فوق النسخة السابقة يحافظ على البيانات والإعدادات عادةً.
+### Stability and Resource Management
 
-[صفحة جميع إصدارات PBOX](https://github.com/noan511ee-dot/Xbox/releases)
+- Exception guards around critical media callbacks and worker loops.
+- Cleanup of video, audio, input, presentation, and text-request queues when a stream ends.
+- Bounded pending keyboard and mouse input queues.
+- Audio queue trimming that favors the live edge when old packets accumulate.
+- Reconnect and keyframe recovery rather than exiting the whole application after a recoverable stream error.
+- Watchdog logging for a stream loop that stops making progress.
+- Explicit separation between UI, media, input, and network responsibilities.
 
-> تنبيه: `v1.6.1` أقل من `v1.6.9` السابق، لذلك قد يرفض PS4 تثبيته فوق النسخة الأحدث باعتباره Downgrade. عند ظهور هذا الرفض سنستخدم رقمًا أعلى مثل `v1.6.10` بدلًا منه.
+## Quality and 4K Clarification
 
-## شبكة 4G و5G
+PBOX can request the highest stream tier made available by the cloud service and account. The current project supports 720p, 1080p, and an experimental Best / 1440p path where the server and account allow it.
 
-لا يحتاج PBOX إلى وضع خاص باسم 4G أو 5G. اتصل بالـPS4 من نقطة اتصال الهاتف أو من الراوتر، وسيحاول التطبيق التكيف مع سرعة الاتصال. للحصول على أفضل نتيجة:
+A local upscaler can improve the appearance of a lower-resolution stream on a 4K display. This is not the same as receiving a native 4K cloud stream. PBOX does not claim to unlock a true 4K stream when the cloud provider does not send one.
 
-- استخدم 5G عندما تكون الإشارة مستقرة، وإلا فـ4G ثابتة أفضل من 5G متذبذبة.
-- قرّب الهاتف من مكان اللعب وأوقف التنزيلات والنسخ الاحتياطي أثناء اللعب.
-- ابدأ بدقة 720p أو bitrate تلقائي إذا كان الاتصال غير مستقر.
-- راقب FPS والـ RTT وفقدان الحزم من شاشة الإحصائيات.
+Actual FPS, latency, packet loss, resolution, and image quality depend on the cloud server, account, region, PS4 output mode, Wi-Fi or mobile hotspot quality, signal strength, congestion, and route to the service. No application can guarantee a fixed ping or eliminate every network-related frame drop.
 
-## التوافق
+## 4G and 5G Guidance
 
-هذه حزمة اختبارية لـPS4. لا يوجد ضمان أن نفس PKG سيعمل على كل Firmware من 9.00 إلى 14.00؛ التوافق يعتمد على GoldHEN وإصدار النظام وواجهات OpenOrbis المستخدمة. اختبر الحزمة على جهازك قبل الاعتماد عليها، ولا تحدّث Firmware الجهاز فقط من أجل هذا المشروع.
+PBOX does not require a special 4G or 5G mode. It adapts through the existing stream controls and queue limits. For a more stable session:
 
-يوجد ملف حالة منفصل لمسار PS5 في [`ps5/PBOX-PS5-STATUS.md`](ps5/PBOX-PS5-STATUS.md). لا يمثل هذا الملف PKG PS5 جاهزًا؛ بناء PS5 يحتاج بيئة وأدوات PS5 مستقلة.
+- Use a stable 5G connection when available; stable 4G can be better than unstable 5G.
+- Keep the phone or hotspot close to the PS4 and avoid downloads or backups during play.
+- Start with 720p or automatic bitrate on a changing connection.
+- Monitor RTT, loss, bitrate, FPS, and dropped frames in the stream statistics.
+- Select a region with the lowest measured latency when the account and service permit it.
 
-## سياسة الإصدارات
+## Repository Layout
 
-كل إصدار جديد يجب أن يحتوي على رقم نسخة واضح، وقائمة بالمميزات أو الإصلاحات الفعلية، وملف PKG، وSHA256، ونتيجة GitHub Actions. الإصدارات المستقبلية يجب أن تضيف مميزاتها في [CHANGELOG.md](CHANGELOG.md) وفي ملاحظات Release، لا أن تغيّر الرقم فقط.
+- `src/app/` — application lifecycle, streaming workers, settings, reconnect logic, and stream presentation.
+- `src/stream/` — WebRTC session handling, callbacks, RTP reporting, input channels, and recovery.
+- `src/media/` — video decoding, audio decoding, audio queues, and PS4 media output.
+- `src/input/` — DualShock, USB controller, keyboard, mouse, key mapping, and button mapping.
+- `src/ui/` — native canvas UI, dashboard, library, settings, fonts, localization, image cache, and branding.
+- `assets/` — PBOX logos, fonts, and visual resources.
+- `ps4/` — PS4 package metadata and install assets.
+- `.github/workflows/build-ps4-pkg.yml` — GitHub Actions PS4 PKG build workflow.
+- `ps5/PBOX-PS5-STATUS.md` — separate PS5 development notes; this is not a ready PS5 PKG.
 
-## البناء عبر GitHub Actions
+## Building a PS4 PKG
 
-يوجد Workflow جاهز في `.github/workflows/build-ps4-pkg.yml` ويستخدم OpenOrbis Toolchain:
+The repository provides a GitHub Actions workflow using the OpenOrbis toolchain. From GitHub on a mobile device:
 
-1. افتح تبويب **Actions** في GitHub.
-2. اختر **Build PBOX PS4 PKG**.
-3. اضغط **Run workflow**.
-4. أدخل رقم النسخة مثل `1.6.8`.
-5. بعد النجاح حمّل Artifact، أو أنشئ Tag مثل `v1.6.8` لإصدار Release.
+1. Open the **Actions** tab.
+2. Select **Build PBOX PS4 PKG**.
+3. Choose **Run workflow**.
+4. Enter a version such as `1.7.8`.
+5. Wait for the build to finish.
+6. Download the PKG artifact or attach it to a Release.
+7. Verify the accompanying SHA256 file before installing.
 
-للبناء المحلي، يلزم CMake 3.20 أو أحدث وNinja وClang/LLVM وPython وOpenOrbis Toolchain:
+A local build requires CMake, Ninja, Clang/LLVM, Python, and a compatible OpenOrbis PS4 toolchain:
 
 ```bash
-git clone --recursive https://github.com/noan511ee-dot/Xbox.git
-cd Xbox
+git clone --recursive https://github.com/noan511ee-dot/Xbox-ps4-.git
+cd Xbox-ps4-
 tools/ps4/fetch-toolchain.sh
 cmake -S . -B build-ps4 -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
@@ -108,12 +130,22 @@ ninja -C build-ps4
 tools/ps4/package.sh build-ps4
 ```
 
-## الإبلاغ عن مشكلة
+## Releases
 
-قبل فتح Issue، جرّب تشغيل اختبار الشبكة من إعدادات PBOX، ثم أرسل Firmware الجهاز وإصدار GoldHEN ورقم PBOX ولقطة من الإحصائيات أو السجل. لا ترسل `account.json` أو رموز تسجيل الدخول أو أي بيانات شخصية.
+Every release should include a clear version number, English release notes, a PS4 PKG, a SHA256 checksum, and a successful GitHub Actions build. Release notes should describe only features and fixes that are actually present in the code.
 
-افتح [Issue جديدًا](https://github.com/noan511ee-dot/Xbox/issues/new) أو تابع [GitHub Actions](https://github.com/noan511ee-dot/Xbox/actions).
+The latest published release is available on the [PBOX Releases page](https://github.com/noan511ee-dot/Xbox-ps4-/releases).
 
-## الترخيص والحقوق
+## Compatibility and Safety Notes
 
-المشروع مرخص تحت GPL-3.0-or-later. PBOX مشروع غير رسمي وغير تابع لـMicrosoft أو Sony. Xbox وXbox Cloud Gaming وGame Pass علامات تجارية لمجموعة Microsoft، وPlayStation وPS4 علامات تجارية لشركة Sony Interactive Entertainment.
+This is an experimental PS4 homebrew client. The same PKG is not guaranteed to work on every PS4 firmware or every GoldHEN version. Compatibility depends on the firmware, system modules, OpenOrbis interfaces, network service, and account access. Test on the target PS4 before relying on the application.
+
+Do not publish account tokens, `account.json`, authentication cookies, private logs, or personal information in Issues or commits. Keep backups of application settings before installing experimental updates.
+
+## Project Status
+
+PBOX is under active development. The PS4 build and release workflow are operational, while some capabilities remain dependent on cloud-service behavior or platform support. In particular, true native 4K cloud streaming, guaranteed fixed ping, guaranteed fixed FPS, and a ready-to-install PS5 PKG are not promised by this repository.
+
+## License and Trademark Notice
+
+PBOX is licensed under GPL-3.0-or-later. PBOX is an unofficial independent project and is not affiliated with Microsoft, Xbox, Xbox Cloud Gaming, Sony Interactive Entertainment, or PlayStation. Xbox, Xbox Cloud Gaming, Game Pass, PlayStation, and PS4 are trademarks of their respective owners.
