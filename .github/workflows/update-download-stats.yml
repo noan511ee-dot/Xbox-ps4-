@@ -1,0 +1,64 @@
+name: Update PBOX Download Stats
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+  release:
+    types: [published, edited, deleted]
+
+permissions:
+  contents: write
+
+jobs:
+  update-stats:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate public download data
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100
+            });
+            const rows = releases.map((release) => {
+              const assets = release.assets || [];
+              const pkg = assets
+                .filter((asset) => /\\.pkg$/i.test(asset.name) && !/sha|checksum/i.test(asset.name))
+                .sort((a, b) => b.download_count - a.download_count)[0];
+              const checksum = assets.find((asset) => /sha256|\\.sha256$/i.test(asset.name));
+              if (!pkg) return null;
+              return {
+                tag_name: release.tag_name,
+                name: release.name,
+                published_at: release.published_at || release.created_at,
+                html_url: release.html_url,
+                downloads: pkg.download_count || 0,
+                pkg: { name: pkg.name, browser_download_url: pkg.browser_download_url },
+                checksum: checksum ? { name: checksum.name, browser_download_url: checksum.browser_download_url } : null
+              };
+            }).filter(Boolean);
+            const payload = {
+              generated_at: new Date().toISOString(),
+              total_downloads: rows.reduce((sum, row) => sum + row.downloads, 0),
+              releases: rows
+            };
+            fs.mkdirSync('.github/data', { recursive: true });
+            fs.writeFileSync('.github/data/downloads.json', JSON.stringify(payload, null, 2) + '\n');
+
+      - name: Commit updated stats
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/data/downloads.json
+          git diff --cached --quiet && exit 0
+          git commit -m 'Update PBOX download statistics'
+          git push
