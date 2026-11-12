@@ -61,4 +61,4 @@ jobs:
           git add .github/data/downloads.json
           git diff --cached --quiet && exit 0
           git commit -m 'Update PBOX download statistics'
-          git push
+          git push origin HEAD:main
