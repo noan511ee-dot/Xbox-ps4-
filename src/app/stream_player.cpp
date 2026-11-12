@@ -933,7 +933,11 @@ struct StreamPlayer::Impl {
                 if (!d || n == 0) return;
                 if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
                 std::lock_guard<std::mutex> lock(audioMutex_);
-                if (audioPackets_.size() < 50) {
+                if (audioPackets_.size() >= 50) {
+                    // Keep the live edge when a mobile burst made the audio
+                    // queue too deep; retaining old packets only adds delay.
+                    audioPackets_.pop_front();
+                }
                 auto it = audioPackets_.end();
                 while (it != audioPackets_.begin()) {
                     auto prev = it - 1;
@@ -942,7 +946,6 @@ struct StreamPlayer::Impl {
                     it = prev;
                 }
                 audioPackets_.insert(it, {std::vector<uint8_t>(d, d + n), rtpTimestamp});
-                }
                 audioCv.notify_one();
             } catch (const std::exception& e) {
                 XC_LOGE("audio callback recovered from exception: %s", e.what());
@@ -1410,14 +1413,25 @@ void StreamPlayer::sendKbm(const input::KbmInput& in) {
                 if (impl_->pendingKeys.size() < 128) impl_->pendingKeys.push_back({k.vk, k.pressed});
             }
         }
-        if (in.moved) {
-            stream::MouseFrame m;
-            m.dx = in.dx * 2;  // as the web client: twice the pointer's movement
-            m.dy = in.dy * 2;
-            m.wheelY = in.wheel * 120;  // one notch = WHEEL_DELTA (120), as Windows (and the game) count it
-            m.buttons = in.buttons;
-            if (impl_->pendingMouse.size() < 128) impl_->pendingMouse.push_back(m);
-        }
+            if (in.moved) {
+                stream::MouseFrame m;
+                m.dx = in.dx * 2;  // as the web client: twice the pointer's movement
+                m.dy = in.dy * 2;
+                m.wheelY = in.wheel * 120;  // one notch = WHEEL_DELTA (120), as Windows (and the game) count it
+                m.buttons = in.buttons;
+                // Coalesce motion instead of queueing a stale 128-event
+                // backlog. Relative movement is additive; button state is
+                // always the newest state, which keeps aiming responsive.
+                if (!impl_->pendingMouse.empty()) {
+                    auto& last = impl_->pendingMouse.back();
+                    last.dx += m.dx;
+                    last.dy += m.dy;
+                    last.wheelY += m.wheelY;
+                    last.buttons = m.buttons;
+                } else {
+                    impl_->pendingMouse.push_back(m);
+                }
+            }
     }
     impl_->inputCv.notify_one();
 }
