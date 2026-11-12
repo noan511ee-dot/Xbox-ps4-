@@ -32,9 +32,9 @@ jobs:
             const rows = releases.map((release) => {
               const assets = release.assets || [];
               const pkg = assets
-                .filter((asset) => /\\.pkg$/i.test(asset.name) && !/sha|checksum/i.test(asset.name))
+                .filter((asset) => /\.pkg$/i.test(asset.name) && !/sha|checksum/i.test(asset.name))
                 .sort((a, b) => b.download_count - a.download_count)[0];
-              const checksum = assets.find((asset) => /sha256|\\.sha256$/i.test(asset.name));
+              const checksum = assets.find((asset) => /sha256|\.sha256$/i.test(asset.name));
               if (!pkg) return null;
               return {
                 tag_name: release.tag_name,
