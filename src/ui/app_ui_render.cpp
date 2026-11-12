@@ -457,6 +457,10 @@ void AppUi::drawTabs(Canvas& c) {
     // Home chrome inspired by the supplied console dashboard reference:
     // Games/Media sit on the left, while the real PBOX tabs remain available
     // beside them so navigation and accessibility are not lost.
+    // A translucent chrome band makes the Games/Media dashboard hierarchy
+    // visible over any downloaded hero artwork without adding a new asset or
+    // a costly blur pass.
+    c.fillRect({0, 0, kW, 112}, rgba(4, 7, 16, 132));
     const char* labels[3] = {tr(Str::TabGamePass), tr(Str::YourGames), tr(Str::TabConsoles)};
     constexpr int kPx = 18, kPad = 18, kGap = 8, kH = 36, kY = 54;
     int widths[3], total = 0;
@@ -469,6 +473,11 @@ void AppUi::drawTabs(Canvas& c) {
     fonts_.bold.draw(c, "Games", kMargin, 42, 30, kWhite);
     fonts_.regular.draw(c, "Media", kMargin + gamesW + 54, 42, 30, kGray);
     c.fillRect({kMargin, 82, gamesW + 12, 3}, ps5::kAccentHi, 2);
+
+    // Keep the native PBOX navigation visible as a compact second-level rail.
+    // It maps to the existing tabs, so no visual item is a fake launch target.
+    const int railY = 92;
+    c.fillRect({kMargin + gamesW + 54, railY, mediaW + 12, 2}, rgba(255, 255, 255, 70), 1);
 
     int x = kMargin + gamesW + mediaW + 110;
     auto shoulder = [&](const char* name, int cx) {
