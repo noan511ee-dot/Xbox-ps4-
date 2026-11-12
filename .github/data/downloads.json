@@ -1,52 +1,7 @@
 {
-  "generated_at": "2026-11-12T12:21:24.695Z",
-  "total_downloads": 5,
+  "generated_at": "2026-11-12T12:21:57.854Z",
+  "total_downloads": 0,
   "releases": [
-    {
-      "tag_name": "v1.7.11",
-      "name": "PBOX v1.7.11 — A New Beginning",
-      "published_at": "2026-11-12T12:17:24Z",
-      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.7.11",
-      "downloads": 0,
-      "pkg": {
-        "name": "PBOX-PS4-v1.7.11.pkg",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.11/PBOX-PS4-v1.7.11.pkg"
-      },
-      "checksum": {
-        "name": "PBOX-PS4-v1.7.11.pkg.sha256",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.11/PBOX-PS4-v1.7.11.pkg.sha256"
-      }
-    },
-    {
-      "tag_name": "v1.7.9",
-      "name": "PBOX v1.7.9 — Community PKG Build",
-      "published_at": "2026-11-12T07:22:07Z",
-      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.7.9",
-      "downloads": 3,
-      "pkg": {
-        "name": "PBOX-PS4-v1.7.9.pkg",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.9/PBOX-PS4-v1.7.9.pkg"
-      },
-      "checksum": {
-        "name": "PBOX-PS4-v1.7.9.pkg.sha256",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.9/PBOX-PS4-v1.7.9.pkg.sha256"
-      }
-    },
-    {
-      "tag_name": "v1.7.8",
-      "name": "PBOX v1.7.8 — Games Dashboard & Stability",
-      "published_at": "2026-11-12T06:27:24Z",
-      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.7.8",
-      "downloads": 2,
-      "pkg": {
-        "name": "PBOX-PS4-v1.7.8.pkg",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.8/PBOX-PS4-v1.7.8.pkg"
-      },
-      "checksum": {
-        "name": "PBOX-PS4-v1.7.8.pkg.sha256",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.7.8/PBOX-PS4-v1.7.8.pkg.sha256"
-      }
-    },
     {
       "tag_name": "v1.6.0",
       "name": "PBOX v1.6.0 — A New Beginning",
