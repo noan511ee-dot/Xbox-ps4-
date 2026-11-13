@@ -19,6 +19,7 @@ std::string contentVersionOf(const std::string& version);
 // A release and the files the updater needs from it.
 struct Release {
     std::string tag;     // "v0.9.0"
+    std::string pageUrl; // GitHub release page for builds that install externally
     std::string zipUrl;  // PPSA99810.zip
     std::string sigUrl;  // PPSA99810.zip.sig, its signature
     long zipSize = -1;
