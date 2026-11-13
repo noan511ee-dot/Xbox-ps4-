@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-13T06:25:54.043Z",
+  "generated_at": "2026-11-13T06:40:48.742Z",
   "total_downloads": 6,
   "releases": [
     {
@@ -19,8 +19,8 @@
     },
     {
       "tag_name": "v1.6.1",
-      "name": "PBOX v1.6.1 — Stability, Responsiveness & Artwork Update",
-      "published_at": "2026-11-13T06:25:29Z",
+      "name": "PBOX v1.6.1 — New Package and Artwork",
+      "published_at": "2026-11-13T06:40:19Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.1",
       "downloads": 0,
       "pkg": {
