@@ -39,6 +39,9 @@ constexpr int kCardCoverH = 170;
 constexpr float kAnimSpeed = 0.22f;
 }
 
+static constexpr const char* kPboxUpdatePage =
+    "https://github.com/noan511ee-dot/Xbox-ps4-/releases/latest";
+
 static inline float lerpF(float a, float b, float t) {
     return a + (b - a) * t;
 }
@@ -1701,13 +1704,14 @@ void AppUi::drawQuitPrompt(Canvas& c) {
 
 void AppUi::drawUpdatePrompt(Canvas& c) {
     c.fillRect({0, 0, kW, kH}, rgba(0, 0, 0, 160));
-    constexpr int kPanelW = 960, kPanelH = 340, kButtonW = 260, kButtonH = 72;
+    constexpr int kPanelW = 1120, kPanelH = 390, kButtonW = 260, kButtonH = 72;
     Rect panel{(kW - kPanelW) / 2, (kH - kPanelH) / 2 - 40, kPanelW, kPanelH};
     c.fillRect({panel.x + 8, panel.y + 12, panel.w, panel.h}, rgba(0, 0, 0, 120), 26);  // shadow
     c.fillRect(panel, kPanel, 24);
     c.strokeRect(panel, rgba(255, 255, 255, 50), 2, 24);
     fonts_.bold.draw(c, trf(Str::UpdateAvailable, updateAvailable_), panel.x + 56, panel.y + 48, 44, kWhite);
-    auto lines = fonts_.regular.wrap(tr(Str::UpdatePrompt), 26, kPanelW - 112, 2);
+    drawQr(c, kPboxUpdatePage, panel.x + panel.w - 54, panel.y + 38, 190, qrcodegen_Ecc_LOW);
+    auto lines = fonts_.regular.wrap(tr(Str::UpdatePrompt), 26, kPanelW - 112 - 230, 2);
     for (size_t i = 0; i < lines.size(); ++i)
         fonts_.regular.draw(c, lines[i], panel.x + 56, panel.y + 124 + static_cast<int>(i) * 36, 26, kGray);
 
