@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/nawaf_logo.png" alt="PBOX logo" width="180">
+  <img src="PBOX-logo.jpg" alt="PBOX logo" width="180">
 </p>
 
 <h1 align="center">PBOX</h1>
