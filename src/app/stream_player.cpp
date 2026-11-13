@@ -72,6 +72,9 @@ struct StreamPlayer::Impl {
     int reconnectAttempts = 0;
     std::atomic<uint32_t> reconnects{0};
     uint64_t lastRtpPackets = 0, lastAudioPackets = 0;
+    // Monotonic watchdog timestamp. Packet counters are sampled only once per
+    // worker tick and can hide a real stall when tick cadence varies.
+    std::atomic<uint64_t> lastVideoPacketMs{0};
     int silentTicks = 0;
     uint64_t lastSilenceKeyframeMs = 0;
 
@@ -319,8 +322,10 @@ struct StreamPlayer::Impl {
                 for (int i = 0; i < input::kMaxPads; ++i) {
                     if (dirty[i]) s->sendGamepad(pads[i]);
                 }
-                if (!keys.empty()) s->sendKeys(keys);
+                // Mouse motion is latency-sensitive. Send it before a burst
+                // of keyboard events so a key repeat cannot delay aiming.
                 for (const auto& m : mouse) s->sendMouse(m);
+                if (!keys.empty()) s->sendKeys(keys);
             }
         }
     }
@@ -893,6 +898,7 @@ struct StreamPlayer::Impl {
                     keyframeWanted = true;
                     return;
                 }
+                lastVideoPacketMs = platform::nowMs();
                 if (++videoFrames == 1) XC_LOGI("first video frame received: %zu bytes", n);
                 static int lastProfile = -1, lastLevel = -1;
                 if (lastProfile == -1) {
@@ -1168,6 +1174,7 @@ struct StreamPlayer::Impl {
         silentTicks = 0;
         lastRtpPackets = 0;
         lastAudioPackets = 0;
+        lastVideoPacketMs = platform::nowMs();
         lastSilenceKeyframeMs = 0;
         ++reconnects;
         keyframeWanted = true;
@@ -1298,15 +1305,16 @@ struct StreamPlayer::Impl {
         // notices. With the sound still coming, the connection is alive and
         // the picture only paused (a home Xbox does it while a game starts
         // and switches display modes): up to 15 s then.
+        uint64_t now = platform::nowMs();
         uint64_t packets = s->videoStats().packets;
         uint64_t audio = audioPackets;
         bool audioAlive = audio != lastAudioPackets;
         lastAudioPackets = audio;
         silentTicks = packets == lastRtpPackets ? silentTicks + 1 : 0;
         lastRtpPackets = packets;
-        if (silentTicks >= 1 && platform::nowMs() - lastSilenceKeyframeMs >= 1000) {
+        if (silentTicks >= 1 && now - lastSilenceKeyframeMs >= 1000) {
             keyframeWanted = true;
-            lastSilenceKeyframeMs = platform::nowMs();
+            lastSilenceKeyframeMs = now;
             requestKeyframeIfWanted();
         }
         // During launch the server may spend several seconds provisioning the
@@ -1316,9 +1324,14 @@ struct StreamPlayer::Impl {
         // arriving is no longer a normal launch pause. Recover after 6 s
         // instead of leaving the user stuck for 15 s; the keyframe requests
         // above still give a healthy session a chance to recover first.
-        int limit = videoFrames == 0 ? 10 : (audioAlive ? 6 : 3);
-        if (silentTicks >= limit && !reconnecting.exchange(true))
-            XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
+        uint64_t videoSilentMs = videoFrames == 0 || lastVideoPacketMs == 0
+                                     ? 0
+                                     : now - lastVideoPacketMs.load();
+        uint64_t limitMs = videoFrames == 0 ? 10000 : (audioAlive ? 6000 : 3000);
+        if (videoSilentMs >= limitMs && !reconnecting.exchange(true))
+            XC_LOGW("no video for %llu ms%s: reconnecting",
+                    static_cast<unsigned long long>(videoSilentMs),
+                    audioAlive ? " (sound still coming)" : "");
     }
 
     void stop() {
