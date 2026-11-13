@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-13T05:47:45.608Z",
+  "generated_at": "2026-11-13T06:25:54.043Z",
   "total_downloads": 6,
   "releases": [
     {
@@ -15,6 +15,21 @@
       "checksum": {
         "name": "PBOX-PS4-v1.6.0.pkg.sha256",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.0/PBOX-PS4-v1.6.0.pkg.sha256"
+      }
+    },
+    {
+      "tag_name": "v1.6.1",
+      "name": "PBOX v1.6.1 — Stability, Responsiveness & Artwork Update",
+      "published_at": "2026-11-13T06:25:29Z",
+      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.1",
+      "downloads": 0,
+      "pkg": {
+        "name": "PBOX-PS4-v1.6.1.pkg",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg"
+      },
+      "checksum": {
+        "name": "PBOX-PS4-v1.6.1.pkg.sha256",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg.sha256"
       }
     }
   ]
