@@ -7,6 +7,9 @@
 
 namespace xc::ui {
 
+static constexpr const char* kPboxUpdatePage =
+    "https://github.com/noan511ee-dot/Xbox-ps4-/releases/latest";
+
 void AppUi::drawPads(Canvas& c) {
     // Bottom left, on the line of the button hints (which are right-aligned).
     drawPadRow(c, fonts_.bold, kMargin, kH - 26 - padIconHeight(48), 48, 16, pads_, kBg,
@@ -1543,7 +1546,8 @@ void AppUi::drawUpdatePrompt(Canvas& c) {
     c.fillRect(panel, kPanel, 24);
     c.strokeRect(panel, rgba(255, 255, 255, 50), 2, 24);
     fonts_.bold.draw(c, trf(Str::UpdateAvailable, updateAvailable_), panel.x + 56, panel.y + 48, 44, kWhite);
-    auto lines = fonts_.regular.wrap(tr(Str::UpdatePrompt), 26, kPanelW - 112, 2);
+    drawQr(c, kPboxUpdatePage, panel.x + panel.w - 54, panel.y + 30, 150, qrcodegen_Ecc_LOW);
+    auto lines = fonts_.regular.wrap(tr(Str::UpdatePrompt), 26, kPanelW - 112 - 190, 2);
     for (size_t i = 0; i < lines.size(); ++i)
         fonts_.regular.draw(c, lines[i], panel.x + 56, panel.y + 124 + static_cast<int>(i) * 36, 26, kGray);
 
