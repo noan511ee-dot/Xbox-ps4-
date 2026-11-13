@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-13T19:42:16.912Z",
+  "generated_at": "2026-11-13T19:54:25.423Z",
   "total_downloads": 0,
   "releases": [
     {
@@ -9,12 +9,12 @@
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.1",
       "downloads": 0,
       "pkg": {
-        "name": "PBOX-PS4-v1.7.15.pkg",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.7.15.pkg"
+        "name": "PBOX-PS4-v1.6.1.pkg",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg"
       },
       "checksum": {
-        "name": "PBOX-PS4-v1.7.15.pkg.sha256",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.7.15.pkg.sha256"
+        "name": "PBOX-PS4-v1.6.1.pkg.sha256",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg.sha256"
       }
     }
   ]
