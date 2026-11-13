@@ -12,7 +12,7 @@ namespace xc::app {
 
 namespace {
 
-constexpr const char* kLatestRelease = "https://api.github.com/repos/noan511ee-dot/Xbox/releases/latest";
+constexpr const char* kLatestRelease = "https://api.github.com/repos/noan511ee-dot/Xbox-ps4-/releases/latest";
 
 // "v1.2.3" / "1.2" -> {1, 2, 3} / {1, 2, 0}; empty when it isn't a version.
 std::vector<int> parts(const std::string& v) {
@@ -60,6 +60,10 @@ bool findLatestRelease(Release& out, std::string& err, const std::string& feedUr
     }
     out = {};
     out.tag = (*j)["tag_name"].str();
+    out.pageUrl = (*j)["html_url"].str();
+    if (out.pageUrl.empty()) {
+        out.pageUrl = "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/" + out.tag;
+    }
     out.notes = (*j)["body"].str();
     const auto& assets = (*j)["assets"];
     for (size_t i = 0; i < assets.size(); ++i) {

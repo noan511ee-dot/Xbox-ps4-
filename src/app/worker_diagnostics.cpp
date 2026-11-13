@@ -47,15 +47,20 @@ void checkForUpdate() {
     bool offer = newer && !r.zipUrl.empty() && !r.sigUrl.empty();
     if (newer && !offer) XC_LOGW("%s has no signed package", r.tag.c_str());
     const bool selfUpdate = shell::canSelfUpdate();
+    const bool externalUpdate = newer && !selfUpdate;
     if (newer && !selfUpdate) {
-        // This build doesn't install updates itself (only the PS5's does):
-        // Settings names the new version and opens its page instead.
+        // PS4 builds do not replace their installed PKG in place. Keep the
+        // release in the UI so the user gets a visible notice and can install
+        // the new PKG from the official release page.
         XC_LOGI("%s is out: this build doesn't update itself", r.tag.c_str());
         offer = false;
     }
+    if (externalUpdate && !r.pageUrl.empty()) {
+        r.notes += "\n\nDownload the update from:\n" + r.pageUrl;
+    }
     {
         std::lock_guard<std::mutex> lock(g_releaseMutex);
-        g_release = offer ? r : Release{};
+        g_release = (offer || externalUpdate) ? r : Release{};
     }
     g_ui->setUpdateState(displayVer, offer || (newer && !selfUpdate) ? r.tag : std::string(), false, r.notes);
     bool skipped;
@@ -63,7 +68,7 @@ void checkForUpdate() {
         std::lock_guard<std::mutex> lock(g_settingsMutex);
         skipped = g_settings.skippedUpdate == r.tag;
     }
-    if (offer && !skipped) g_ui->offerUpdate(r.notes);
+    if ((offer || externalUpdate) && !skipped) g_ui->offerUpdate(r.notes);
 }
 
 // The update itself, then the restart into the new version. A failure
@@ -75,6 +80,14 @@ void runUpdate() {
         r = g_release;
     }
     if (r.tag.empty()) return;
+    if (r.zipUrl.empty()) {
+        const std::string page = r.pageUrl.empty()
+                                      ? "https://github.com/noan511ee-dot/Xbox-ps4-/releases/latest"
+                                      : r.pageUrl;
+        platform::notify(ui::trf(ui::Str::UpdateReadyPc, r.tag) + "\n" + page,
+                         "update available; install the new PKG from " + page);
+        return;
+    }
     XC_LOGI("update to %s: starting", r.tag.c_str());
     g_ui->showUpdating(r.tag);
     // Only where the app runs from: installed elsewhere, it would write next

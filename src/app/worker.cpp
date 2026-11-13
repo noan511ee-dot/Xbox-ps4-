@@ -277,15 +277,6 @@ void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
     }
     setPriceAuth(g_xblAuth, g_xuid);
     platform::notify(ui::trf(ui::Str::SignedInAs, am.profile().gamertag), "signed in (notification)");
-    static bool updateChecked = false;
-    static platform::Thread s_updateThread;
-    if (!updateChecked && (g_autoplay.title.empty() || g_autoplay.title == "UPDATE" || !g_autoplay.updateFeed.empty())) {
-        updateChecked = true;
-        platform::startThread(s_updateThread, [] {
-            platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
-            checkForUpdate();
-        }, 512u << 10);
-    }
     std::vector<std::string> regions;
     for (const auto& r : gssv.session().regions) regions.push_back(r.name);
     const xcloud::Region* def = gssv.session().defaultRegion();
@@ -535,6 +526,8 @@ std::mutex g_workerStateMutex;
 std::condition_variable g_workerStateCv;
 int g_workerState = 0;
 platform::Thread g_workerThread;
+platform::Thread g_updateThread;
+bool g_updateCheckStarted = false;
 
 void setWorkerState(int state) {
     {
@@ -545,6 +538,17 @@ void setWorkerState(int state) {
 }
 
 }  // namespace
+
+void startUpdateCheck() {
+    if (g_updateCheckStarted || (!g_autoplay.title.empty() && g_autoplay.title != "UPDATE" &&
+                                 g_autoplay.updateFeed.empty()))
+        return;
+    g_updateCheckStarted = true;
+    platform::startThread(g_updateThread, [] {
+        platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
+        checkForUpdate();
+    }, 512u << 10);
+}
 
 void startWorker() {
     setWorkerState(1);
@@ -606,6 +610,7 @@ void worker() {
     }
     auth::AuthManager am(platform::dataDir() + "/account.json");
     xcloud::GssvClient gssv, home("xhome");
+    startUpdateCheck();
     for (;;) {
         int cmd = g_command.exchange(kNone);
         g_cancel = false;
