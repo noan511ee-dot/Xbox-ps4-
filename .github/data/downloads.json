@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-11-13T14:40:59.898Z",
-  "total_downloads": 9,
+  "generated_at": "2026-11-13T15:35:16.631Z",
+  "total_downloads": 10,
   "releases": [
     {
       "tag_name": "v1.6.2",
       "name": "PBOX v1.6.2 — Update Notification and QR Code",
       "published_at": "2026-11-13T13:49:51Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.2",
-      "downloads": 2,
+      "downloads": 3,
       "pkg": {
         "name": "PBOX-PS4-v1.6.2.pkg",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.2/PBOX-PS4-v1.6.2.pkg"
