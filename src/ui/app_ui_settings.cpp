@@ -1615,7 +1615,7 @@ void AppUi::drawDonationModal(Canvas& c) {
     int centerY = contentTop + contentH / 2;
 
     int qrTop = centerY - qrTotalH / 2;
-    Rect qrBox = drawQr(c, "https://ko-fi.com/RafaelNGP", panel.x + panel.w - 60, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
+    Rect qrBox = drawQr(c, "https://t.me/pboxps4", panel.x + panel.w - 60, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
     if (qrBox.w > 0) {
         std::string scanText = tr(Str::ScanToDonate);
         int tw = fonts_.semibold.measure(scanText, 22);
@@ -1636,7 +1636,7 @@ void AppUi::drawDonationModal(Canvas& c) {
     }
 
     textY += 24;
-    fonts_.semibold.draw(c, "https://ko-fi.com/RafaelNGP", textX, textY, 24, rgba(255, 215, 80));
+    fonts_.semibold.draw(c, "https://t.me/pboxps4", textX, textY, 24, rgba(255, 215, 80));
 
     c.fillRect({0, kH - 80, kW, 80}, kBg);
     drawHints(c, {{kIconCircle, tr(Str::Back)}});
