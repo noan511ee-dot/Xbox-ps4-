@@ -75,6 +75,9 @@ struct StreamPlayer::Impl {
     // Monotonic watchdog timestamp. Packet counters are sampled only once per
     // worker tick and can hide a real stall when tick cadence varies.
     std::atomic<uint64_t> lastVideoPacketMs{0};
+    // RTP packets may continue arriving while decoding or presentation is
+    // stuck. Track the last frame that actually reached the display too.
+    std::atomic<uint64_t> lastPresentedFrameMs{0};
     int silentTicks = 0;
     uint64_t lastSilenceKeyframeMs = 0;
 
@@ -539,6 +542,7 @@ struct StreamPlayer::Impl {
             uint64_t tDrawDone = platform::nowUs();
             display::present();
             uint64_t t3 = platform::nowUs();
+            lastPresentedFrameMs = platform::nowMs();
             if (lastFramePresentUs > 0) {
                 float dt = static_cast<float>(t3 - lastFramePresentUs) / 1000.0f;
                 if (dt > 0.0f && dt < 250.0f) {
@@ -857,6 +861,7 @@ struct StreamPlayer::Impl {
             }
             display::present();
             uint64_t t3 = platform::nowUs();
+            lastPresentedFrameMs = platform::nowMs();
             if (lastFramePresentUs > 0) {
                 float dt = static_cast<float>(t3 - lastFramePresentUs) / 1000.0f;
                 if (dt > 0.0f && dt < 250.0f) {
@@ -1175,6 +1180,7 @@ struct StreamPlayer::Impl {
         lastRtpPackets = 0;
         lastAudioPackets = 0;
         lastVideoPacketMs = platform::nowMs();
+        lastPresentedFrameMs = lastVideoPacketMs.load();
         lastSilenceKeyframeMs = 0;
         ++reconnects;
         keyframeWanted = true;
@@ -1324,9 +1330,16 @@ struct StreamPlayer::Impl {
         // arriving is no longer a normal launch pause. Recover after 6 s
         // instead of leaving the user stuck for 15 s; the keyframe requests
         // above still give a healthy session a chance to recover first.
-        uint64_t videoSilentMs = videoFrames == 0 || lastVideoPacketMs == 0
-                                     ? 0
-                                     : now - lastVideoPacketMs.load();
+        uint64_t packetSilentMs = videoFrames == 0 || lastVideoPacketMs == 0
+                                      ? 0
+                                      : now - lastVideoPacketMs.load();
+        uint64_t presentedSilentMs = videoFrames == 0 || lastPresentedFrameMs == 0
+                                         ? 0
+                                         : now - lastPresentedFrameMs.load();
+        // Packets may continue arriving while decoding or presentation is
+        // stuck. Recover using the older activity clock, but never during the
+        // normal pre-first-frame launch phase.
+        uint64_t videoSilentMs = std::max(packetSilentMs, presentedSilentMs);
         uint64_t limitMs = videoFrames == 0 ? 10000 : (audioAlive ? 6000 : 3000);
         if (videoSilentMs >= limitMs && !reconnecting.exchange(true))
             XC_LOGW("no video for %llu ms%s: reconnecting",
