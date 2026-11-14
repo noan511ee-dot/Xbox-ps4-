@@ -133,7 +133,10 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
         media::setAudioHapticsLevel(hapticLvl);
     }
     std::string err;
-    if (!player.start(err)) return "ERROR: " + ui::trf(ui::Str::StreamFailed, err);
+    if (!player.start(err)) {
+        player.stop();  // wakes and joins any media thread that started before the failure
+        return "ERROR: " + ui::trf(ui::Str::StreamFailed, err);
+    }
     {
         std::lock_guard<std::mutex> lock(g_playerMutex);
         g_player = &player;
@@ -357,13 +360,14 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
             beat("player.stats (counters, round trip)");
             auto st = player.stats();
             beat("the stats line");
-            XC_LOGI("stream: %llu frames, %llu decoded, %llu skipped, %llu failed, %llu resets, %llu kf req, "
+            XC_LOGI("stream: %llu access units, %llu decoded, %llu shown, %llu skipped, %llu failed, %llu resets, %llu kf req, "
                     "%llu queued, %llu audio; rtp %llu pkts, %llu lost, %llu recovered, %llu nacks, "
                     "%llu frames dropped; %llu kbps (remb %llu); %llu rumble; decode %.1f/%.1f ms (%s), draw %.1f/%.1f ms, %llu late; "
                     "rtt %d ms; %dx%d; on screen %.1f/%.1f ms after arrival; qp %.1f; packets %llu ms apart at most, "
                     "%llu frames at once, a frame %llu ms late; first packet to screen %.1f/%.1f ms",
                     static_cast<unsigned long long>(st.videoFrames), static_cast<unsigned long long>(st.decodedFrames),
-                    static_cast<unsigned long long>(st.droppedFrames), static_cast<unsigned long long>(st.decodeFailures),
+                    static_cast<unsigned long long>(st.shownFrames), static_cast<unsigned long long>(st.droppedFrames),
+                    static_cast<unsigned long long>(st.decodeFailures),
                     static_cast<unsigned long long>(st.queueResets), static_cast<unsigned long long>(st.keyframeRequests),
                     static_cast<unsigned long long>(st.queued), static_cast<unsigned long long>(st.audioPackets),
                     static_cast<unsigned long long>(st.rtpPackets), static_cast<unsigned long long>(st.rtpLost),

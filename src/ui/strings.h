@@ -344,11 +344,11 @@ enum class Str {
     RemovedFromWishlist,// "Removed from wishlist"
     WishlistOnSale,     // "%s is on sale!"
     WishlistInGamePass, // "%s joined Game Pass!"
-    SupportProject,     // settings row: "Support the project"
-    SupportTitle,       // modal title: "Support PSBox Development"
-    SupportMessage,     // modal text: captivating thank you / donation message
-    SupportKoFi,        // settings action button: "Ko-fi"
-    ScanToDonate,       // modal subtitle below QR: "Scan with your phone to donate"
+    SupportProject,     // settings row: "Technical support"
+    SupportTitle,       // modal title: "PBOX Technical Support"
+    SupportMessage,     // modal text: technical-support instructions
+    SupportKoFi,        // settings action button: support channel label
+    ScanToDonate,       // modal subtitle below QR: scan to contact support
     TestSound,          // "Test sound" / "Testar som"
     WishlistEmpty,      // "Wishlist is empty"
     // Loading tips

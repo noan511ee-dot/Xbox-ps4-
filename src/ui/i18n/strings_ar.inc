@@ -74,6 +74,13 @@ constexpr Column kArabic = [] {
     c[static_cast<size_t>(Str::UpdateScan)] = "امسح الرمز بالجوال لفتح صفحة تحميل الإصدار الجديد.";
     c[static_cast<size_t>(Str::UpdateManualNote)] = "التحديث يدوي وآمن: التطبيق لا يحذف نسختك الحالية ولا يستبدلها تلقائيًا.";
     c[static_cast<size_t>(Str::UpdateVersionLine)] = "إصدار جديد %s - نسختك الحالية %s";
+    c[static_cast<size_t>(Str::SupportProject)] = "الدعم الفني";
+    c[static_cast<size_t>(Str::SupportTitle)] = "PBOX Technical Support";
+    c[static_cast<size_t>(Str::SupportMessage)] = "للمساعدة في الإعداد والبث وحل المشكلات، تواصل مع دعم PBOX الفني عبر Telegram. امسح الرمز أو افتح الرابط أدناه.";
+    c[static_cast<size_t>(Str::SupportKoFi)] = "Telegram";
+    c[static_cast<size_t>(Str::ScanToDonate)] = "امسح الرمز للتواصل مع الدعم";
+    c[static_cast<size_t>(Str::TipSupportKofi)] = "تحتاج مساعدة؟ افتح الدعم الفني لـPBOX من الإعدادات.";
+    c[static_cast<size_t>(Str::SettingDescSupportProject)] = "يفتح قناة الدعم الفني لـPBOX على Telegram ويعرض رمز QR.";
     c[static_cast<size_t>(Str::LanguageNoun)] = "العربية";
     return c;
 }();

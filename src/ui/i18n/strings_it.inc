@@ -335,11 +335,11 @@ constexpr Column kItalian = {
     "Rimosso dai desideri",                           // RemovedFromWishlist
     "%s è in saldo!",                                 // WishlistOnSale
     "%s è arrivato su Game Pass!",                    // WishlistInGamePass
-    "Supporta il progetto",                           // SupportProject
-    "Supporta lo Sviluppo di PBOX",                  // SupportTitle
-    "PBOX è un progetto open source sviluppato con passione per portare la migliore esperienza di Xbox Cloud Gaming su PlayStation 5. Se ti piace l'app e vuoi sostenere lo sviluppo continuo e le nuove funzionalità, considera di offrirmi un caffè su Ko-Fi!", // SupportMessage
-    "Ko-fi",                                          // SupportKoFi
-    "Inquadra con lo smartphone",                     // ScanToDonate
+    "Assistenza tecnica",                             // SupportProject
+    "PBOX Technical Support",                         // SupportTitle
+    "Per assistenza su configurazione, streaming e risoluzione dei problemi, contatta PBOX Technical Support su Telegram. Scansiona il QR o apri il link qui sotto.", // SupportMessage
+    "Telegram",                                       // SupportKoFi
+    "Scansiona per contattare il supporto",           // ScanToDonate
     "Prova suono",                                    // TestSound
     "La lista dei desideri è vuota",                  // WishlistEmpty
     // Loading tips
@@ -347,7 +347,7 @@ constexpr Column kItalian = {
     "Tastiera e mouse USB collegati alla console sono supportati nei giochi cloud compatibili", // TipKeyboardMouse
     "Ottieni giochi gratuiti, demo e promozioni del negozio direttamente dalla libreria dell'app", // TipFreeStore
     "Hai riscontrato un problema? Apri Segnala problema per scansionare un QR code con i log della console", // TipBugReportQr
-    "Ti piace il progetto? Sostieni lo sviluppo futuro tramite Ko-fi nella scheda Impostazioni!", // TipSupportKofi
+    "Ti serve aiuto? Apri PBOX Technical Support nelle Impostazioni.", // TipSupportKofi
     "Abilita l'uscita video a 120 Hz nelle Impostazioni per una latenza di visualizzazione ridotta", // Tip120HzVideo
     "Calibra la zona morta delle levette nelle Impostazioni per eliminare il drift e migliorare la precisione", // TipAnalogDeadzone
     "Usa il microfono integrato del DualSense per la chat vocale nei gruppi e nelle partite multigiocatore", // TipDualSenseMic
@@ -383,7 +383,7 @@ constexpr Column kItalian = {
     "Riproduce un segnale sonoro caratteristico quando l'attesa nella coda di xCloud termina e il gioco è pronto", // SettingDescQueueReady
     "Esegue una diagnostica completa dell'accesso a Xbox Live, convalidando token di accesso, profilo e abbonamenti", // SettingDescCheckSignIn
     "Misura il ping (RTT) e il jitter verso i data center di gioco in cloud in diverse regioni globali", // SettingDescNetworkTest
-    "Mostra un codice QR per supportare lo sviluppatore tramite Ko-fi e contribuire a mantenere il progetto attivo", // SettingDescSupportProject
+    "Apre PBOX Technical Support su Telegram e mostra il relativo codice QR", // SettingDescSupportProject
     "Novità",                                         // WhatsNew
     "Novità",                                         // WhatsNewTitle
     "Altoparlante del controller",                    // PadSpeakerVolume

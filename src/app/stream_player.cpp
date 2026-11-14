@@ -74,6 +74,16 @@ struct StreamPlayer::Impl {
     uint64_t lastRtpPackets = 0, lastAudioPackets = 0;
     int silentTicks = 0;
     uint64_t lastSilenceKeyframeMs = 0;
+    uint64_t lastVideoRtpProgressMs = 0;
+    std::atomic<uint64_t> lastVideoAccessUnitMs{0}, lastVideoDecodeProgressMs{0};
+    std::atomic<uint64_t> lastVideoShownMs{0}, lastAudioProgressMs{0};
+    uint64_t sessionStartedMs = 0;
+    uint64_t sessionVideoFramesStart = 0, sessionDecodedFramesStart = 0;
+    uint64_t sessionShownFramesStart = 0, sessionAudioPacketsStart = 0;
+    enum class PipelineStall { None, AccessUnit, Decoder, Presentation };
+    PipelineStall pipelineStall = PipelineStall::None;
+    uint64_t pipelineStallSinceMs = 0;
+    bool audioQuietLogged = false;
 
     std::mutex mutex;
     std::condition_variable cv;
@@ -99,7 +109,7 @@ struct StreamPlayer::Impl {
 
     media::AudioDecoder audioDecoder;
     std::vector<float> pcm;
-    std::atomic<uint64_t> videoFrames{0}, decodedFrames{0}, droppedFrames{0}, audioPackets{0};
+    std::atomic<uint64_t> videoFrames{0}, decodedFrames{0}, droppedFrames{0}, audioPackets{0}, shownFrames{0};
     std::atomic<uint64_t> decodeFailures{0}, queueResets{0}, keyframeRequests{0};
     std::atomic<bool> keyframeWanted{false};
     std::atomic<uint32_t> pictureSize{0};  // width << 16 | height
@@ -127,6 +137,7 @@ struct StreamPlayer::Impl {
     std::mutex snapshotMutex;
     std::string snapshotPath;
     std::string screenPath;  // video thread only
+    std::mutex keyframeRequestMutex;
     uint64_t lastKeyframeRequestMs = 0;
     // The game's text requests not yet taken, and those it withdrew (mutex).
     std::deque<stream::TextInputRequest> textRequests;
@@ -250,6 +261,25 @@ struct StreamPlayer::Impl {
     }
 
     explicit Impl(xcloud::GssvClient& g) : gssv(g) {}
+
+    void resetProgressWatch(uint64_t now) {
+        sessionStartedMs = now;
+        lastVideoRtpProgressMs = now;
+        lastVideoAccessUnitMs = now;
+        lastVideoDecodeProgressMs = now;
+        lastVideoShownMs = now;
+        lastAudioProgressMs = now;
+        sessionVideoFramesStart = videoFrames.load();
+        sessionDecodedFramesStart = decodedFrames.load();
+        sessionShownFramesStart = shownFrames.load();
+        sessionAudioPacketsStart = audioPackets.load();
+        lastRtpPackets = 0;
+        lastAudioPackets = sessionAudioPacketsStart;
+        silentTicks = 0;
+        pipelineStall = PipelineStall::None;
+        pipelineStallSinceMs = 0;
+        audioQuietLogged = false;
+    }
 
     void end(const std::string& reason) {
         closeMic();
@@ -554,6 +584,8 @@ struct StreamPlayer::Impl {
                         uint64_t lat = shownAt - q.second;
                         displayUs += lat;
                         ++displayCount;
+                        ++shownFrames;
+                        lastVideoShownMs = platform::nowMs();
                         atomicMax(displayMaxUs, lat);
                     }
                 }
@@ -652,6 +684,8 @@ struct StreamPlayer::Impl {
                 uint64_t lat = shownAt - q.arrivalUs;
                 displayUs += lat;
                 ++displayCount;
+                ++shownFrames;
+                lastVideoShownMs = platform::nowMs();
                 atomicMax(displayMaxUs, lat);
             }
             if (q.firstPacketUs && shownAt > q.firstPacketUs) {
@@ -772,6 +806,7 @@ struct StreamPlayer::Impl {
                 continue;
             }
             ++decodedFrames;
+            lastVideoDecodeProgressMs = platform::nowMs();
             if (decoder->lastQp() >= 0) {
                 qpSumX100 += static_cast<uint64_t>(decoder->lastQp() * 100);
                 ++qpCount;
@@ -894,6 +929,7 @@ struct StreamPlayer::Impl {
                     return;
                 }
                 if (++videoFrames == 1) XC_LOGI("first video frame received: %zu bytes", n);
+                lastVideoAccessUnitMs = platform::nowMs();
                 static int lastProfile = -1, lastLevel = -1;
                 if (lastProfile == -1) {
                 // The H.264 profile the server encodes with (from the first SPS).
@@ -932,6 +968,7 @@ struct StreamPlayer::Impl {
             try {
                 if (!d || n == 0) return;
                 if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
+                lastAudioProgressMs = platform::nowMs();
                 std::lock_guard<std::mutex> lock(audioMutex_);
                 if (audioPackets_.size() >= 50) {
                     // Keep the live edge when a mobile burst made the audio
@@ -1051,6 +1088,7 @@ struct StreamPlayer::Impl {
         if (const char* loss = std::getenv("XC_SIM_LOSS")) opts.simulatedVideoLoss = std::atoi(loss);
         callbacks = cb;
         options = opts;
+        resetProgressWatch(platform::nowMs());
         try {
             {
                 std::lock_guard<std::mutex> lock(sessionMutex);
@@ -1096,6 +1134,11 @@ struct StreamPlayer::Impl {
 
     // One reconnection attempt (worker thread, from tick()).
     void reconnect() {
+        if (reconnects.load() >= 20) {
+            XC_LOGE("stream recovery limit reached after 20 successful reconnects");
+            end("the stream reached its safe reconnection limit");
+            return;
+        }
         if (reconnectAttempts == 0) platform::notify(ui::tr(ui::Str::Reconnecting));
         if (++reconnectAttempts > 20) {
             end("the connection was lost and couldn't be restored");
@@ -1140,6 +1183,7 @@ struct StreamPlayer::Impl {
         std::shared_ptr<stream::StreamSession> next;
         try {
             next = std::make_shared<stream::StreamSession>(gssv, callbacks, opts);
+            resetProgressWatch(platform::nowMs());
             // Cleared first: the new session's own failure must count again.
             reconnecting = false;
             if (!next->start(err)) {
@@ -1165,9 +1209,6 @@ struct StreamPlayer::Impl {
         updateMicState();
         XC_LOGI("reconnected after %d attempt(s)", reconnectAttempts);
         reconnectAttempts = 0;
-        silentTicks = 0;
-        lastRtpPackets = 0;
-        lastAudioPackets = 0;
         lastSilenceKeyframeMs = 0;
         ++reconnects;
         keyframeWanted = true;
@@ -1273,52 +1314,107 @@ struct StreamPlayer::Impl {
         }
     }
 
-    // Video thread only (data channel sends are thread-safe).
+    // Called by both the video thread and the once-a-second watchdog.
     void requestKeyframeIfWanted() {
-        uint64_t now = platform::nowMs();
-        if (keyframeWanted && now - lastKeyframeRequestMs > 500) {
-            auto s = current();
-            if (!s) return;
-            keyframeWanted = false;
+        std::shared_ptr<stream::StreamSession> s;
+        {
+            std::lock_guard<std::mutex> lock(keyframeRequestMutex);
+            uint64_t now = platform::nowMs();
+            if (!keyframeWanted.load() || now - lastKeyframeRequestMs <= 500) return;
+            s = current();
+            if (!s || !keyframeWanted.exchange(false)) return;
             lastKeyframeRequestMs = now;
             ++keyframeRequests;
-            s->requestKeyframe();
         }
+        s->requestKeyframe();
     }
 
-    // About once a second (worker thread).
+    // About once a second (worker thread). Health ages use the platform's
+    // monotonic clock, while stream::clockMs() remains for frame metadata.
     void tick() {
         if (!running) return;
         if (reconnecting) return reconnect();
         auto s = current();
         if (!s) return;
         s->tick();
-        // xCloud sends video all the time, even for a still picture: three
-        // seconds without a packet is a dead connection, long before WebRTC
-        // notices. With the sound still coming, the connection is alive and
-        // the picture only paused (a home Xbox does it while a game starts
-        // and switches display modes): up to 15 s then.
+        const uint64_t now = platform::nowMs();
         uint64_t packets = s->videoStats().packets;
-        uint64_t audio = audioPackets;
+        const bool packetProgress = packets != lastRtpPackets;
+        if (packetProgress) lastVideoRtpProgressMs = now;
+        uint64_t audio = audioPackets.load();
         bool audioAlive = audio != lastAudioPackets;
         lastAudioPackets = audio;
-        silentTicks = packets == lastRtpPackets ? silentTicks + 1 : 0;
+        silentTicks = packetProgress ? 0 : silentTicks + 1;
         lastRtpPackets = packets;
+        const uint64_t units = videoFrames.load();
+        const uint64_t decoded = decodedFrames.load();
+        const uint64_t shown = shownFrames.load();
+        const bool hasAccessUnits = units > sessionVideoFramesStart;
+        const bool hasDecoded = decoded > sessionDecodedFramesStart;
+        const bool hasShown = shown > sessionShownFramesStart;
+        const bool hasAudio = audio > sessionAudioPacketsStart;
+        const uint64_t auAge = now - lastVideoAccessUnitMs.load();
+        const uint64_t decodeAge = now - lastVideoDecodeProgressMs.load();
+        const uint64_t shownAge = now - lastVideoShownMs.load();
+
+        if (audioAlive) audioQuietLogged = false;
+        if (hasAudio && hasAccessUnits && now - lastAudioProgressMs.load() >= 5000 && !audioQuietLogged) {
+            XC_LOGW("media watchdog: audio packets quiet for %llu ms while video continues; no stream settings changed",
+                    static_cast<unsigned long long>(now - lastAudioProgressMs.load()));
+            audioQuietLogged = true;
+        }
+
+        constexpr uint64_t kStageRecentMs = 1500;
+        constexpr uint64_t kStageSuspectMs = 2000;
+        constexpr uint64_t kStageRecoverMs = 4000;
+        PipelineStall stalledAt = PipelineStall::None;
+        if (packets > 0 && now - lastVideoRtpProgressMs < kStageRecentMs &&
+            ((hasAccessUnits && auAge >= kStageSuspectMs) ||
+             (!hasAccessUnits && now - sessionStartedMs >= 10000))) {
+            stalledAt = PipelineStall::AccessUnit;
+        } else if (hasAccessUnits && auAge < kStageRecentMs && decodeAge >= kStageSuspectMs) {
+            stalledAt = PipelineStall::Decoder;
+        } else if (hasDecoded && decodeAge < kStageRecentMs &&
+                   (hasShown ? shownAge >= kStageSuspectMs : now - sessionStartedMs >= 10000)) {
+            stalledAt = PipelineStall::Presentation;
+        }
+        auto stageName = [](PipelineStall stage) -> const char* {
+            switch (stage) {
+            case PipelineStall::AccessUnit: return "RTP-to-access-unit";
+            case PipelineStall::Decoder: return "video decoder";
+            case PipelineStall::Presentation: return "last-frame presentation";
+            case PipelineStall::None: return "none";
+            }
+            return "unknown";
+        };
+        if (stalledAt != pipelineStall) {
+            pipelineStall = stalledAt;
+            pipelineStallSinceMs = now;
+            if (stalledAt != PipelineStall::None) {
+                if (stalledAt == PipelineStall::AccessUnit || stalledAt == PipelineStall::Decoder)
+                    keyframeWanted = true;
+                XC_LOGW("media watchdog: %s stalled; RTP age %llu ms, access-unit age %llu ms, decode age %llu ms, shown-frame age %llu ms",
+                        stageName(stalledAt), static_cast<unsigned long long>(now - lastVideoRtpProgressMs),
+                        static_cast<unsigned long long>(auAge), static_cast<unsigned long long>(decodeAge),
+                        static_cast<unsigned long long>(shownAge));
+            }
+        }
+        if (stalledAt == PipelineStall::AccessUnit || stalledAt == PipelineStall::Decoder)
+            requestKeyframeIfWanted();
+        if (stalledAt != PipelineStall::None && now - pipelineStallSinceMs >= kStageRecoverMs &&
+            !reconnecting.exchange(true)) {
+            XC_LOGW("media watchdog: %s remained stalled for %llu ms; reconnecting",
+                    stageName(stalledAt), static_cast<unsigned long long>(now - pipelineStallSinceMs));
+        }
+        if (stalledAt == PipelineStall::None) pipelineStallSinceMs = 0;
+
         if (silentTicks >= 1 && platform::nowMs() - lastSilenceKeyframeMs >= 1000) {
             keyframeWanted = true;
             lastSilenceKeyframeMs = platform::nowMs();
             requestKeyframeIfWanted();
         }
-        // During launch the server may spend several seconds provisioning the
-        // title before its first video packet. Do not reconnect that healthy
-        // session prematurely; once video has started, recover quickly again.
-        // Once a stream has shown video, a silent picture with audio still
-        // arriving is no longer a normal launch pause. Recover after 6 s
-        // instead of leaving the user stuck for 15 s; the keyframe requests
-        // above still give a healthy session a chance to recover first.
-        // A picture that stands still can send no video for a while (a loading screen)
-        // while the sound goes on: that session is alive. 15 s with sound, as in the
-        // project this app comes from; 6 s ended healthy sessions in the middle of a game.
+        // Keep the established packet-silence grace period; the new watchdog
+        // acts only when packet, decode, or presentation stages disagree.
         int limit = audioAlive ? 15 : (videoFrames == 0 ? 10 : 3);
         if (silentTicks >= limit && !reconnecting.exchange(true))
             XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
@@ -1523,6 +1619,7 @@ StreamPlayer::Stats StreamPlayer::stats() const {
     Stats st;
     st.videoFrames = impl_->videoFrames;
     st.decodedFrames = impl_->decodedFrames;
+    st.shownFrames = impl_->shownFrames;
     st.droppedFrames = impl_->droppedFrames;
     st.audioPackets = impl_->audioPackets;
     st.decodeFailures = impl_->decodeFailures;
