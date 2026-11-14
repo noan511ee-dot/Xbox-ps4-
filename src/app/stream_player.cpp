@@ -70,6 +70,10 @@ struct StreamPlayer::Impl {
     int reconnectAttempts = 0;
     std::atomic<uint32_t> reconnects{0};
     uint64_t lastRtpPackets = 0, lastAudioPackets = 0;
+    // Watch both network delivery and actual presentation. A decoder/display
+    // stall can leave packets arriving while the user sees a frozen frame.
+    std::atomic<uint64_t> lastVideoPacketMs{0};
+    std::atomic<uint64_t> lastPresentedFrameMs{0};
     int silentTicks = 0;
 
     std::mutex mutex;
@@ -508,6 +512,7 @@ struct StreamPlayer::Impl {
             uint64_t tDrawDone = platform::nowUs();
             display::present();
             uint64_t t3 = platform::nowUs();
+            lastPresentedFrameMs = platform::nowMs();
             if (lastFramePresentUs > 0) {
                 float dt = static_cast<float>(t3 - lastFramePresentUs) / 1000.0f;
                 if (dt > 0.0f && dt < 250.0f) {
@@ -822,6 +827,7 @@ struct StreamPlayer::Impl {
             }
             display::present();
             uint64_t t3 = platform::nowUs();
+            lastPresentedFrameMs = platform::nowMs();
             if (lastFramePresentUs > 0) {
                 float dt = static_cast<float>(t3 - lastFramePresentUs) / 1000.0f;
                 if (dt > 0.0f && dt < 250.0f) {
@@ -863,6 +869,7 @@ struct StreamPlayer::Impl {
                     keyframeWanted = true;
                     return;
                 }
+                lastVideoPacketMs = platform::nowMs();
                 if (++videoFrames == 1) XC_LOGI("first video frame received: %zu bytes", n);
                 static int lastProfile = -1, lastLevel = -1;
                 if (lastProfile == -1) {
@@ -1101,6 +1108,8 @@ struct StreamPlayer::Impl {
         silentTicks = 0;
         lastRtpPackets = 0;
         lastAudioPackets = 0;
+        lastVideoPacketMs = platform::nowMs();
+        lastPresentedFrameMs = lastVideoPacketMs.load();
         ++reconnects;
         keyframeWanted = true;
         platform::notify(ui::tr(ui::Str::Reconnected));
@@ -1236,9 +1245,19 @@ struct StreamPlayer::Impl {
         lastAudioPackets = audio;
         silentTicks = packets == lastRtpPackets ? silentTicks + 1 : 0;
         lastRtpPackets = packets;
-        int limit = audioAlive ? 15 : 3;
-        if (silentTicks >= limit && !reconnecting.exchange(true))
-            XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
+        uint64_t now = platform::nowMs();
+        uint64_t packetSilentMs = videoFrames == 0 || lastVideoPacketMs == 0
+                                      ? 0
+                                      : now - lastVideoPacketMs.load();
+        uint64_t presentedSilentMs = videoFrames == 0 || lastPresentedFrameMs == 0
+                                         ? 0
+                                         : now - lastPresentedFrameMs.load();
+        uint64_t videoSilentMs = std::max(packetSilentMs, presentedSilentMs);
+        uint64_t limitMs = videoFrames == 0 ? 10000 : (audioAlive ? 6000 : 3000);
+        if (videoSilentMs >= limitMs && !reconnecting.exchange(true))
+            XC_LOGW("no video for %llu ms%s: reconnecting",
+                    static_cast<unsigned long long>(videoSilentMs),
+                    audioAlive ? " (sound still coming)" : "");
     }
 
     void stop() {

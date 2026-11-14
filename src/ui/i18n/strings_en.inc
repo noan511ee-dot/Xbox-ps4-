@@ -336,10 +336,10 @@ constexpr Column kEnglish = {
     "%s is on sale!",                                 // WishlistOnSale
     "%s joined Game Pass!",                           // WishlistInGamePass
     "Support the project",                            // SupportProject
-    "Support PBOX Development",                      // SupportTitle
-    "PBOX is an open-source project passionately maintained to bring the best Xbox Cloud Gaming experience to PlayStation 5. If you enjoy the app and would like to support ongoing development, frequent updates and new features, consider buying me a coffee on Ko-Fi!", // SupportMessage
-    "Ko-fi",                                          // SupportKoFi
-    "Scan with your phone to support",                // ScanToDonate
+    "PBOX Technical Support",                         // SupportTitle
+    "For PBOX technical support, updates, and troubleshooting, contact the developer through the official Telegram support channel.", // SupportMessage
+    "Telegram Support",                               // SupportKoFi
+    "Scan with your phone to open support",           // ScanToDonate
     "Test sound",                                     // TestSound
     "Wishlist is empty",                              // WishlistEmpty
     // Loading tips
@@ -347,7 +347,7 @@ constexpr Column kEnglish = {
     "USB keyboard and mouse plugged into the console are supported in enabled cloud games", // TipKeyboardMouse
     "Claim free games, trials, and discover store promotions directly from the app library", // TipFreeStore
     "Encountered an issue? Open Bug Report to scan a QR code with auto-attached console logs", // TipBugReportQr
-    "Enjoying the project? Support future development via Ko-fi in the Settings tab!", // TipSupportKofi
+    "Need help with PBOX? Open Technical Support in Settings to contact the developer.", // TipSupportKofi
     "Enable 120 Hz display output in Settings for reduced frame latency and smoother response", // Tip120HzVideo
     "Calibrate DualSense stick dead zones in Settings to eliminate stick drift and improve precision", // TipAnalogDeadzone
     "Use the DualSense built-in microphone for party and multiplayer game voice chat", // TipDualSenseMic
@@ -383,7 +383,7 @@ constexpr Column kEnglish = {
     "Plays a distinctive chime when your wait in the xCloud queue finishes and your game is ready", // SettingDescQueueReady
     "Runs a complete diagnostic on your Xbox Live sign-in, validating access tokens, profile, and subscriptions", // SettingDescCheckSignIn
     "Measures ping (RTT) and jitter to cloud gaming datacenters across multiple global regions", // SettingDescNetworkTest
-    "Displays a QR Code to support the developer via Ko-fi and help keep the project actively maintained", // SettingDescSupportProject
+    "Displays a QR Code for the official PBOX technical support channel", // SettingDescSupportProject
     "What's New",                                     // WhatsNew
     "What's New",                                     // WhatsNewTitle
     "Controller speaker",                             // PadSpeakerVolume
