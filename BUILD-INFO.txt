@@ -1,0 +1,70 @@
+PBOX PS4 v1.7.15 - source and build record for PBOX-PS4-v1.7.15.pkg
+=====================================================================
+
+The package
+  File:    PBOX-PS4-v1.7.15.pkg
+  SHA256:  87bad1a3408d4f30c53e4b7e66fba6b1b941ff5b9a9795de816d82bdcbb06f89
+  Size:    20643840 bytes
+
+The source it was built from
+  Project: noan511ee-dot/Xbox-ps4-  (a fork of RafaelNGP's PSBOX / xbox-cloud-gaming-ps5, GPL-3.0)
+  Commit:  9c0bb0665ce80907a655569591925873666711a1   "v1.7.15: update check against the right repository, manual update window with QR code"
+  Base:    1821d69 "Document PBOX features and project status in English"  (the main branch of the project when work started)
+  Tag:     none. v1.7.15 has NOT been tagged or pushed to GitHub; the commit exists only in this archive and in pbox-v1.7.15.patch.
+  The seven commits on top of the base (oldest first):
+    02d7622 v1.7.9   start-up video, Xbox-style home, Opus microphone encoder fix
+    5fb67b2 v1.7.10  plain home background, header reachable by pad, Arabic removed from languages
+    0d3e97c v1.7.11  new PBOX emblem (app icon, launch art, in-app logo)
+    7183068 v1.7.12  game art behind the rows, promo strips trimmed from square tiles
+    1b94b9c v1.7.13  settings redesign, persistent flushed log, stream stop logging
+    b540948 v1.7.14  Arabic shaping and bidi fixed, keyboard/mouse kept on PS4, no OS popups, 15 s stall tolerance
+    9c0bb06 v1.7.15  update check against the right repository, manual update window with QR code
+  This tree is `git archive 9c0bb06` plus the dependency checkouts below (no .git directories).
+  pbox-v1.7.15.patch applies these seven commits to the project's main branch (git am -3).
+
+How the package is tied to this source
+  The application's build id is the commit's short hash: the string "9c0bb06" is inside the built
+  xcloud_ps4.elf and is what the Settings > Updates row shows. The version string is 1.7.15
+  (CMakeLists.txt: project(xcloud_ps5 VERSION 1.7.15)); the PS4 package version is 01.85.
+  build-logs/ holds the build and packaging output of this very build.
+
+Dependencies (git submodules, checked out at these commits)
+  deps/ffmpeg                         b2b543c079241a63692245c26c743328385dfff6  (the commit the project pins)
+  deps/mbedtls                        107ea89daaefb9867ea9121002fbbdf926780e98  (+ its framework submodule at 94599c0e3b5036e086446a51a3f79640f70f22f6)
+  deps/libdatachannel                 80ea045f0d3b0e84f955449f93d9b2f01e752f30
+    deps/libjuice                     b509b6c1f90e4a1d4753e6bde62ffbeb4d10c6bb  (as pinned)
+    deps/libsrtp                      ee1a77c9f9dc02c42bda9901038c500c5efe4cfa  (as pinned)
+    deps/plog                         94899e0b926ac1b0f4750bfbd495167b4a6ae9ef  (as pinned)
+    deps/usrsctp                      fec583d54493f879d2ae44a743423bf8a04371ab  (as pinned)
+    deps/json                         017a3ce0011545104c319ae41be318ec61750553  *** NOT the pinned commit ***
+                                      libdatachannel pins 55f93686c01528224f448c19128836e7df245f72; fetching that commit
+                                      failed in the build environment, so a shallow clone's branch head was used. The
+                                      project builds libdatachannel with NO_WEBSOCKET=ON, so nlohmann/json is probably
+                                      not part of the result, but this was not verified.
+  The PS4 FFmpeg is built from deps/ffmpeg by tools/build-ffmpeg.sh as part of the CMake configure step.
+
+Toolchain and environment
+  OpenOrbis PS4 Toolchain: the "latest" release at download time through
+    tools/ps4/fetch-toolchain.sh <dir> 18  ->  toolchain-llvm-18.tar.gz ; the latest release tag now is v0.5.4
+    (the tag was read after the build, so it is the same version only if no newer release came out in between)
+  Host: Ubuntu 24.04, clang 18.1.3 / LLD 18.1.3, cmake 4.4.4, ninja 1.13.2, dotnet-sdk-8.0 (8.0.134), nasm
+  Other: python3 with pillow was used only to prepare the icon/logo images committed in assets/ and ps4/sce_sys/
+
+Build commands (exactly as run, from the repository root)
+  export OO_PS4_TOOLCHAIN=/home/claude/ps4-toolchain
+  bash tools/ps4/fetch-toolchain.sh "$OO_PS4_TOOLCHAIN" 18
+  cmake -S . -B build-ps4 -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_TOOLCHAIN_FILE=cmake/ps4.toolchain.cmake -DOO_PS4_TOOLCHAIN="$OO_PS4_TOOLCHAIN"
+  cmake --build build-ps4 --parallel 6
+  export XC_PS4_TITLE="PBOX - PS4" XC_PS4_TITLE_ID=PSBX00001 \
+         XC_PS4_CONTENT_ID="IV0000-PSBX00001_00-PSBOXCLOUDGAME00" XC_PS4_VERSION=01.85
+  bash tools/ps4/package.sh build-ps4 build-ps4/pkg-release
+  cp "build-ps4/pkg-release/PBOX - PS4.pkg" PBOX-PS4-v1.7.15.pkg
+  (the same steps as .github/workflows/build-ps4-pkg.yml; XC_PS4_VERSION = printf '%02d.%02d' 1 $((7*10+15)))
+
+Not reproducible bit for bit
+  The package is signed and encrypted by the packaging tool, and the toolchain was fetched as "latest": a rebuild
+  gives a package of the same content but a different SHA256. GitHub Actions builds differ in the same way.
+
+Tests (host build, xcloud-tests): 3 failures that were already there before these changes (the WebUI title check
+  "PSBOX CLOUD GAMING" and two log-reading checks). Nothing was run on a real PS4.

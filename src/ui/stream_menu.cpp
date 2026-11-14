@@ -1,0 +1,718 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 RafaelNGP
+#include "ui/stream_menu.h"
+
+#include "ui/cloud_time.h"
+
+#include "ui/strings.h"
+#include "ui/input_mode.h"
+#include "ui/pad_glyphs.h"
+
+#include <algorithm>
+#include <cstdio>
+
+namespace xc::ui {
+
+namespace {
+
+constexpr Color kPanel = rgba(24, 24, 24);
+constexpr Color kWhite = rgba(255, 255, 255);
+constexpr Color kGray = rgba(190, 190, 190);
+constexpr Color kDim = rgba(140, 140, 140);
+constexpr Color kDark = rgba(20, 20, 20);
+constexpr Color kGreen = rgba(16, 124, 16);
+constexpr Color kWarnColor = rgba(255, 176, 32);  // the connection warning
+
+// Left to right on the resolution row: SettingsChoice::resolution values.
+constexpr int kResolutionOrder[] = {1, 0, 2};
+const char* resolutionName(int r) { return r == 1 ? "720p" : r == 2 ? tr(Str::ResBest) : "1080p"; }
+
+std::string fmt(const char* f, double v) {
+    char b[32];
+    std::snprintf(b, sizeof b, f, v);
+    return b;
+}
+
+}  // namespace
+
+bool StreamMenu::itemShown(int item) const {
+    switch (item) {
+    case Upscaler: return caps_.upscalers;
+    case Sharpness: return caps_.sharpen;
+    case Deband: return caps_.deband;
+    case Triggers: return caps_.triggerRumble || caps_.adaptiveTriggers;
+    case GyroItem:
+    case GyroLevelItem: return caps_.gyro;
+    case PadSpeakerVolumeItem: return caps_.triggerRumble || caps_.adaptiveTriggers;
+    case TouchpadShortcutsItem: return caps_.touchpad;
+    case PlayerItem: return usbOwnerPlayer_ >= 0;
+    default: return true;
+    }
+}
+
+void StreamMenu::setCapabilities(const UiCaps& caps) {
+    caps_ = caps;
+    while (!itemShown(selected_)) selected_ = (selected_ + 1) % ItemCount;  // off a row that went away
+}
+
+void StreamMenu::setProfileValues(int resolution, int sharpness, int deband, int upscaler,
+                                  int triggerStrength, int deadzone, bool circleConfirms,
+                                  bool hasCustomProfile) {
+    resolution_ = applied_ = resolution;
+    sharpness_ = sharpness;
+    deband_ = deband;
+    upscaler_ = upscaler;
+    triggerStrength_ = triggerStrength;
+    deadzone_ = deadzone;
+    circleConfirms_ = circleConfirms;
+    hasCustomProfile_ = hasCustomProfile;
+}
+
+void StreamMenu::open(int resolution, bool stats, int sharpness, int deband, int upscaler, bool homeConsole,
+                      bool allow1440, bool hasCustomProfile, int triggerStrength, int deadzone,
+                      bool circleConfirms, float micLevel, bool micMuted, int padSpeakerVolume) {
+    open_ = true;
+    homeConsole_ = homeConsole;
+    allow1440_ = allow1440;
+    stats_ = stats;
+    sharpness_ = sharpness;
+    deband_ = deband;
+    upscaler_ = upscaler;
+    hasCustomProfile_ = hasCustomProfile;
+    triggerStrength_ = triggerStrength;
+    deadzone_ = deadzone;
+    circleConfirms_ = circleConfirms;
+    micLevel_ = micLevel;
+    micMuted_ = micMuted;
+    padSpeakerVolume_ = std::clamp(padSpeakerVolume, 0, 100);
+    selected_ = XboxButton;
+    resolution_ = applied_ = resolution;
+    resolutionAsked_ = false;
+    statsCustomizing_ = false;
+    statsCustomIndex_ = 0;
+    touchpadCustomizing_ = false;
+    touchpadCustomIndex_ = 0;
+}
+
+MenuAction StreamMenu::handle(const NavInput& in) {
+    if (!open_) return MenuAction::None;
+    if (statsCustomizing_) {
+        if (in.back) {
+            statsCustomizing_ = false;
+            return MenuAction::Stats;
+        }
+        if (in.options) {
+            statsCustomizing_ = false;
+            open_ = false;
+            return MenuAction::Close;
+        }
+        constexpr int kCount = 8;
+        if (in.up) statsCustomIndex_ = (statsCustomIndex_ + kCount - 1) % kCount;
+        if (in.down) statsCustomIndex_ = (statsCustomIndex_ + 1) % kCount;
+        if (in.accept || in.left || in.right) {
+            static constexpr uint32_t kMasks[kCount] = {
+                StatsFps, StatsBitrate, StatsLatency, StatsLoss,
+                StatsGraph, StatsDelay, StatsQp, StatsMic
+            };
+            statsMask_ ^= kMasks[statsCustomIndex_];
+            return MenuAction::Stats;
+        }
+        return MenuAction::None;
+    }
+    if (touchpadCustomizing_) {
+        if (in.back) {
+            touchpadCustomizing_ = false;
+            return MenuAction::TouchpadShortcuts;
+        }
+        if (in.options) {
+            touchpadCustomizing_ = false;
+            open_ = false;
+            return MenuAction::Close;
+        }
+        constexpr int kRows = 7;  // 6 triggers + Reset to default
+        if (in.up) touchpadCustomIndex_ = (touchpadCustomIndex_ + kRows - 1) % kRows;
+        if (in.down) touchpadCustomIndex_ = (touchpadCustomIndex_ + 1) % kRows;
+        input::TouchpadAction* fields[6] = {
+            &touchpadShortcuts_.swipeUp,    &touchpadShortcuts_.swipeDown,
+            &touchpadShortcuts_.swipeLeft,  &touchpadShortcuts_.swipeRight,
+            &touchpadShortcuts_.clickLeft,  &touchpadShortcuts_.clickRight,
+        };
+        if (touchpadCustomIndex_ < 6) {
+            if (in.left || in.right || in.accept) {
+                int dir = in.left ? -1 : 1;
+                int cur = static_cast<int>(*fields[touchpadCustomIndex_]);
+                int next = (cur + input::kTouchpadActions + dir) % input::kTouchpadActions;
+                *fields[touchpadCustomIndex_] = static_cast<input::TouchpadAction>(next);
+                return MenuAction::TouchpadShortcuts;
+            }
+            if (in.square) {
+                *fields[touchpadCustomIndex_] = input::TouchpadAction::None;
+                return MenuAction::TouchpadShortcuts;
+            }
+        } else if (in.accept) {
+            touchpadShortcuts_ = input::defaultTouchpadShortcuts();
+            return MenuAction::TouchpadShortcuts;
+        }
+        return MenuAction::None;
+    }
+    if (in.back || in.options) {
+        open_ = false;
+        return MenuAction::Close;
+    }
+    // Up / down over the items shown (the Xbox button always is).
+    if (in.up) do selected_ = (selected_ + ItemCount - 1) % ItemCount; while (!itemShown(selected_));
+    if (in.down) do selected_ = (selected_ + 1) % ItemCount; while (!itemShown(selected_));
+    if (selected_ == PlayerItem && (in.left || in.right || in.accept)) {
+        usbOwnerPlayer_ = (usbOwnerPlayer_ + (in.left ? 3 : 1)) % 4;
+        return MenuAction::Player;
+    }
+    if (selected_ == Profile && (in.left || in.right || in.accept)) {
+        hasCustomProfile_ = !hasCustomProfile_;
+        return MenuAction::ProfileToggle;
+    }
+    if (selected_ == Resolution && (in.left || in.right)) {
+        int pos = 0;
+        int n = 3;  // 720p, 1080p, Best (Auto)
+        for (int i = 0; i < n; ++i)
+            if (kResolutionOrder[i] == resolution_) pos = i;
+        pos = in.left ? (pos + n - 1) % n : (pos + 1) % n;
+        resolution_ = kResolutionOrder[pos];
+    }
+    if ((selected_ == Sharpness && (in.left || in.right)) || (selected_ == Sharpness && in.accept)) {
+        sharpness_ = in.left ? (sharpness_ + 3) % 4 : (sharpness_ + 1) % 4;
+        return MenuAction::Sharpness;
+    }
+    if (selected_ == Upscaler && (in.left || in.right || in.accept)) {
+        // FSR, FSR + clean-up, AI, AI + clean-up (values 0, 2, 1, 3).
+        static constexpr int kOrder[4] = {0, 2, 1, 3};
+        int pos = 0;
+        for (int i = 0; i < 4; ++i)
+            if (kOrder[i] == upscaler_) pos = i;
+        upscaler_ = kOrder[in.left ? (pos + 3) % 4 : (pos + 1) % 4];
+        return MenuAction::Upscaler;
+    }
+    if (selected_ == Deband && (in.left || in.right || in.accept)) {
+        // Off, low, high, auto (follows the bitrate).
+        deband_ = in.left ? (deband_ + 3) % 4 : (deband_ + 1) % 4;
+        return MenuAction::Deband;
+    }
+    if (selected_ == Triggers && (in.left || in.right || in.accept)) {
+        triggerStrength_ = in.left ? (triggerStrength_ + 4) % 5 : (triggerStrength_ + 1) % 5;
+        return MenuAction::Triggers;
+    }
+    if (selected_ == DeadzoneItem && (in.left || in.right)) {
+        if (in.left && deadzone_ > 0) deadzone_ -= 5;
+        else if (in.right && deadzone_ < 30) deadzone_ += 5;
+        return MenuAction::Deadzone;
+    }
+    if (selected_ == ConfirmItem && (in.left || in.right || in.accept)) {
+        circleConfirms_ = !circleConfirms_;
+        return MenuAction::ConfirmButton;
+    }
+    if (selected_ == GyroItem && (in.left || in.right || in.accept)) {
+        gyroMode_ = in.left ? (gyroMode_ + 2) % 3 : (gyroMode_ + 1) % 3;  // off, always, while aiming
+        return MenuAction::Gyro;
+    }
+    if (selected_ == GyroLevelItem && (in.left || in.right)) {
+        int level = std::clamp(gyroLevel_ + (in.right ? 1 : -1), 1, 10);
+        if (level == gyroLevel_) return MenuAction::None;
+        gyroLevel_ = level;
+        return MenuAction::Gyro;
+    }
+    if (selected_ == PadSpeakerVolumeItem && (in.left || in.right)) {
+        int newVol = std::clamp(padSpeakerVolume_ + (in.right ? 5 : -5), 0, 100);
+        if (newVol == padSpeakerVolume_) return MenuAction::None;
+        padSpeakerVolume_ = newVol;
+        return MenuAction::PadSpeakerVolume;
+    }
+    if (selected_ == TouchpadShortcutsItem && (in.accept || in.left || in.right)) {
+        touchpadCustomizing_ = true;
+        touchpadCustomIndex_ = 0;
+        return MenuAction::TouchpadShortcuts;
+    }
+    if (selected_ == Stats && (in.left || in.right)) {
+        stats_ = !stats_;
+        return MenuAction::Stats;
+    }
+    if (selected_ == Stats && (in.square || in.accept)) {
+        statsCustomizing_ = true;
+        stats_ = true;
+        return MenuAction::Stats;
+    }
+    if (!in.accept) return MenuAction::None;
+    switch (selected_) {
+    case XboxButton: open_ = false; return MenuAction::XboxButton;
+    case Resolution:
+        applied_ = resolution_;
+        resolutionAsked_ = true;
+        return MenuAction::Resolution;
+    case Leave: open_ = false; return MenuAction::Leave;
+    default: return MenuAction::None;
+    }
+}
+
+Canvas StreamMenu::renderMenu(const StreamInfo& info) const {
+    Canvas c(kMenuW, kMenuH);
+    c.clear(kPanel);
+    c.fillRect({0, 0, kMenuW, 6}, kGreen);
+    constexpr int kPad = 40;
+
+    auto icon = [&](bool cross, int x, int hy) {
+        if (g_glyphStyle == GlyphStyle::Xbox) {  // A / B
+            drawFaceButton(c, fonts_.bold, GlyphStyle::Xbox, cross ? PadButton::Cross : PadButton::Circle, x + 13.0f,
+                           hy + 12.0f, 13);
+            return;
+        }
+        c.fillCircle(x + 13, hy + 12, 13, rgba(255, 255, 255, 40));
+        if (cross) {
+            c.line(x + 7, hy + 6, x + 19, hy + 18, 2.5f, rgba(124, 178, 232));
+            c.line(x + 19, hy + 6, x + 7, hy + 18, 2.5f, rgba(124, 178, 232));
+        } else {
+            c.strokeArc(x + 13, hy + 12, 6.0f, 2.5f, 0, 6.2832f, rgba(255, 102, 102));
+        }
+    };
+
+    if (statsCustomizing_) {
+        fonts_.bold.draw(c, tr(Str::StatsCustomize), kPad, 38, 28, kWhite);
+        fonts_.regular.draw(c, tr(Str::MenuStats), kPad, 74, 16, kDim);
+
+        struct IndicatorDef {
+            uint32_t mask;
+            Str label;
+        };
+        static constexpr IndicatorDef kIndicators[8] = {
+            {StatsFps, Str::StatsIndicatorFps},
+            {StatsBitrate, Str::StatsIndicatorBitrate},
+            {StatsLatency, Str::StatsIndicatorLatency},
+            {StatsLoss, Str::StatsIndicatorLoss},
+            {StatsGraph, Str::StatsIndicatorGraph},
+            {StatsDelay, Str::StatsIndicatorDelay},
+            {StatsQp, Str::StatsIndicatorQp},
+            {StatsMic, Str::StatsIndicatorMic},
+        };
+
+        constexpr int kRowH = 46, kTop = 108, kPx = 20;
+        for (int i = 0; i < 8; ++i) {
+            Rect row{kPad - 16, kTop + i * kRowH, kMenuW - 2 * (kPad - 16), kRowH - 4};
+            bool sel = i == statsCustomIndex_;
+            if (sel) c.fillRect(row, kWhite, 8);
+            Color fg = sel ? kDark : kWhite;
+            bool on = (statsMask_ & kIndicators[i].mask) != 0;
+
+            int boxX = row.x + 16;
+            int boxY = row.y + (row.h - 22) / 2;
+            if (on) {
+                c.fillRect({boxX, boxY, 22, 22}, sel ? rgba(16, 124, 16) : rgba(30, 215, 96), 5);
+                c.line(boxX + 5, boxY + 11, boxX + 9, boxY + 16, 2.5f, kWhite);
+                c.line(boxX + 9, boxY + 16, boxX + 17, boxY + 7, 2.5f, kWhite);
+            } else {
+                c.strokeRect({boxX, boxY, 22, 22}, sel ? kDark : kDim, 2, 5);
+            }
+
+            int ty = fonts_.semibold.centeredY(row.y, row.h, kPx);
+            fonts_.semibold.draw(c, tr(kIndicators[i].label), boxX + 34, ty, kPx, fg);
+
+            const char* st = tr(on ? Str::On : Str::Off);
+            int sw = fonts_.semibold.measure(st, 18);
+            fonts_.semibold.draw(c, st, row.x + row.w - 16 - sw, ty, 18, sel ? kDark : kGray);
+        }
+
+        int hy = kMenuH - 50, x = kPad;
+        if (g_keyboardHints) {
+            auto cap = [&](const char* key) {
+                int kw = fonts_.bold.measure(key, 15) + 18;
+                c.fillRect({x, hy, kw, 26}, rgba(255, 255, 255, 30), 6);
+                c.strokeRect({x, hy, kw, 26}, kGray, 2, 6);
+                fonts_.bold.draw(c, key, x + 9, fonts_.bold.centeredY(hy, 26, 15), 15, kWhite);
+                return kw;
+            };
+            int kw = cap("Enter");
+            x = fonts_.semibold.draw(c, tr(Str::Select), x + kw + 8, hy, 20, kGray) + 32;
+            kw = cap("Esc");
+            fonts_.semibold.draw(c, tr(Str::Back), x + kw + 8, hy, 20, kGray);
+        } else {
+            icon(!circleConfirms_, x, hy);
+            x = fonts_.semibold.draw(c, tr(Str::Select), x + 34, hy, 20, kGray) + 32;
+            icon(circleConfirms_, x, hy);
+            fonts_.semibold.draw(c, tr(Str::Back), x + 34, hy, 20, kGray);
+        }
+        return c;
+    }
+
+    if (touchpadCustomizing_) {
+        fonts_.bold.draw(c, tr(Str::TouchpadShortcuts), kPad, 38, 28, kWhite);
+        auto descLines = fonts_.regular.wrap(tr(Str::SettingDescTouchpadShortcuts), 16, kMenuW - 2 * kPad, 2);
+        int dy = 74;
+        for (const auto& l : descLines) {
+            fonts_.regular.draw(c, l, kPad, dy, 16, kDim);
+            dy += 20;
+        }
+
+        const input::TouchpadAction vals[6] = {
+            touchpadShortcuts_.swipeUp,    touchpadShortcuts_.swipeDown,
+            touchpadShortcuts_.swipeLeft,  touchpadShortcuts_.swipeRight,
+            touchpadShortcuts_.clickLeft,  touchpadShortcuts_.clickRight,
+        };
+        constexpr int kRowH = 48, kTop = 126, kPx = 19;
+        for (int i = 0; i < 6; ++i) {
+            Rect row{kPad - 16, kTop + i * kRowH, kMenuW - 2 * (kPad - 16), kRowH - 4};
+            bool sel = i == touchpadCustomIndex_;
+            if (sel) c.fillRect(row, kWhite, 8);
+            Color fg = sel ? kDark : kWhite;
+            int ty = fonts_.semibold.centeredY(row.y, row.h, kPx);
+            fonts_.semibold.draw(c, touchpadTriggerLabel(i), row.x + 16, ty, kPx, fg);
+            std::string val = touchpadActionLabel(static_cast<int>(vals[i]));
+            if (sel) val = "< " + val + " >";
+            int sw = fonts_.semibold.measure(val, 18);
+            fonts_.semibold.draw(c, val, row.x + row.w - 16 - sw, ty, 18, sel ? kDark : kGray);
+        }
+        Rect resetRow{kPad - 16, kTop + 6 * kRowH + 8, kMenuW - 2 * (kPad - 16), kRowH - 4};
+        bool resetSel = (touchpadCustomIndex_ == 6);
+        if (resetSel) c.fillRect(resetRow, kWhite, 8);
+        const char* resetLabel = tr(Str::ResetToDefault);
+        int rw = fonts_.semibold.measure(resetLabel, kPx);
+        int rty = fonts_.semibold.centeredY(resetRow.y, resetRow.h, kPx);
+        fonts_.semibold.draw(c, resetLabel, resetRow.x + (resetRow.w - rw) / 2, rty, kPx,
+                             resetSel ? kDark : rgba(240, 100, 100));
+
+        int hy = kMenuH - 50, x = kPad;
+        icon(!circleConfirms_, x, hy);
+        x = fonts_.semibold.draw(c, tr(Str::Change), x + 34, hy, 20, kGray) + 32;
+        icon(circleConfirms_, x, hy);
+        fonts_.semibold.draw(c, tr(Str::Back), x + 34, hy, 20, kGray);
+        return c;
+    }
+
+    const int titleEnd = fonts_.bold.draw(c, tr(Str::MenuTitle), kPad, 34, 30, kWhite);
+    // The account's cloud time left, right of the title (a limited account
+    // only): orange from 15 minutes shown, when the notices start; red at none.
+    if (info.cloudTimeSeconds >= 0) {
+        const std::string left = trf(Str::CloudTimeLeft, formatCloudTime(info.cloudTimeSeconds));
+        const int w = fonts_.semibold.measure(left, 17);
+        const int x = kMenuW - kPad - w;
+        if (x - 24 > titleEnd + 16) {
+            const Color col = info.cloudTimeSeconds <= 0        ? rgba(240, 100, 100)
+                              : info.cloudTimeSeconds < 16 * 60 ? rgba(255, 160, 40)
+                                                                 : kGray;
+            drawClockIcon(c, x - 14.0f, 34 + 15.0f, 8.0f, col);
+            fonts_.semibold.draw(c, left, x, fonts_.semibold.centeredY(34, 30, 17), 17, col);
+        }
+    }
+
+    // The items: the selected one white, like the Xbox guide.
+    constexpr int kRowH = 37, kTop = 78, kPx = 19;
+    int shown = 0;  // the items on screen so far
+    for (int i = 0; i < ItemCount; ++i) {
+        if (!itemShown(i)) continue;
+        Rect row{kPad - 16, kTop + shown++ * kRowH, kMenuW - 2 * (kPad - 16), kRowH - 4};
+        bool sel = i == selected_;
+        if (sel) c.fillRect(row, kWhite, 8);
+        Color fg = sel ? kDark : kWhite;
+        int ty = fonts_.semibold.centeredY(row.y, row.h, kPx);
+        const char* label = i == XboxButton            ? tr(Str::MenuXboxButton)
+                            : i == PlayerItem          ? tr(Str::MenuPlayer)
+                            : i == Profile             ? tr(Str::Profile)
+                            : i == Stats               ? tr(Str::MenuStats)
+                            : i == Sharpness           ? tr(Str::MenuSharpness)
+                            : i == Deband              ? tr(Str::MenuDeband)
+                            : i == Upscaler            ? tr(Str::MenuUpscaler)
+                            : i == Resolution          ? tr(Str::MenuResolution)
+                            : i == Triggers            ? tr(Str::TriggerRumble)
+                            : i == DeadzoneItem        ? tr(Str::Deadzone)
+                            : i == ConfirmItem         ? tr(Str::ConfirmButton)
+                            : i == GyroItem            ? tr(Str::Gyro)
+                            : i == GyroLevelItem       ? tr(Str::GyroIntensity)
+                            : i == PadSpeakerVolumeItem ? tr(Str::PadSpeakerVolume)
+                            : i == TouchpadShortcutsItem ? tr(Str::TouchpadShortcuts)
+                            : homeConsole_             ? tr(Str::MenuEndStream)
+                                                       : tr(Str::MenuLeave);
+        fonts_.semibold.draw(c, label, row.x + 16, ty, kPx, fg);
+        std::string value;
+        if (i == PlayerItem) {
+            value = std::to_string(usbOwnerPlayer_ + 1);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Profile) {
+            value = tr(hasCustomProfile_ ? Str::ProfileCustom : Str::ProfileDefault);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Stats) {
+            value = tr(stats_ ? Str::On : Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Sharpness) {
+            static constexpr Str kLevels[] = {Str::SharpOff, Str::SharpLow, Str::SharpMedium, Str::SharpHigh};
+            value = tr(kLevels[sharpness_]);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Upscaler) {
+            value = upscaler_ == 3   ? tr(Str::UpscalerAiClean)
+                    : upscaler_ == 2 ? tr(Str::UpscalerFsrClean)
+                    : upscaler_ == 1 ? tr(Str::UpscalerAi)
+                                     : "FSR";
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Deband) {
+            static constexpr Str kLevels[] = {Str::SharpOff, Str::SharpLow, Str::SharpHigh};
+            value = deband_ == 3 ? trf(Str::DebandAuto, tr(kLevels[std::clamp(debandInUse_, 0, 2)]))
+                                 : tr(kLevels[std::clamp(deband_, 0, 2)]);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Resolution) {
+            value = resolutionName(resolution_);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == Triggers) {
+            static constexpr Str kStrengths[] = {Str::Deactivated, Str::TriggerLight, Str::TriggerMedium,
+                                                 Str::TriggerStrong, Str::TriggerMax};
+            value = tr(kStrengths[std::clamp(triggerStrength_, 0, 4)]);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == DeadzoneItem) {
+            value = std::to_string(deadzone_) + " %";
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == GyroItem) {
+            value = tr(gyroMode_ == 1 ? Str::GyroAlways : gyroMode_ == 2 ? Str::GyroAiming : Str::Off);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == GyroLevelItem) {
+            value = std::to_string(gyroLevel_) + " / 10";
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == PadSpeakerVolumeItem) {
+            value = padSpeakerVolume_ == 0 ? tr(Str::Mute) : std::to_string(padSpeakerVolume_) + " %";
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == TouchpadShortcutsItem) {
+            value = tr(touchpadShortcuts_ == input::defaultTouchpadShortcuts() ? Str::ProfileDefault : Str::ProfileCustom);
+            if (sel) value = "< " + value + " >";
+        }
+        if (i == ConfirmItem) {
+            value = circleConfirms_ ? "○" : "×";
+            if (sel) value = "< " + value + " >";
+        }
+        if (!value.empty()) {
+            int w = fonts_.semibold.measure(value, kPx);
+            fonts_.semibold.draw(c, value, row.x + row.w - 16 - w, ty, kPx, sel ? kDark : kGray);
+        }
+    }
+    int y = kTop + shown * kRowH + 4;
+    if (resolutionAsked_) {
+        fonts_.regular.draw(c, tr(Str::ResolutionNote), kPad, y, 16, kDim);
+        y += 20;
+    }
+    y += 4;
+
+    // The connection.
+    c.fillRect({kPad, y, kMenuW - 2 * kPad, 2}, rgba(60, 60, 60));
+    y += 12;
+    auto line = [&](Str label, const std::string& value) {
+        fonts_.regular.draw(c, tr(label), kPad, y, 17, kGray);
+        int w = fonts_.semibold.measure(value, 17);
+        fonts_.semibold.draw(c, value, kMenuW - kPad - w, y, 17, kWhite);
+        y += 22;
+    };
+    const std::string none = "-";
+    line(Str::StatRegion, info.region.empty() ? none : info.region);
+    line(Str::StatLatency, info.rttMs > 0 ? std::to_string(info.rttMs) + " ms" : none);
+    line(Str::StatBitrate, info.mbps > 0 ? fmt("%.1f Mbps", info.mbps) : none);
+    std::string frames = info.fps > 0 ? fmt("%.0f fps", info.fps) : none;
+    if (info.width > 0) frames = std::to_string(info.width) + "x" + std::to_string(info.height) + "  " + frames;
+    line(Str::StatFrameRate, frames);
+    line(Str::StatLoss, fmt("%.1f %%", info.lossPct));
+    line(Str::StatDecode, info.decodeMs > 0 ? (fmt("%.1f ms", info.decodeMs) + (info.isHwDecode ? " (HW)" : " (SW)")) : none);
+    line(Str::StatOnScreen, info.onScreenMs > 0 ? fmt("%.1f ms", info.onScreenMs) : none);
+
+    // The controllers: numbered pads, each connected one with its user.
+    y += 8;
+    fonts_.regular.draw(c, tr(Str::Controllers), kPad, y, 20, kGray);
+
+    // Real-time Mic VU meter bar on the right side of the Controllers line:
+    {
+        int barW = 140, barH = 12;
+        int barX = kMenuW - kPad - barW;
+        int barY = y + 4;
+        std::string micLabel = tr(Str::MenuMicrophone);
+        int mw = fonts_.regular.measure(micLabel, 16);
+        fonts_.regular.draw(c, micLabel, barX - mw - 10, y + 2, 16, micMuted_ ? kDim : kGray);
+
+        // Dark background pill
+        c.fillRect({barX, barY, barW, barH}, rgba(40, 40, 40), 6);
+        c.strokeRect({barX, barY, barW, barH}, rgba(70, 70, 70), 1, 6);
+
+        if (micMuted_) {
+            int tw = fonts_.semibold.measure(tr(Str::MicMuted), 13);
+            fonts_.semibold.draw(c, tr(Str::MicMuted), barX + (barW - tw) / 2, barY - 1, 13, rgba(230, 120, 50));
+        } else {
+            float lvl = std::clamp(micLevel_, 0.0f, 1.0f);
+            int fillW = static_cast<int>(lvl * (barW - 4));
+            if (fillW > 0) {
+                // Vibrant green sound level bar
+                c.fillRect({barX + 2, barY + 2, fillW, barH - 4}, rgba(30, 215, 96), 4);
+                if (lvl > 0.85f) {
+                    // Yellow peak indicator
+                    int peakW = static_cast<int>((lvl - 0.85f) / 0.15f * (barW - 4));
+                    c.fillRect({barX + barW - 2 - peakW, barY + 2, peakW, barH - 4}, rgba(255, 204, 0), 4);
+                }
+            } else {
+                // Minimum idle listening dot
+                c.fillCircle(barX + 7, barY + barH / 2, 2.5f, rgba(30, 215, 96, 160));
+            }
+        }
+    }
+
+    y += 28;
+    const int slotW = (kMenuW - 2 * kPad) / static_cast<int>(pads_.size());
+    for (int i = 0; i < static_cast<int>(pads_.size()); ++i) {
+        int sx = kPad + i * slotW;
+        constexpr int kIconW = 56;
+        drawSlotIcon(c, fonts_.bold, sx + (slotW - kIconW) / 2, y, kIconW, i, pads_[i], kPanel,
+                     fonts_.hasIcons ? &fonts_.icons : nullptr);
+        if (!pads_[i].connected || pads_[i].name.empty()) continue;
+        auto name = fonts_.regular.wrap(pads_[i].name, 15, slotW - 8, 1);
+        if (!name.empty())
+            fonts_.regular.draw(c, name[0], sx + (slotW - fonts_.regular.measure(name[0], 15)) / 2,
+                                y + padIconHeight(kIconW) + 2, 15, kGray);
+        if (i == 0) {
+            if (micMuted_) {
+                // Orange mic dot matching DualSense hardware mute LED
+                c.fillCircle(sx + (slotW + kIconW) / 2 - 2, y + 8, 3.5f, rgba(230, 120, 50));
+            } else {
+                // Little green mic dot next to controller 1
+                c.fillCircle(sx + (slotW + kIconW) / 2 - 2, y + 8, 3.5f, rgba(30, 215, 96));
+            }
+        }
+    }
+
+    // Cross selects, Circle goes back to the game (swapped with Circle confirming).
+    int hy = kMenuH - 50, x = kPad;
+    {
+        // The touchpad's gestures, small, above the button hints.
+        // (Without a touchpad: the buttons and keys that do the same.)
+        Str hint = g_keyboardHints ? Str::MenuKeyHint : caps_.touchpad ? Str::MenuGestureHint : Str::MenuButtonHint;
+        auto lines = fonts_.regular.wrap(tr(hint), 16, kMenuW - 2 * kPad, 2);
+        int gy = hy - 14 - static_cast<int>(lines.size()) * 22;
+        for (const auto& l : lines) {
+            fonts_.regular.draw(c, l, kPad, gy, 16, kDim);
+            gy += 22;
+        }
+    }
+    if (g_keyboardHints) {  // Enter / Esc as key caps
+        auto cap = [&](const char* key) {
+            int kw = fonts_.bold.measure(key, 15) + 18;
+            c.fillRect({x, hy, kw, 26}, rgba(255, 255, 255, 30), 6);
+            c.strokeRect({x, hy, kw, 26}, kGray, 2, 6);
+            fonts_.bold.draw(c, key, x + 9, fonts_.bold.centeredY(hy, 26, 15), 15, kWhite);
+            return kw;
+        };
+        int kw = cap("Enter");
+        x = fonts_.semibold.draw(c, selected_ == Stats ? tr(Str::StatsCustomize) : tr(Str::Select), x + kw + 8, hy, 20, kGray) + 32;
+        kw = cap("Esc");
+        fonts_.semibold.draw(c, tr(Str::Back), x + kw + 8, hy, 20, kGray);
+        return c;
+    }
+    icon(!circleConfirms_, x, hy);
+    x = fonts_.semibold.draw(c, selected_ == Stats ? tr(Str::StatsCustomize) : tr(Str::Select), x + 34, hy, 20, kGray) + 32;
+    icon(circleConfirms_, x, hy);
+    fonts_.semibold.draw(c, tr(Str::Back), x + 34, hy, 20, kGray);
+    return c;
+}
+
+void StreamMenu::recordFrametime(float ms) const {
+    if (ms <= 0.0f || ms > 250.0f) return;
+    frametimes_.push_back(ms);
+    if (frametimes_.size() > 60) frametimes_.erase(frametimes_.begin());
+}
+
+Canvas StreamMenu::renderStats(const StreamInfo& info) const {
+    std::string text;
+    if (statsMask_ & StatsFps) {
+        if (info.height > 0) text += std::to_string(info.height) + "p  ";
+        text += fmt("%.0f fps", info.fps);
+    }
+    if (statsMask_ & StatsBitrate) {
+        if (!text.empty()) text += "  ";
+        text += fmt("%.1f Mbps", info.mbps);
+    }
+    if (statsMask_ & StatsLatency) {
+        if (!text.empty()) text += "  ";
+        text += info.rttMs > 0 ? std::to_string(info.rttMs) + " ms" : "- ms";
+    }
+    if (statsMask_ & StatsLoss) {
+        if (!text.empty()) text += "  ";
+        text += fmt("%.1f%%", info.lossPct);
+    }
+    if ((statsMask_ & StatsQp) && info.qp >= 0) {
+        if (!text.empty()) text += "  ";
+        text += "QP " + fmt("%.0f", info.qp);
+    }
+    if (statsMask_ & StatsDelay) {
+        if (info.onScreenMs > 0) {
+            if (!text.empty()) text += "  ";
+            text += "Screen " + fmt("%.1f ms", info.onScreenMs);
+        }
+        if (info.decodeMs > 0) {
+            if (!text.empty()) text += "  ";
+            text += "Dec " + fmt("%.1f ms", info.decodeMs) + (info.isHwDecode ? " HW" : " SW");
+        }
+    }
+    if ((statsMask_ & StatsMic) && !micMuted_) {
+        if (!text.empty()) text += "  ";
+        text += "MIC";
+    }
+    constexpr int kPx = 18;
+    std::string warn = info.degraded ? std::string("  ") + tr(Str::ConnectionUnstable) : std::string();
+    int tw = fonts_.semibold.measure(text, kPx);
+    int w = tw + fonts_.semibold.measure(warn, kPx) + 28;
+    w = std::max(w, 200);
+
+    bool showGraph = (statsMask_ & StatsGraph) != 0;
+    int kH = showGraph ? 62 : 36;
+    Canvas c(w, kH);
+    c.clear(kPanel);
+    if (!text.empty()) fonts_.semibold.draw(c, text, 14, 8, kPx, kWhite);
+    if (!warn.empty()) fonts_.semibold.draw(c, warn, 14 + tw, 8, kPx, kWarnColor);
+
+    if (showGraph) {
+        // Row 2: Frametime sparkline bars (last 60 frames)
+        int graphX = 14;
+        int graphY = 32;
+        int graphH = 22;
+        int graphW = w - 28;
+        // Draw subtle baseline
+        c.line(graphX, graphY + graphH, graphX + graphW, graphY + graphH, 1.0f, rgba(80, 80, 80, 160));
+        // Target 60fps line (16.7ms out of 40ms scale = ~9px above baseline)
+        float targetLineY = (graphY + graphH) - (16.7f / 40.0f) * graphH;
+        c.line(graphX, targetLineY, graphX + graphW, targetLineY, 1.0f, rgba(60, 160, 90, 120));
+
+        if (!frametimes_.empty()) {
+            size_t count = frametimes_.size();
+            float barW = std::max(2.0f, static_cast<float>(graphW) / 60.0f - 1.0f);
+            float step = barW + 1.0f;
+            for (size_t i = 0; i < count; ++i) {
+                float ms = frametimes_[i];
+                float norm = std::clamp(ms / 40.0f, 0.08f, 1.0f);
+                float bh = norm * graphH;
+                float bx = graphX + i * step;
+                if (bx + barW > graphX + graphW) break;
+                Color barColor = ms <= 17.5f ? rgba(40, 200, 60) : ms <= 33.3f ? rgba(255, 190, 40) : rgba(255, 60, 60);
+                c.fillRect({static_cast<int>(bx), static_cast<int>(graphY + graphH - bh), static_cast<int>(barW), static_cast<int>(bh)}, barColor);
+            }
+        }
+    }
+    return c;
+}
+
+Canvas StreamMenu::renderWarning() const {
+    const char* text = tr(Str::ConnectionUnstable);
+    constexpr int kPx = 20, kH = 36, kDot = 6;
+    int w = fonts_.semibold.measure(text, kPx) + 28 + 2 * kDot + 10;
+    Canvas c(w, kH);
+    c.clear(kPanel);
+    c.fillCircle(14.0f + kDot, kH / 2.0f, static_cast<float>(kDot), kWarnColor);
+    fonts_.semibold.draw(c, text, 14 + 2 * kDot + 10, fonts_.semibold.centeredY(0, kH, kPx), kPx, kWhite);
+    return c;
+}
+
+}  // namespace xc::ui

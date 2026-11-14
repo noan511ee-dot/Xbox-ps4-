@@ -1,0 +1,174 @@
+/**
+ * Copyright (C) 2025 Niklas Haas
+ *
+ * This file is part of FFmpeg.
+ *
+ * FFmpeg is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * FFmpeg is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with FFmpeg; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ */
+
+#include "libavutil/avassert.h"
+#include "libavutil/mem.h"
+#include "libavutil/refstruct.h"
+
+#include "ops_chain.h"
+
+SwsOpChain *ff_sws_op_chain_alloc(void)
+{
+    return av_mallocz(sizeof(SwsOpChain));
+}
+
+void ff_sws_op_chain_free_cb(void *ptr)
+{
+    if (!ptr)
+        return;
+
+    SwsOpChain *chain = ptr;
+    for (int i = 0; i < chain->num_ref; i++)
+        av_refstruct_unref(&chain->ref[i]);
+
+    av_free(chain);
+}
+
+int ff_sws_op_chain_append(SwsOpChain *chain, SwsFuncPtr func, const void *ref,
+                           const void *data, size_t data_size)
+{
+    /* Ensures each SwsOpImpl is stored aligned, so that we can deref it */
+    const size_t op_size = FFALIGN(offsetof(SwsOpImpl, priv) + data_size,
+                                   alignof(SwsOpImpl));
+
+    if (chain->impl_size + op_size > sizeof(chain->impl))
+        return AVERROR(EINVAL);
+    if (ref && chain->num_ref >= FF_ARRAY_ELEMS(chain->ref))
+        return AVERROR(EINVAL);
+
+    SwsOpImpl *impl = (SwsOpImpl *) &chain->impl[chain->impl_size];
+    impl->func = func;
+    if (data_size)
+        memcpy(&impl->priv, data, data_size);
+    chain->impl_size += op_size;
+    if (ref)
+        chain->ref[chain->num_ref++] = av_refstruct_ref_c(ref);
+
+    return 0;
+}
+
+void ff_sws_op_chain_attach(const SwsOpChain *chain, SwsCompiledOp *out)
+{
+    av_assert0(!out->priv);
+    out->priv = (void *) chain;
+    out->free = ff_sws_op_chain_free_cb;
+    out->cpu_flags = chain->cpu_flags;
+    memcpy(out->over_read,  chain->over_read,  sizeof(out->over_read));
+    memcpy(out->over_write, chain->over_write, sizeof(out->over_write));
+}
+
+int ff_sws_uop_lookup(SwsContext *ctx, const SwsUOpTable *const tables[],
+                      int num_tables, const SwsUOp *uop, const int block_size,
+                      SwsOpChain *chain)
+{
+    const unsigned cpu_flags = av_get_cpu_flags();
+    const SwsUOpEntry *match = NULL;
+    int ret;
+
+    SwsImplParams params = {
+        .ctx = ctx,
+        .uop = uop
+    };
+
+    for (int n = 0; !match && n < num_tables; n++) {
+        const SwsUOpTable *table = params.table = tables[n];
+        if (table->block_size && table->block_size != block_size ||
+            table->cpu_flags & ~cpu_flags)
+            continue;
+
+        for (int i = 0; table->entries[i]; i++) {
+            const SwsUOpEntry *entry = table->entries[i];
+            const SwsUOp entry_uop = {
+                .uop  = entry->uop,
+                .type = entry->type,
+                .mask = entry->mask,
+                .par  = entry->par,
+            };
+
+            if (ff_sws_uop_cmp(uop, &entry_uop) != 0)
+                continue;
+            if (entry->check && !entry->check(&params))
+                continue;
+
+            match = entry;
+            break;
+        }
+    }
+
+    if (!match) {
+        char name[64];
+        ff_sws_uop_name(uop, name);
+        av_log(ctx, AV_LOG_DEBUG, "No implementation found for: %s\n", name);
+        return AVERROR(ENOTSUP);
+    }
+
+    SwsImplResult res = {0};
+    if (match->setup) {
+        ret = match->setup(&params, &res);
+        if (ret < 0)
+            return ret;
+    }
+
+    ret = ff_sws_op_chain_append(chain, res.func ? res.func : match->func,
+                                 res.ref, res.priv, res.priv_size);
+    av_refstruct_unref(&res.ref);
+    if (ret < 0)
+        return ret;
+
+    for (int i = 0; i < 4; i++) {
+        chain->over_read[i]  = FFMAX(chain->over_read[i],  res.over_read[i]);
+        chain->over_write[i] = FFMAX(chain->over_write[i], res.over_write[i]);
+    }
+
+    chain->cpu_flags |= params.table->cpu_flags;
+    return 0;
+}
+
+int ff_sws_setup_scalar(const SwsImplParams *params, SwsImplResult *out)
+{
+    const SwsUOp *uop = params->uop;
+    const SwsPixel scalar = uop->data.scalar;
+    switch (uop->type) {
+    case SWS_PIXEL_U8:  SWS_OP_PRIV_PACK(out, scalar.u8);  break;
+    case SWS_PIXEL_U16: SWS_OP_PRIV_PACK(out, scalar.u16); break;
+    case SWS_PIXEL_U32: SWS_OP_PRIV_PACK(out, scalar.u32); break;
+    case SWS_PIXEL_F32: SWS_OP_PRIV_PACK(out, scalar.f32); break;
+    default: return AVERROR(EINVAL);
+    }
+
+    return 0;
+}
+
+int ff_sws_setup_vec4(const SwsImplParams *params, SwsImplResult *out)
+{
+    const SwsUOp *uop = params->uop;
+    for (int i = 0; i < 4; i++) {
+        const SwsPixel vi = uop->data.vec4[i];
+        switch (uop->type) {
+        case SWS_PIXEL_U8:  SWS_OP_PRIV_PACK(out, vi.u8);  break;
+        case SWS_PIXEL_U16: SWS_OP_PRIV_PACK(out, vi.u16); break;
+        case SWS_PIXEL_U32: SWS_OP_PRIV_PACK(out, vi.u32); break;
+        case SWS_PIXEL_F32: SWS_OP_PRIV_PACK(out, vi.f32); break;
+        default: return AVERROR(EINVAL);
+        }
+    }
+
+    return 0;
+}
