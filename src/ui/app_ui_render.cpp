@@ -139,6 +139,12 @@ void drawNavIcon(Canvas& c, int kind, float cx, float cy, Color col) {
         c.strokeCircle(cx - 3.0f, cy - 3.0f, 10.0f, 3.2f, col);
         c.line(cx + 4.5f, cy + 4.5f, cx + 13.0f, cy + 13.0f, 3.6f, col);
         break;
+    case 4:  // Xbox accounts: a head and shoulders
+        c.strokeCircle(cx, cy - 7.0f, 5.5f, 2.8f, col);
+        c.strokeArc(cx, cy + 13.0f, 13.0f, 2.8f, 3.1416f, 3.1416f, col);
+        c.line(cx - 13.0f, cy + 13.0f, cx - 13.0f, cy + 8.0f, 2.8f, col);
+        c.line(cx + 13.0f, cy + 13.0f, cx + 13.0f, cy + 8.0f, 2.8f, col);
+        break;
     default:  // settings: a gear
         for (int i = 0; i < 8; ++i) {
             const float a = static_cast<float>(i) * 0.7853982f;
@@ -452,8 +458,8 @@ void AppUi::drawSignIn(Canvas& c, uint64_t nowMs) {
 }
 
 void AppUi::drawTabs(Canvas& c) {
-    // Five round buttons in the middle of the header, as in the Xbox dashboard:
-    // Game Pass, your games, consoles, search, settings. The current one sits
+    // Six round buttons in the middle of the header: Game Pass, your games,
+    // consoles, search, Xbox accounts, settings. The current one sits
     // on a lighter pill; L1 / R1 still step through the three tabs.
     const int active = searching_ ? 3 : static_cast<int>(tab_);
     for (int i = 0; i < kNavCount; ++i) {
@@ -468,6 +474,14 @@ void AppUi::drawTabs(Canvas& c) {
             c.strokeRect({n.x - 4, n.y - 4, n.w + 8, n.h + 8}, rgba(92, 214, 110), 4, n.h / 2 + 4);
         }
         drawNavIcon(c, i, n.x + n.w / 2.0f, n.y + n.h / 2.0f - (on ? 1.0f : 0.0f), on ? kWhite : rgba(214, 222, 232, 220));
+        if (navFocus_ == 4 && i == 4) {
+            const std::string label = tr(Str::AccountManager);
+            const int tw = fonts_.semibold.measure(label, 16);
+            Rect tag{n.x + (n.w - tw - 22) / 2, n.y + n.h + 7, tw + 22, 25};
+            c.fillRect(tag, rgba(18, 27, 40, 245), 12);
+            c.strokeRect(tag, rgba(35, 211, 157, 180), 1, 12);
+            fonts_.semibold.draw(c, label, tag.x + 11, fonts_.semibold.centeredY(tag.y, tag.h, 16), 16, kWhite);
+        }
     }
     auto shoulder = [&](const char* name, int cx) {
         Rect r{cx - 18, homeNavSlot(0).y + 17, 36, 26};
@@ -2007,6 +2021,10 @@ void AppUi::render(Canvas& c, uint64_t nowMs) {
         case Screen::Settings: drawSettings(c); break;
         case Screen::Updating: drawUpdating(c, nowMs); break;
         case Screen::Streaming: break;
+    }
+    if (screen_ == Screen::Home && accountManagerOpen_ && !updatePrompt_ && !quitPrompt_) {
+        if (removeAccountConfirmOpen_) drawRemoveAccountConfirmModal(c);
+        else drawAccountManagerModal(c);
     }
     if (screen_ == Screen::Home && updatePrompt_) {
         if (showingUpdateNotes_) drawUpdateNotesModal(c);

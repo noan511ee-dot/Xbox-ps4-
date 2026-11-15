@@ -64,13 +64,28 @@ inline int homeTileX(int row, int col, int focusCol, bool rowFocused, int scroll
     if (row == 0 && rowFocused && col > focusCol) x += kHomeFocus - kHomeTile;
     return x;
 }
-// The header's five round buttons: the three tabs, the search and the settings.
+// The header's six round buttons: three tabs, search, Xbox accounts, settings.
 struct NavSlot { int x, y, w, h; };
-constexpr int kNavCount = 5;
+constexpr int kNavCount = 6;
 inline NavSlot homeNavSlot(int i) {
     constexpr int w = 76, h = 60, gap = 14, y = 46;
     constexpr int total = kNavCount * w + (kNavCount - 1) * gap;
     return {(kW - total) / 2 + i * (w + gap), y, w, h};
+}
+constexpr int kAccountMenuMaxRows = 6;
+constexpr int kAccountMenuRowPitch = 68;
+inline int accountMenuItemCount(int accounts) { return accounts + 1 + (accounts > 0 ? 1 : 0); }
+inline int accountMenuVisibleRows(int accounts) {
+    return std::min(kAccountMenuMaxRows, accountMenuItemCount(accounts));
+}
+inline Rect accountMenuPanel(int accounts) {
+    constexpr int w = 980;
+    const int h = 162 + accountMenuVisibleRows(accounts) * kAccountMenuRowPitch;
+    return {(kW - w) / 2, (kH - h) / 2 - 30, w, h};
+}
+inline Rect accountMenuRow(Rect panel, int visibleRow) {
+    return {panel.x + 44, panel.y + 104 + visibleRow * kAccountMenuRowPitch,
+            panel.w - 88, kAccountMenuRowPitch - 10};
 }
 constexpr uint64_t kHeroFadeMs = 300;
 

@@ -4,6 +4,50 @@
 
 namespace xc::ui {
 
+void AppUi::focusAccountManagerItem(int index) {
+    const int accountCount = static_cast<int>(accounts_.size());
+    const int itemCount = accountMenuItemCount(accountCount);
+    const int visible = accountMenuVisibleRows(accountCount);
+    accountManagerFocus_ = std::clamp(index, 0, itemCount - 1);
+    if (accountManagerFocus_ < accountManagerScroll_) accountManagerScroll_ = accountManagerFocus_;
+    if (accountManagerFocus_ >= accountManagerScroll_ + visible)
+        accountManagerScroll_ = accountManagerFocus_ - visible + 1;
+    accountManagerScroll_ = std::clamp(accountManagerScroll_, 0, std::max(0, itemCount - visible));
+}
+
+void AppUi::openAccountManager() {
+    accountManagerOpen_ = true;
+    removeAccountConfirmOpen_ = false;
+    accountManagerScroll_ = 0;
+    int selected = static_cast<int>(accounts_.size());  // Add account if the active entry is not indexed.
+    for (size_t i = 0; i < accounts_.size(); ++i) {
+        if (accounts_[i].id == activeAccountId_) {
+            selected = static_cast<int>(i);
+            break;
+        }
+    }
+    focusAccountManagerItem(selected);
+    dirty_ = true;
+}
+
+void AppUi::selectAccountManagerItem(int index, UiEvent& ev) {
+    const int accountCount = static_cast<int>(accounts_.size());
+    if (index >= 0 && index < accountCount) {
+        accountManagerOpen_ = false;
+        if (accounts_[static_cast<size_t>(index)].id != activeAccountId_) {
+            ev.action = Action::SwitchAccount;
+            ev.accountId = accounts_[static_cast<size_t>(index)].id;
+        }
+    } else if (index == accountCount) {
+        accountManagerOpen_ = false;
+        ev.action = Action::AddAccount;
+    } else if (index == accountCount + 1 && accountCount > 0) {
+        removeAccountConfirmOpen_ = true;
+        removeAccountFocus_ = 1;  // default to Cancel
+    }
+    dirty_ = true;
+}
+
 void AppUi::activateNav(int i, UiEvent& ev) {
     // Caller holds mutex_.
     navFocus_ = -1;
@@ -19,6 +63,8 @@ void AppUi::activateNav(int i, UiEvent& ev) {
         query_.clear();
         runSearch();
         dirty_ = true;
+    } else if (i == 4) {
+        openAccountManager();
     } else {
         screen_ = Screen::Settings;
         settingsRow_ = 0;
@@ -32,6 +78,38 @@ void AppUi::activateNav(int i, UiEvent& ev) {
 
 void AppUi::handleHome(const NavInput& in, UiEvent& ev) {
     // Caller holds mutex_.
+    if (accountManagerOpen_) {
+        if (removeAccountConfirmOpen_) {
+            if (in.back || in.options) {
+                removeAccountConfirmOpen_ = false;
+            } else {
+                if (in.left) removeAccountFocus_ = 0;
+                if (in.right) removeAccountFocus_ = 1;
+                if (in.accept) {
+                    removeAccountConfirmOpen_ = false;
+                    if (removeAccountFocus_ == 0) {
+                        accountManagerOpen_ = false;
+                        ev.action = Action::RemoveAccount;
+                        ev.accountId = activeAccountId_;
+                    }
+                }
+            }
+            dirty_ = true;
+            return;
+        }
+        const int itemCount = accountMenuItemCount(static_cast<int>(accounts_.size()));
+        if (in.back || in.options) {
+            accountManagerOpen_ = false;
+        } else {
+            if (in.scrollRows) focusAccountManagerItem(accountManagerFocus_ + in.scrollRows);
+            else if (in.up) focusAccountManagerItem(accountManagerFocus_ - 1);
+            else if (in.down) focusAccountManagerItem(accountManagerFocus_ + 1);
+            if (in.accept) selectAccountManagerItem(accountManagerFocus_, ev);
+            (void)itemCount;
+        }
+        dirty_ = true;
+        return;
+    }
     if ((in.scrollRows || in.scrollCards) && !(searching_ && searchOnKeys_)) {
         // Smooth scrolling: the rows and cards it moved by since the last
         // pass, one step at a time (the view glides after the focus).
@@ -114,7 +192,7 @@ void AppUi::handleHome(const NavInput& in, UiEvent& ev) {
             openDetails(results_[static_cast<size_t>(resultFocus_)]);
         return;
     }
-    // The header's five buttons: Up at the top of a tab goes to them, Left /
+    // The header's six buttons: Up at the top of a tab goes to them, Left /
     // Right move along, Cross opens, Down or Circle goes back to the rows.
     if (navFocus_ >= 0) {
         if (in.left && navFocus_ > 0) {
@@ -312,6 +390,46 @@ UiEvent AppUi::onMouseMove(float x, float y) {
     if (screen_ == Screen::Streaming || screen_ == Screen::Splash) {
         return ev;
     }
+    if (screen_ == Screen::Home && accountManagerOpen_ && !updatePrompt_ && !quitPrompt_ && !reportOpen_) {
+        if (removeAccountConfirmOpen_) {
+            Rect panel{(kW - 1100) / 2, (kH - 430) / 2 - 30, 1100, 430};
+            const int startX = panel.x + (panel.w - (2 * 260 + 40)) / 2;
+            const int yButton = panel.y + panel.h - 88;
+            for (int i = 0; i < 2; ++i) {
+                Rect r{startX + i * 300, yButton, 260, 58};
+                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+                    removeAccountFocus_ = i;
+            }
+        } else {
+            const int accountCount = static_cast<int>(accounts_.size());
+            const Rect panel = accountMenuPanel(accountCount);
+            const int visible = accountMenuVisibleRows(accountCount);
+            for (int i = 0; i < visible; ++i) {
+                const Rect r = accountMenuRow(panel, i);
+                if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h) {
+                    focusAccountManagerItem(accountManagerScroll_ + i);
+                    break;
+                }
+            }
+        }
+        return ev;
+    }
+    if (screen_ == Screen::Home && !searching_ && !reportOpen_ && !updatePrompt_ && !quitPrompt_) {
+        for (int i = 0; i < kNavCount; ++i) {
+            const NavSlot n = homeNavSlot(i);
+            if (x >= n.x && x < n.x + n.w && y >= n.y && y < n.y + n.h) {
+                if (navFocus_ != i) {
+                    navFocus_ = i;
+                    dirty_ = true;
+                }
+                return ev;
+            }
+        }
+        if (navFocus_ >= 0) {
+            navFocus_ = -1;
+            dirty_ = true;
+        }
+    }
     if (screen_ == Screen::Home && !searching_ && !reportOpen_ && !updatePrompt_ && !quitPrompt_) {
         if (tab_ == Tab::GamePass && y >= 140 && y < kH - 80) {
             constexpr int kGridW = kLibraryCols * kCardPitch - kCardGap;
@@ -484,6 +602,12 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
             dirty_ = true;
             return ev;
         }
+        if (screen_ == Screen::Home && accountManagerOpen_) {
+            if (removeAccountConfirmOpen_) removeAccountConfirmOpen_ = false;
+            else accountManagerOpen_ = false;
+            dirty_ = true;
+            return ev;
+        }
         if (screen_ == Screen::Settings) {
             if (pickerOpen_) {
                 handleColourPicker(NavInput{.back = true});
@@ -543,6 +667,42 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
     if (button != 1) return ev;
 
     if (reportOpen_ || countryPickerOpen_ || (screen_ == Screen::Home && (updatePrompt_ || quitPrompt_))) {
+        return ev;
+    }
+
+    if (screen_ == Screen::Home && accountManagerOpen_) {
+        auto inRect = [&](const Rect& r) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; };
+        if (removeAccountConfirmOpen_) {
+            Rect panel{(kW - 1100) / 2, (kH - 430) / 2 - 30, 1100, 430};
+            constexpr int kBtnW = 260, kBtnH = 58, kBtnGap = 40;
+            const int startX = panel.x + (panel.w - (2 * kBtnW + kBtnGap)) / 2;
+            const int buttonY = panel.y + panel.h - 88;
+            Rect removeBtn{startX, buttonY, kBtnW, kBtnH};
+            Rect cancelBtn{startX + kBtnW + kBtnGap, buttonY, kBtnW, kBtnH};
+            if (inRect(removeBtn)) {
+                removeAccountConfirmOpen_ = false;
+                accountManagerOpen_ = false;
+                ev.action = Action::RemoveAccount;
+                ev.accountId = activeAccountId_;
+            } else if (inRect(cancelBtn) || !inRect(panel)) {
+                removeAccountConfirmOpen_ = false;
+            }
+        } else {
+            const int accountCount = static_cast<int>(accounts_.size());
+            const Rect panel = accountMenuPanel(accountCount);
+            if (!inRect(panel)) {
+                accountManagerOpen_ = false;
+            } else {
+                const int visible = accountMenuVisibleRows(accountCount);
+                for (int i = 0; i < visible; ++i) {
+                    if (inRect(accountMenuRow(panel, i))) {
+                        selectAccountManagerItem(accountManagerScroll_ + i, ev);
+                        break;
+                    }
+                }
+            }
+        }
+        dirty_ = true;
         return ev;
     }
 

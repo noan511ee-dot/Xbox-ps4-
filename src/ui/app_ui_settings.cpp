@@ -1788,6 +1788,72 @@ void AppUi::drawRemoveAccountConfirmModal(Canvas& c) {
     drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
 }
 
+void AppUi::drawAccountManagerModal(Canvas& c) {
+    const int accountCount = static_cast<int>(accounts_.size());
+    const int itemCount = accountMenuItemCount(accountCount);
+    const int visible = accountMenuVisibleRows(accountCount);
+    accountManagerFocus_ = std::clamp(accountManagerFocus_, 0, itemCount - 1);
+    accountManagerScroll_ = std::clamp(accountManagerScroll_, 0, std::max(0, itemCount - visible));
+    if (accountManagerFocus_ < accountManagerScroll_) accountManagerScroll_ = accountManagerFocus_;
+    if (accountManagerFocus_ >= accountManagerScroll_ + visible)
+        accountManagerScroll_ = accountManagerFocus_ - visible + 1;
+
+    Rect panel = accountMenuPanel(accountCount);
+    drawModal(c, panel.w, panel.h, tr(Str::AccountManager));
+    for (int rowIndex = 0; rowIndex < visible; ++rowIndex) {
+        const int itemIndex = accountManagerScroll_ + rowIndex;
+        if (itemIndex >= itemCount) break;
+        const Rect row = accountMenuRow(panel, rowIndex);
+        const bool focused = itemIndex == accountManagerFocus_;
+        const bool accountItem = itemIndex < accountCount;
+        const bool removeItem = accountCount > 0 && itemIndex == accountCount + 1;
+        const bool active = accountItem && accounts_[static_cast<size_t>(itemIndex)].id == activeAccountId_;
+        const Color base = removeItem ? rgba(127, 29, 29, focused ? 210 : 115)
+                                      : rgba(255, 255, 255, focused ? 45 : 18);
+        c.fillRect(row, base, 14);
+        if (focused) c.strokeRect({row.x - 2, row.y - 2, row.w + 4, row.h + 4},
+                                  removeItem ? rgba(248, 113, 113) : kGreen, 3, 16);
+
+        std::string label;
+        if (accountItem) {
+            label = accounts_[static_cast<size_t>(itemIndex)].gamertag.empty()
+                        ? tr(Str::AccountFallbackName)
+                        : accounts_[static_cast<size_t>(itemIndex)].gamertag;
+        } else if (itemIndex == accountCount) {
+            label = tr(Str::AddAccount);
+        } else {
+            label = tr(Str::RemoveAccount);
+        }
+        const Color textColor = removeItem ? rgba(255, 210, 210) : kWhite;
+        fonts_.semibold.draw(c, label, row.x + 72, fonts_.semibold.centeredY(row.y, row.h, 25), 25, textColor);
+
+        const float cx = static_cast<float>(row.x + 38), cy = row.y + row.h / 2.0f;
+        if (active) {
+            c.fillCircle(cx, cy, 14.0f, kGreen);
+            c.line(cx - 7.0f, cy, cx - 1.0f, cy + 6.0f, 3.0f, kBg);
+            c.line(cx - 1.0f, cy + 6.0f, cx + 8.0f, cy - 7.0f, 3.0f, kBg);
+        } else if (!accountItem && !removeItem) {
+            c.strokeCircle(cx, cy, 14.0f, 2.5f, kGreen);
+            c.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.5f, kGreen);
+            c.line(cx, cy - 7.0f, cx, cy + 7.0f, 2.5f, kGreen);
+        } else if (removeItem) {
+            c.strokeCircle(cx, cy, 14.0f, 2.5f, rgba(248, 113, 113));
+            c.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.5f, rgba(248, 113, 113));
+        }
+    }
+    if (accountManagerScroll_ > 0) {
+        const int x = panel.x + panel.w - 36;
+        c.line(x - 7.0f, panel.y + 92.0f, x, panel.y + 84.0f, 2.5f, kGreen);
+        c.line(x, panel.y + 84.0f, x + 7.0f, panel.y + 92.0f, 2.5f, kGreen);
+    }
+    if (accountManagerScroll_ + visible < itemCount) {
+        const int x = panel.x + panel.w - 36;
+        const int y = panel.y + panel.h - 30;
+        c.line(x - 7.0f, y - 4.0f, x, y + 4.0f, 2.5f, kGreen);
+        c.line(x, y + 4.0f, x + 7.0f, y - 4.0f, 2.5f, kGreen);
+    }
+}
+
 void AppUi::drawKeysTester(Canvas& c) {
     Rect panel = drawModal(c, 1500, 860, tr(Str::KeyboardKeys));
     // Each input: its name (the PlayStation button, the Xbox one beside),

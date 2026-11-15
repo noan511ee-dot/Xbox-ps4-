@@ -638,6 +638,10 @@ private:
     void drawTrophyDisclaimerModal(Canvas& c);
     void drawRemoveTrophiesConfirmModal(Canvas& c);
     void drawRemoveAccountConfirmModal(Canvas& c);
+    void drawAccountManagerModal(Canvas& c);
+    void openAccountManager();
+    void focusAccountManagerItem(int index);
+    void selectAccountManagerItem(int index, UiEvent& ev);
     void openAchievements();
     void drawAchievementsModal(Canvas& c, uint64_t nowMs);
     // A modal panel over Settings with its title; returns its rectangle.
@@ -808,6 +812,8 @@ private:
     int settingsRow_ = 0;
     std::vector<XboxAccountChoice> accounts_;
     std::string activeAccountId_;
+    bool accountManagerOpen_ = false;
+    int accountManagerFocus_ = 0, accountManagerScroll_ = 0;
     bool dropdownOpen_ = false;  // the list of the focused settings row
     int dropdownIndex_ = 0, dropdownTop_ = 0;
     uint64_t signOutHoldStart_ = 0;  // TOUCHPAD hold in progress

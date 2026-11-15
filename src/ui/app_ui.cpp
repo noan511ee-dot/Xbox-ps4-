@@ -14,6 +14,7 @@ std::vector<SettingsRowPos> visibleSettingsRows(const UiCaps& caps) {
         case 13: return caps.desktopWindow;
         case 15: return caps.gyro;
         case 25: return caps.console;
+        case 26: return false;  // Xbox account management lives in the Home navigation now.
         default: return true;
         }
     });
