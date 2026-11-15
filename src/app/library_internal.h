@@ -16,6 +16,16 @@
 namespace xc::app {
 
 constexpr int kCacheVersion = 3;
+constexpr char kRocketLeagueProductId[] = "C125W9BG2K0V";
+constexpr char kRocketLeagueXboxTitleId[] = "558797228";
+
+inline void ensureRocketLeagueListed(std::vector<std::string>& productIds, size_t limit) {
+    auto it = std::find(productIds.begin(), productIds.end(), kRocketLeagueProductId);
+    if (it != productIds.end() && (limit == 0 || static_cast<size_t>(it - productIds.begin()) < limit)) return;
+    if (it != productIds.end()) productIds.erase(it);
+    if (limit > 0 && productIds.size() >= limit) productIds.resize(limit - 1);
+    productIds.emplace_back(kRocketLeagueProductId);
+}
 
 struct ListSpec {
     const char* sigl;

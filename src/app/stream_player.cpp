@@ -65,11 +65,12 @@ struct StreamPlayer::Impl {
     }
     stream::StreamCallbacks callbacks;
     stream::StreamOptions options;
-    // Reconnecting after a lost connection, as the xbox.com client does: up
-    // to 20 attempts a second apart while the cloud session is still there.
+    // Reconnecting after a lost connection: at most 20 attempts with a short,
+    // capped retry delay while the cloud session is still there.
     std::atomic<bool> reconnecting{false};
     std::atomic<bool> titleFocused{true};
     int reconnectAttempts = 0;
+    uint64_t reconnectRetryAtMs = 0;
     std::atomic<uint32_t> reconnects{0};
     uint64_t lastRtpPackets = 0, lastAudioPackets = 0;
     int silentTicks = 0;
@@ -1139,16 +1140,24 @@ struct StreamPlayer::Impl {
             end("the stream reached its safe reconnection limit");
             return;
         }
+        const uint64_t now = platform::nowMs();
+        if (now < reconnectRetryAtMs) return;
+        reconnectRetryAtMs = 0;
         if (reconnectAttempts == 0) platform::notify(ui::tr(ui::Str::Reconnecting));
         if (++reconnectAttempts > 20) {
             end("the connection was lost and couldn't be restored");
             return;
         }
+        auto deferFailedRetry = [this] {
+            const unsigned exponent = static_cast<unsigned>(std::min(reconnectAttempts - 1, 2));
+            reconnectRetryAtMs = platform::nowMs() + (500u << exponent);  // 500 ms, 1 s, then capped at 2 s
+        };
         // Only while the cloud session is still there to connect to.
         xcloud::SessionStatus status;
         std::string err;
         if (!gssv.sessionState(status, err)) {
             XC_LOGW("reconnect %d: no session state (%s)", reconnectAttempts, err.c_str());
+            deferFailedRetry();
             return;  // the network may not be back yet
         }
         if (status.state == xcloud::SessionState::Provisioning ||
@@ -1193,17 +1202,20 @@ struct StreamPlayer::Impl {
             reconnecting = false;
             if (!next->start(err)) {
                 XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
+                deferFailedRetry();
                 reconnecting = true;
                 return;
             }
         } catch (const std::exception& e) {
             err = std::string("reconnect exception: ") + e.what();
             XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
+            deferFailedRetry();
             reconnecting = true;
             return;
         } catch (...) {
             err = "reconnect exception: unknown exception";
             XC_LOGW("reconnect %d failed: %s", reconnectAttempts, err.c_str());
+            deferFailedRetry();
             reconnecting = true;
             return;
         }
@@ -1214,6 +1226,7 @@ struct StreamPlayer::Impl {
         updateMicState();
         XC_LOGI("reconnected after %d attempt(s)", reconnectAttempts);
         reconnectAttempts = 0;
+        reconnectRetryAtMs = 0;
         lastSilenceKeyframeMs = 0;
         ++reconnects;
         keyframeWanted = true;

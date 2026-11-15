@@ -149,6 +149,10 @@ size_t Library::syncDelta(xcloud::GssvClient& gssv, const Changed& changed, std:
             if (spec.limit > 0 && fs.list.productIds.size() > spec.limit) {
                 fs.list.productIds.resize(spec.limit);
             }
+            if (freeToPlay) {
+                ensureRocketLeagueListed(fs.list.productIds, spec.limit);
+                freeInStore_.insert(kRocketLeagueProductId);
+            }
             for (const auto& pid : fs.list.productIds) {
                 if (!pid.empty() && !products_.count(pid)) {
                     newProducts.push_back(pid);
@@ -407,7 +411,6 @@ bool Library::load(xcloud::GssvClient& gssv, const std::string& language, const 
         bool freeToPlay = spec.sigl == xcloud::sigl::kFreeToPlay;
         if (freeToPlay) {
             freeInStore_.insert(list.productIds.begin(), list.productIds.end());
-            XC_LOGI("library: %s: %zu games", list.title.c_str(), list.productIds.size());
         }
         bool isMostPopular = spec.sigl == xcloud::sigl::kMostPopular;
         if (!gamePass_.empty() && !freeToPlay && !isMostPopular) {
@@ -435,6 +438,11 @@ bool Library::load(xcloud::GssvClient& gssv, const std::string& language, const 
                                              }),
                               list.productIds.end());
         if (spec.limit > 0 && list.productIds.size() > spec.limit) list.productIds.resize(spec.limit);
+        if (freeToPlay) {
+            ensureRocketLeagueListed(list.productIds, spec.limit);
+            freeInStore_.insert(kRocketLeagueProductId);
+            XC_LOGI("library: %s: %zu games", list.title.c_str(), list.productIds.size());
+        }
         std::vector<std::string> missing;
         for (const auto& id : list.productIds) {
             auto it = products_.find(id);

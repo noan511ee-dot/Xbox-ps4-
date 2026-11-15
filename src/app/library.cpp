@@ -342,6 +342,10 @@ ui::GameTile Library::tile(const std::string& productId, const std::string& titl
         }
     }
     t.freeInStore = freeInStore_.count(productId) > 0;
+    if (t.productId == kRocketLeagueProductId &&
+        (t.name.empty() || t.name == t.productId || isStoreBigId(t.name))) {
+        t.name = "Rocket League";
+    }
     // Free-to-play games are open to every plan and to no plan, even those
     // also tagged with a Pass product id in the catalog.
     t.plan = (!t.freeInStore && gamePass_.count(productId)) ? p.plan : 0;
@@ -455,10 +459,12 @@ bool Library::hasStreamingSupport(const ui::GameTile& t) const {
         (!t.titleId.empty() && acquiredTitles_.count(t.titleId))) {
         return true;
     }
-    if (t.titleId.empty() || t.titleId == "None") return false;
+    if (t.titleId.empty() || t.titleId == "None")
+        return t.productId == kRocketLeagueProductId && t.freeInStore;
     if (t.titleId == t.productId && isStoreBigId(t.productId)) {
         auto ct = cloudTitleOf_.find(t.productId);
-        if (ct == cloudTitleOf_.end() || ct->second.empty() || ct->second == "None") return false;
+        if (ct == cloudTitleOf_.end() || ct->second.empty() || ct->second == "None")
+            return t.productId == kRocketLeagueProductId && t.freeInStore;
     }
     return true;
 }
@@ -468,7 +474,8 @@ std::vector<ui::GameTile> Library::tiles(const std::vector<Item>& items) const {
     for (const auto& [pid, tid] : items) {
         ui::GameTile t = tile(pid, tid);
         if (xcloud::isNonGameAddon(t.titleId, t.name)) continue;
-        if (t.productId.empty() || t.titleId.empty() || t.name.empty()) continue;
+        bool rocketTrialCard = t.productId == kRocketLeagueProductId && t.freeInStore;
+        if (t.productId.empty() || ((t.titleId.empty() || t.titleId == "None") && !rocketTrialCard) || t.name.empty()) continue;
         if (isStoreBigId(t.name) || (t.name == t.productId && isStoreBigId(t.productId))) {
             auto pit = products_.find(t.productId);
             if (pit != products_.end() && !pit->second.title.empty() && !isStoreBigId(pit->second.title)) {
@@ -507,7 +514,8 @@ std::vector<ui::GameRow> Library::rows() const {
         row.isGrid = r.isGrid;
         for (const auto& [pid, tid] : r.items) {
             ui::GameTile t = tile(pid, tid);
-            if (t.productId.empty() || t.titleId.empty() || t.name.empty() ||
+            bool rocketTrialCard = t.productId == kRocketLeagueProductId && t.freeInStore;
+            if (t.productId.empty() || ((t.titleId.empty() || t.titleId == "None") && !rocketTrialCard) || t.name.empty() ||
                 isStoreBigId(t.name) || (t.name == t.productId && isStoreBigId(t.productId)) ||
                 xcloud::isNonGameAddon(t.titleId, t.name)) continue;
             if (isPcOnly(t.productId) || xcloud::isPcTitle(t.name)) continue;

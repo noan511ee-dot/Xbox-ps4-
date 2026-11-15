@@ -296,14 +296,6 @@ inline bool matchesPublisher(const std::string& rawPublisher, int filter) {
 
 constexpr uint64_t kSignOutHoldMs = 5000;
 
-inline std::string loginCountryName(const std::string& country) {
-    static const std::pair<const char*, Str> kNames[] = {
-        {"br", Str::CountryBR}, {"jp", Str::CountryJP}, {"kr", Str::CountryKR}, {"pl", Str::CountryPL}, {"us", Str::CountryUS}};
-    for (const auto& [code, name] : kNames)
-        if (country == code) return tr(name);
-    return {};
-}
-
 inline int consoleRank(const std::string& platform) {
     return platform == "XS" ? 0 : platform == "ONE" ? 1 : platform == "360" ? 2 : 3;
 }

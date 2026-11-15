@@ -2,6 +2,7 @@
 // Copyright (C) 2026 RafaelNGP
 #include "app/worker_internal.h"
 
+#include "app/launch_title_internal.h"
 #include "app/autoplay.h"
 #include "app/crash_guard.h"
 #include "app/shell.h"
@@ -621,12 +622,31 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
     // A login about to expire is renewed first (its region kept); if that
     // fails the start is tried all the same.
     if (!keepSignedIn(am, gssv, err)) XC_LOGW("sign-in renewal: %s", err.c_str());
+    std::string launchTitleId = game.titleId;
+    if (!gssv.isHome() && !game.productId.empty() && launchTitleId == game.productId)
+        launchTitleId.clear();  // A Store ProductId is not a cloud launch ID.
+    if (!gssv.isHome() && (launchTitleId.empty() || launchTitleId == "None") && !game.productId.empty()) {
+        std::vector<xcloud::Title> titles;
+        std::string lookupErr;
+        if (gssv.listTitles(titles, lookupErr, false)) {
+            launchTitleId = resolveCloudLaunchTitleId(titles, game.productId);
+            if (!launchTitleId.empty())
+                XC_LOGI("resolved missing cloud launch ID from Xbox title list for product %s", game.productId.c_str());
+        } else {
+            XC_LOGW("could not resolve cloud launch ID for product %s: %s", game.productId.c_str(), lookupErr.c_str());
+        }
+        if (launchTitleId.empty() || launchTitleId == "None") {
+            const std::string reason = "Xbox Cloud did not provide a launch ID for " + game.name;
+            XC_LOGW("%s (product %s); refusing to start with an empty titleId", reason.c_str(), game.productId.c_str());
+            return "ERROR: " + ui::trf(ui::Str::StreamFailed, reason);
+        }
+    }
     err.clear();
     std::string streamLocale = ui::gameLocale();
     {
         std::lock_guard<std::mutex> lock(g_settingsMutex);
         bool hasCustom = false;
-        GameProfile prof = g_settings.profileForGame(game.productId, game.titleId, &hasCustom);
+        GameProfile prof = g_settings.profileForGame(game.productId, launchTitleId, &hasCustom);
         if (!prof.locale.empty()) streamLocale = prof.locale;
         std::string res;
         if (!g_autoplay.resolution.empty()) {
@@ -686,7 +706,7 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
                 hasCustom ? " (per-game)" : "", region ? region->name.c_str() : "?", streamLocale.c_str());
     }
     // For a crash marker: what is being started (a console's id stays out).
-    g_stageTitle = game.titleId;
+    g_stageTitle = launchTitleId;
     g_stageGameName = game.name;
     g_stageProduct = game.productId;
     g_stageXboxTitleId = game.xboxTitleId;
@@ -697,15 +717,15 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
             if (g_stageGameName.empty()) g_stageGameName = m->titleName;
         }
     }
-    crash::setStage(gssv.isHome() ? "starting own Xbox" : ("starting " + game.titleId).c_str());
+    crash::setStage(gssv.isHome() ? "starting own Xbox" : ("starting " + launchTitleId).c_str());
     if (std::string res = platform::diagnostics(); !res.empty()) XC_LOGI("resources before the stream: %s", res.c_str());
     int status = 0;
-    bool started = gssv.startSession(game.titleId, streamLocale, err, &status);
+    bool started = gssv.startSession(launchTitleId, streamLocale, err, &status);
     if (!started && status == 401 && !g_cancel) {
         // The token refused before its time: renewed once, asked again.
         XC_LOGW("%s; renewing the sign-in and asking again", err.c_str());
         std::string renewErr;
-        if (keepSignedIn(am, gssv, renewErr, true)) started = gssv.startSession(game.titleId, streamLocale, err, &status);
+        if (keepSignedIn(am, gssv, renewErr, true)) started = gssv.startSession(launchTitleId, streamLocale, err, &status);
         else XC_LOGW("sign-in renewal: %s", renewErr.c_str());
     }
     if (!started) {
@@ -764,7 +784,7 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
             if (!queueStartedAt) queueStartedAt = now;
             int elapsedSec = static_cast<int>((now - queueStartedAt) / 1000);
             if (!queueAskedAt || now - queueAskedAt >= 15000) {
-                int s = gssv.titleWaitSeconds(game.titleId);
+                int s = gssv.titleWaitSeconds(launchTitleId);
                 XC_LOGI("queue: estimated %d s (elapsed %d s)", s, elapsedSec);
                 if (s >= 0 || queueSeconds < 0) queueSeconds = s;
                 queueAskedAt = now;

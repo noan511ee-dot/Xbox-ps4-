@@ -3,6 +3,7 @@
 // Offline unit tests for the portable core (no network).
 #include "app/auto_deband.h"
 #include "app/library.h"
+#include "app/launch_title_internal.h"
 #include "app/settings.h"
 #include "app/update_check.h"
 #include "app/updater.h"
@@ -131,6 +132,28 @@ static void testJson() {
     json::Value b = a;
     b.push(2);
     CHECK(a.size() == 1 && b.size() == 2);
+}
+
+static void testCloudLaunchTitleResolution() {
+    xcloud::Title title;
+    title.titleId = "REAL_GSSV_LAUNCH_ID";
+    title.productId = "UNRELATED_PRODUCT";
+    title.xboxTitleId = app::kRocketLeagueXboxTitleId;
+    std::vector<xcloud::Title> titles{title};
+
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+    CHECK(app::resolveCloudLaunchTitleId(titles, "DIFFERENT_PRODUCT").empty());
+
+    titles[0].xboxTitleId.clear();
+    titles[0].productId = app::kRocketLeagueProductId;
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+
+    titles[0].productId = "UNRELATED_PRODUCT";
+    titles[0].alternateProductIds = {app::kRocketLeagueProductId};
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+
+    titles[0].titleId = "None";
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId).empty());
 }
 
 static void testUrl() {
@@ -9188,6 +9211,7 @@ int main() {
     testAccountStoreIdentifiers();
     testPrices();
     testJson();
+    testCloudLaunchTitleResolution();
     testUrl();
     testInputPacket();
     testMouseKeyboardReports();

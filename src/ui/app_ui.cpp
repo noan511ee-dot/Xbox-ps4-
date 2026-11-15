@@ -4,6 +4,14 @@
 
 namespace xc::ui {
 
+std::string loginCountryName(const std::string& country) {
+    static const std::pair<const char*, Str> kNames[] = {
+        {"br", Str::CountryBR}, {"jp", Str::CountryJP}, {"kr", Str::CountryKR}, {"pl", Str::CountryPL}, {"us", Str::CountryUS}};
+    for (const auto& [code, name] : kNames)
+        if (country == code) return tr(name);
+    return {};
+}
+
 std::vector<SettingsRowPos> visibleSettingsRows(const UiCaps& caps) {
     return filterRows(kSettingsOrder, kSettingsGroupStart, [&](int row) {
         switch (row) {
