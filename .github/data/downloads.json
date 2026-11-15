@@ -1,7 +1,22 @@
 {
-  "generated_at": "2026-11-15T12:05:48.278Z",
-  "total_downloads": 10,
+  "generated_at": "2026-11-15T13:23:12.037Z",
+  "total_downloads": 14,
   "releases": [
+    {
+      "tag_name": "v1.6.3",
+      "name": "PBOX v1.6.3 — Xbox Accounts & Stability",
+      "published_at": "2026-11-15T12:19:01Z",
+      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.3",
+      "downloads": 4,
+      "pkg": {
+        "name": "PBOX-PS4-v1.6.3.pkg",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.3/PBOX-PS4-v1.6.3.pkg"
+      },
+      "checksum": {
+        "name": "PBOX-PS4-v1.6.3.pkg.sha256",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.3/PBOX-PS4-v1.6.3.pkg.sha256"
+      }
+    },
     {
       "tag_name": "v1.6.2",
       "name": "PBOX v1.6.2 — Update Package",
