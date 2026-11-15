@@ -43,6 +43,10 @@ void checkForUpdate() {
     std::string err;
     bool found = findLatestRelease(r, err, g_autoplay.updateFeed);
     XC_LOGI("latest release: %s (this is %s)", found ? r.tag.c_str() : err.c_str(), XC_APP_VERSION);
+    if (g_quit.load()) {
+        XC_LOGI("update check: app is closing; discarding the result");
+        return;
+    }
     bool newer = found && isNewerVersion(r.tag, XC_APP_VERSION);
     bool offer = newer && !r.zipUrl.empty() && !r.sigUrl.empty();
     if (newer && !offer) XC_LOGW("%s has no signed package", r.tag.c_str());

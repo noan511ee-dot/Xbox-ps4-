@@ -304,15 +304,6 @@ void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
     }
     setPriceAuth(g_xblAuth, g_xuid);
     platform::notify(ui::trf(ui::Str::SignedInAs, am.profile().gamertag), "signed in (notification)");
-    static bool updateChecked = false;
-    static platform::Thread s_updateThread;
-    if (!updateChecked && (g_autoplay.title.empty() || g_autoplay.title == "UPDATE" || !g_autoplay.updateFeed.empty())) {
-        updateChecked = true;
-        platform::startThread(s_updateThread, [] {
-            platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
-            checkForUpdate();
-        }, 512u << 10);
-    }
     std::vector<std::string> regions;
     for (const auto& r : gssv.session().regions) regions.push_back(r.name);
     const xcloud::Region* def = gssv.session().defaultRegion();
@@ -724,6 +715,20 @@ void worker() {
         }
         XC_LOGI("AUTOPLAY END: tls check (date %s)", net::todayText().c_str());
         return;
+    }
+    // Check for a new release as soon as the app's worker starts, not after
+    // Xbox sign-in. The request runs separately so neither sign-in nor launch
+    // waits for GitHub; on PS4 the result offers the version, notes and QR.
+    static bool updateChecked = false;
+    static platform::Thread s_updateThread;
+    if (!updateChecked && (g_autoplay.title.empty() || g_autoplay.title == "UPDATE" || !g_autoplay.updateFeed.empty())) {
+        updateChecked = true;
+        if (!platform::startThread(s_updateThread, [] {
+                platform::setThreadAffinity(platform::ThreadRole::Worker, "xcloud_upd");
+                checkForUpdate();
+            }, 512u << 10)) {
+            XC_LOGW("update check: could not start background thread");
+        }
     }
     s_accounts = std::make_unique<auth::AccountStore>(platform::dataDir() + "/accounts.json");
     if (!s_accounts->load()) XC_LOGI("account index: none or unreadable; using the legacy single-account store if present");

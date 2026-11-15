@@ -47,7 +47,7 @@ bool findLatestRelease(Release& out, std::string& err, const std::string& feedUr
     net::Request req;
     req.url = feedUrl.empty() ? kLatestRelease : feedUrl;
     req.headers = {{"Accept", "application/vnd.github+json"}, {"User-Agent", "PSBox-Cloud-Gaming"}};
-    req.timeoutMs = 10000;
+    req.timeoutMs = 5000;
     auto r = net::perform(req);
     if (!r.ok()) {
         err = r.status ? "HTTP " + std::to_string(r.status) : r.error;
