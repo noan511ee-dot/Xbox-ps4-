@@ -22,4 +22,9 @@ double regionDistanceKm(const std::string& a, const std::string& b);
 std::vector<std::string> regionsByExpectedRtt(const std::string& from, const std::vector<std::string>& candidates,
                                               const std::map<std::string, int>& measured);
 
+// Select a measured, currently available region only when it beats the measured
+// default by at least `minImprovementMs`; empty means keep the service default.
+std::string lowestMeasuredRegion(const std::string& defaultRegion, const std::vector<std::string>& available,
+                                 const std::map<std::string, int>& measured, int minImprovementMs = 8);
+
 }  // namespace xc::xcloud

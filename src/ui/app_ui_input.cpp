@@ -749,6 +749,24 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
             }
             return ev;
         }
+        if (removeAccountConfirmOpen_) {
+            Rect panel{(kW - 1100) / 2, (kH - 430) / 2 - 30, 1100, 430};
+            constexpr int kBtnW = 260, kBtnH = 58, kBtnGap = 40;
+            const int btnStartX = panel.x + (panel.w - (2 * kBtnW + kBtnGap)) / 2;
+            const int btnY = panel.y + panel.h - 88;
+            Rect removeBtn{btnStartX, btnY, kBtnW, kBtnH};
+            Rect cancelBtn{btnStartX + kBtnW + kBtnGap, btnY, kBtnW, kBtnH};
+            auto inRect = [&](const Rect& r) { return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h; };
+            if (inRect(removeBtn)) {
+                removeAccountConfirmOpen_ = false;
+                ev.action = Action::RemoveAccount;
+                ev.accountId = activeAccountId_;
+            } else if (inRect(cancelBtn) || !inRect(panel)) {
+                removeAccountConfirmOpen_ = false;
+            }
+            dirty_ = true;
+            return ev;
+        }
         if (tester_ != Tester::None || pickerOpen_) {
             return ev;
         }
@@ -776,12 +794,26 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
                     Rect item{panel.x + 8, panel.y + 8 + k * kItemH, panel.w - 16, kItemH};
                     if (x >= item.x && x < item.x + item.w && y >= item.y && y < item.y + item.h && i < n) {
                         int before = settingSelected(settingsRow_);
-                        applySetting(settingsRow_, i);
                         dropdownOpen_ = false;
                         dirty_ = true;
+                        if (settingsRow_ == 26) {
+                            if (i < accounts_.size()) {
+                                if (accounts_[i].id != activeAccountId_) {
+                                    ev.action = Action::SwitchAccount;
+                                    ev.accountId = accounts_[i].id;
+                                }
+                            } else if (i == accounts_.size()) {
+                                ev.action = Action::AddAccount;
+                            } else {
+                                removeAccountConfirmOpen_ = true;
+                                removeAccountFocus_ = 1;
+                            }
+                        } else {
+                            applySetting(settingsRow_, i);
+                        }
                         if (settingsRow_ == 6 && i == 1) {
                             openColourPicker(before);
-                        } else if (settingsRow_ != 8) {
+                        } else if (settingsRow_ != 8 && settingsRow_ != 26) {
                             ev.action = Action::SettingsChanged;
                             ev.settings = settings_;
                         }
@@ -828,6 +860,12 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
                 } else if (i == 25) {
                     removeTrophiesConfirmOpen_ = true;
                     removeTrophiesFocus_ = 1;
+                    dirty_ = true;
+                    return ev;
+                } else if (i == 26) {
+                    dropdownOpen_ = true;
+                    dropdownIndex_ = settingSelected(i);
+                    dropdownTop_ = std::max(0, dropdownIndex_ - 4);
                     dirty_ = true;
                     return ev;
                 } else if (i == 19) {
@@ -1147,6 +1185,23 @@ UiEvent AppUi::handle(const NavInput& in) {
                 }
                 break;
             }
+            if (removeAccountConfirmOpen_) {
+                if (in.left || in.right) {
+                    removeAccountFocus_ ^= 1;
+                    dirty_ = true;
+                } else if (in.back) {
+                    removeAccountConfirmOpen_ = false;
+                    dirty_ = true;
+                } else if (in.accept) {
+                    removeAccountConfirmOpen_ = false;
+                    dirty_ = true;
+                    if (removeAccountFocus_ == 0) {
+                        ev.action = Action::RemoveAccount;
+                        ev.accountId = activeAccountId_;
+                    }
+                }
+                break;
+            }
             if (pickerOpen_) {
                 handleColourPicker(in);
                 if (!pickerOpen_ && in.accept) {
@@ -1211,11 +1266,23 @@ UiEvent AppUi::handle(const NavInput& in) {
                 if (in.down && dropdownIndex_ + 1 < n) ++dropdownIndex_;
                 if (in.up && dropdownIndex_ > 0) --dropdownIndex_;
                 int before = settingSelected(settingsRow_);
-                if (in.accept) applySetting(settingsRow_, dropdownIndex_);
+                if (in.accept && settingsRow_ != 26) applySetting(settingsRow_, dropdownIndex_);
                 if (in.accept || in.back) dropdownOpen_ = false;
-                if (in.accept && settingsRow_ == 6 && dropdownIndex_ == 1) {
+                if (in.accept && settingsRow_ == 26) {
+                    if (dropdownIndex_ < accounts_.size()) {
+                        if (accounts_[static_cast<size_t>(dropdownIndex_)].id != activeAccountId_) {
+                            ev.action = Action::SwitchAccount;
+                            ev.accountId = accounts_[static_cast<size_t>(dropdownIndex_)].id;
+                        }
+                    } else if (dropdownIndex_ == accounts_.size()) {
+                        ev.action = Action::AddAccount;
+                    } else {
+                        removeAccountConfirmOpen_ = true;
+                        removeAccountFocus_ = 1;
+                    }
+                } else if (in.accept && settingsRow_ == 6 && dropdownIndex_ == 1) {
                     openColourPicker(before);
-                } else if (in.accept && settingsRow_ != 8) {
+                } else if (in.accept && settingsRow_ != 8 && settingsRow_ != 26) {
                     ev.action = Action::SettingsChanged;
                     ev.settings = settings_;
                 }
@@ -1250,14 +1317,14 @@ UiEvent AppUi::handle(const NavInput& in) {
             } else {
                 resetSettingsHoldStart_ = 0;
             }
-            if (in.right && settingsRow_ != 23 && settingsRow_ != 25) {
+            if (in.right && settingsRow_ != 23 && settingsRow_ != 25 && settingsRow_ != 26) {
                 changeSetting(+1);
                 if (settingsRow_ != 8) {
                     ev.action = Action::SettingsChanged;
                     ev.settings = settings_;
                 }
             }
-            if (in.left && settingsRow_ != 23 && settingsRow_ != 25) {
+            if (in.left && settingsRow_ != 23 && settingsRow_ != 25 && settingsRow_ != 26) {
                 changeSetting(-1);
                 if (settingsRow_ != 8) {
                     ev.action = Action::SettingsChanged;

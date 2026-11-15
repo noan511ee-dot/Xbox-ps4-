@@ -653,18 +653,14 @@ void Library::sortOwned() {
 
 bool Library::loadCache(bool withLayout) {
     std::string text;
-    if (cachePath_.empty() || !platform::readFile(cachePath_, text)) {
-        std::string fallback;
-        if (!cachePath_.empty()) {
-            auto pos = cachePath_.rfind('/');
-            if (pos != std::string::npos) {
-                fallback = cachePath_.substr(0, pos + 1) + "library.json";
-            }
-        }
-        if (fallback.empty() || !platform::readFile(fallback, text)) {
-            fallback = platform::dataDir().empty() ? "library.json" : (platform::dataDir() + "/library.json");
-            if (!platform::readFile(fallback, text)) return false;
-        }
+    if (cachePath_.empty()) return false;
+    if (!platform::readFile(cachePath_, text)) {
+        // Preserve the pre-cache-format fallback only for the legacy account.
+        // An account-specific cache must never fall back to another user's library.
+        const std::string legacyCache = platform::dataDir() + "/library_cache.json";
+        if (cachePath_ != legacyCache) return false;
+        const std::string fallback = platform::dataDir().empty() ? "library.json" : (platform::dataDir() + "/library.json");
+        if (!platform::readFile(fallback, text)) return false;
     }
     auto j = json::parse(text);
     if (!j) return false;

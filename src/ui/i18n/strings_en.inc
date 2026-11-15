@@ -366,7 +366,7 @@ constexpr Column kEnglish = {
     // Settings descriptions
     "Changes the language of the application interface and the preferred audio and subtitles in cloud games", // SettingDescLanguage
     "Sets the maximum stream tier (1080p, 720p, or Best available). Best can upscale to a 4K display; the cloud stream itself may remain 1080p or 1440p. Takes effect on the next launch", // SettingDescResolution
-    "Selects the Microsoft datacenter region for streaming (Automatic or specific regions). Takes effect on the next launch", // SettingDescRegion
+    "Selects the streaming region. Auto uses a currently available region only when recent in-app game sessions measured it at least 8 ms faster than the service default; manual choice wins", // SettingDescRegion
     "Adjusts the inner dead zone of DualSense analog sticks to prevent stick drift and unintended movement", // SettingDescDeadzone
     "Enables or disables impulse trigger vibration emulation on DualSense L2 and R2 adaptive triggers", // SettingDescTriggerRumble
     "Toggles the confirm and back button layout between Cross (Western style) and Circle (Japanese style)", // SettingDescConfirmButton
@@ -452,4 +452,15 @@ constexpr Column kEnglish = {
     "Scan this code with your phone to open the download page.", // UpdateScan
     "Updating is manual and safe: this app never deletes or replaces your installed version by itself.", // UpdateManualNote
     "New version %s - you have %s", // UpdateVersionLine
+    "Xbox accounts", // AccountManager
+    "Choose a saved account, add another with Microsoft device-code sign-in, or remove the active account. Passwords are never stored; refresh tokens stay on this device.", // SettingDescAccounts
+    "Xbox account", // AccountFallbackName
+    "Add another account", // AddAccount
+    "Remove active account", // RemoveAccount
+    "Remove saved account?", // RemoveAccountConfirmTitle
+    "This removes the saved Microsoft sign-in token from this device. It does not cancel the account's subscription or delete the Microsoft account.", // RemoveAccountConfirmBody
+    "Remove account", // RemoveAccountConfirm
+    "This saved account is unavailable. Choose another account or sign in again.", // AccountUnavailable
+    "Could not create a local account identifier.", // AccountIdCreationFailed
+    "Could not save the account list. No saved account was removed.", // AccountStoreWriteFailed
 };

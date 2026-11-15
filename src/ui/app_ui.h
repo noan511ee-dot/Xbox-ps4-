@@ -77,6 +77,11 @@ struct ConsoleTile {
     std::string power;  // "On", "ConnectedStandby", "Off"...
 };
 
+struct XboxAccountChoice {
+    std::string id;       // local random id; no credential material
+    std::string gamertag;
+};
+
 struct GameRow {
     std::string title;
     std::vector<GameTile> tiles;
@@ -199,7 +204,7 @@ std::vector<SettingsRowPos> visibleGameSettingsRows(const UiCaps& caps, bool cus
 
 // The largest stick dead zone Settings offers, in percent of the travel.
 constexpr int kMaxDeadzone = 30;
-constexpr int kSettingRows = 26;  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
+constexpr int kSettingRows = 27;  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
                                   // sign-in country, 120 Hz output, bitrate cap, game volume, keyboard keys,
                                   // display mode (a desktop's window), controller buttons, gyro aiming, queue chime,
                                   // check sign-in, network test, support project, video decoder, audio-to-haptics,
@@ -251,7 +256,10 @@ enum class Action {
     SyncTrophies,   // synchronize Xbox achievements to PlayStation trophies
     RemoveTrophies, // remove local PSBox trophy packages
     TestQueueAlert, // play test chime and vibration for queue-ready alert
-    ResetSettings   // restore settings to default
+    ResetSettings,  // restore settings to default
+    SwitchAccount,  // accountId identifies an already saved account
+    AddAccount,     // start a separate Microsoft device-code sign-in
+    RemoveAccount   // remove the active account's local token store
 };
 
 // How "Your games" is sorted (R3).
@@ -276,6 +284,7 @@ struct UiEvent {
     LibrarySort librarySort = LibrarySort::Recent;
     std::string reportWhat;  // Report: the error on screen (empty from Settings)
     std::string url;         // OpenUrl
+    std::string accountId;   // account management actions
 };
 
 // "SOUTHCENTRALUS" -> "South Central US".
@@ -299,6 +308,7 @@ public:
     // "Essential"...; "GamePass" for a member whose plan isn't known); empty
     // for none (nothing shown).
     void setSubscription(const std::string& plan);
+    void setAccounts(std::vector<XboxAccountChoice> accounts, const std::string& activeId);
     // From the title list: a Game Pass member or not; only when the plan
     // itself isn't known ("GamePass" or nothing).
     void setMembership(bool member);
@@ -627,6 +637,7 @@ private:
     void drawDonationModal(Canvas& c);
     void drawTrophyDisclaimerModal(Canvas& c);
     void drawRemoveTrophiesConfirmModal(Canvas& c);
+    void drawRemoveAccountConfirmModal(Canvas& c);
     void openAchievements();
     void drawAchievementsModal(Canvas& c, uint64_t nowMs);
     // A modal panel over Settings with its title; returns its rectangle.
@@ -795,6 +806,8 @@ private:
     std::vector<uint32_t> wheel_;  // the wheel's pixels at wheelValue_
     float wheelValue_ = -1;
     int settingsRow_ = 0;
+    std::vector<XboxAccountChoice> accounts_;
+    std::string activeAccountId_;
     bool dropdownOpen_ = false;  // the list of the focused settings row
     int dropdownIndex_ = 0, dropdownTop_ = 0;
     uint64_t signOutHoldStart_ = 0;  // TOUCHPAD hold in progress
@@ -804,6 +817,8 @@ private:
     int trophyDisclaimerFocus_ = 0; // 0 = Estou ciente, 1 = Cancelar
     bool removeTrophiesConfirmOpen_ = false;
     int removeTrophiesFocus_ = 1;   // 0 = Remover, 1 = Cancelar
+    bool removeAccountConfirmOpen_ = false;
+    int removeAccountFocus_ = 1;
     bool trophySyncing_ = false;
     void drawSignOutHold(Canvas& c, uint64_t nowMs);
     std::string toast_;

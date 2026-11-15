@@ -73,4 +73,24 @@ std::vector<std::string> regionsByExpectedRtt(const std::string& from, const std
     return out;
 }
 
+std::string lowestMeasuredRegion(const std::string& defaultRegion, const std::vector<std::string>& available,
+                                 const std::map<std::string, int>& measured, int minImprovementMs) {
+    const auto base = measured.find(defaultRegion);
+    if (defaultRegion.empty() || base == measured.end() || base->second <= 0) return {};
+    const int margin = std::max(0, minImprovementMs);
+    const int defaultMs = base->second;
+    int bestMs = defaultMs;
+    std::string best;
+    for (const auto& name : available) {
+        if (name == defaultRegion) continue;
+        const auto it = measured.find(name);
+        if (it == measured.end() || it->second <= 0) continue;
+        if (it->second < bestMs) {
+            bestMs = it->second;
+            best = name;
+        }
+    }
+    return !best.empty() && bestMs <= defaultMs - margin ? best : std::string();
+}
+
 }  // namespace xc::xcloud

@@ -79,6 +79,19 @@ void AuthManager::signOut() {
     std::remove(storePath_.c_str());
 }
 
+bool AuthManager::useStorePath(std::string storePath) {
+    signedIn_ = false;
+    redirectUrl_.clear();
+    tokens_ = {};
+    profile_ = {};
+    gssvXsts_ = {};
+    marketplaceXsts_ = {};
+    market_.clear();
+    storePath_ = std::move(storePath);
+    saved_ = true;
+    return load();
+}
+
 bool AuthManager::deviceCodeSignIn(const DeviceCodeCallback& onCode, std::string& err,
                                    const std::atomic<bool>* cancel) {
     DeviceCode dc;

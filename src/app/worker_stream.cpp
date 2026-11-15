@@ -24,12 +24,48 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstdint>
 #include <iterator>
+#include <map>
+#include <mutex>
+#include <string>
 #include <vector>
 
 namespace xc::app {
 
 namespace {
+
+struct RegionRttSample {
+    int ms = 0;
+    uint64_t measuredAtMs = 0;
+};
+
+std::mutex g_sessionRegionRttMutex;
+std::map<std::string, RegionRttSample> g_sessionRegionRtt;
+constexpr uint64_t kRegionRttSampleMaxAgeMs = 30u * 60u * 1000u;
+
+void rememberSessionRegionRtt(const std::string& region, int ms, uint64_t now) {
+    if (region.empty() || ms <= 0) return;
+    std::lock_guard<std::mutex> lock(g_sessionRegionRttMutex);
+    g_sessionRegionRtt[region] = {ms, now};
+}
+
+std::string lowestRecentSessionRegion(const std::string& defaultRegion, const std::vector<std::string>& available,
+                                      uint64_t now) {
+    std::map<std::string, int> measured;
+    {
+        std::lock_guard<std::mutex> lock(g_sessionRegionRttMutex);
+        for (const auto& name : available) {
+            const auto it = g_sessionRegionRtt.find(name);
+            if (it != g_sessionRegionRtt.end() && it->second.ms > 0 && now >= it->second.measuredAtMs &&
+                now - it->second.measuredAtMs <= kRegionRttSampleMaxAgeMs)
+                measured.emplace(name, it->second.ms);
+        }
+    }
+    // A comparison needs an actual reading for the service default and at
+    // least one alternative; estimated network-test values are never used.
+    return xcloud::lowestMeasuredRegion(defaultRegion, available, measured, 8);
+}
 
 std::string formatWait(int seconds) {
     if (seconds < 0) return "...";
@@ -534,6 +570,7 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
             g_settings.save(settingsPath());
             rtt = g_settings.regionRtt;
         }
+        rememberSessionRegionRtt(gssv.region().name, bestRtt, platform::nowMs());
         XC_LOGI("region %s: %d ms round trip", gssv.region().name.c_str(), bestRtt);
         g_ui->setRegionLatency(rtt);
     }
@@ -629,6 +666,21 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
         const std::string& wanted = regionName.empty() ? g_settings.region : regionName;
         for (const auto& r : gssv.session().regions)
             if (r.name == wanted) region = &r;
+        if (regionName.empty() && g_settings.region.empty() && region) {
+            std::vector<std::string> available;
+            available.reserve(gssv.session().regions.size());
+            for (const auto& r : gssv.session().regions) available.push_back(r.name);
+            const std::string better = lowestRecentSessionRegion(region->name, available, platform::nowMs());
+            if (!better.empty()) {
+                for (const auto& r : gssv.session().regions) {
+                    if (r.name == better) {
+                        region = &r;
+                        XC_LOGI("auto region: selected %s using recent measured session RTT", r.name.c_str());
+                        break;
+                    }
+                }
+            }
+        }
         if (region) gssv.setRegion(*region);
         XC_LOGI("stream settings: %s%s, region %s, locale %s", res.c_str(),
                 hasCustom ? " (per-game)" : "", region ? region->name.c_str() : "?", streamLocale.c_str());

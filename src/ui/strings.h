@@ -461,6 +461,17 @@ enum class Str {
     UpdateScan,         // the manual update window: next to the QR code
     UpdateManualNote,   // ... the update stays manual and safe
     UpdateVersionLine,  // ... "%s" = the new version, "%s" = the one installed
+    AccountManager,
+    SettingDescAccounts,
+    AccountFallbackName,
+    AddAccount,
+    RemoveAccount,
+    RemoveAccountConfirmTitle,
+    RemoveAccountConfirmBody,
+    RemoveAccountConfirm,
+    AccountUnavailable,
+    AccountIdCreationFailed,
+    AccountStoreWriteFailed,
     Count
 };
 

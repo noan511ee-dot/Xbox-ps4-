@@ -186,7 +186,19 @@ bool updatablePath(const std::string& path) {
         if (slash == std::string::npos) break;
         start = slash + 1;
     }
-    static const std::set<std::string> kUsers = {"account.json", "settings.json",  "library.json",
+    auto isScopedUserFile = [&](const char* prefix) {
+        const size_t prefixLen = std::strlen(prefix);
+        if (path.find('/') != std::string::npos || path.size() != prefixLen + 32 + 5 ||
+            path.compare(0, prefixLen, prefix) != 0 || path.compare(path.size() - 5, 5, ".json") != 0)
+            return false;
+        for (size_t i = prefixLen; i < prefixLen + 32; ++i) {
+            const char c = path[i];
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+        }
+        return true;
+    };
+    if (isScopedUserFile("account_") || isScopedUserFile("library_cache_")) return false;
+    static const std::set<std::string> kUsers = {"account.json", "accounts.json", "settings.json",  "library.json",
                                                  "library_cache.json", "prices.json",  "xcloud.log", "xcloud.prev.log", "autoplay.txt",
                                                  "update.journal", "store_import.done", "settings.json.bad"};
     std::string top = path.substr(0, path.find('/'));

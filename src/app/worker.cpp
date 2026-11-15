@@ -5,6 +5,7 @@
 // owns AuthManager and the GssvClients and does all the network work.
 #include "app/worker_internal.h"
 
+#include "auth/account_store.h"
 #include "app/autoplay.h"
 #include "app/crash_guard.h"
 #include "app/shell.h"
@@ -97,6 +98,8 @@ std::shared_ptr<Library> currentLibrary() {
 
 std::string g_xblAuth;
 std::string g_xuid;
+std::unique_ptr<auth::AccountStore> s_accounts;
+std::string s_activeAccountId = "legacy";
 
 // The sign-in renewed when it is about to expire (AuthManager::ensureFresh;
 // `force`: a request was refused), before the xCloud calls. What other
@@ -153,6 +156,29 @@ void loadConsoles(auth::AuthManager& am, xcloud::GssvClient& home) {
 std::string g_subscription;
 
 namespace {
+
+void publishAccounts() {
+    if (!g_ui || !s_accounts) return;
+    std::vector<ui::XboxAccountChoice> choices;
+    choices.reserve(s_accounts->accounts().size());
+    for (const auto& account : s_accounts->accounts()) choices.push_back({account.id, account.gamertag});
+    g_ui->setAccounts(std::move(choices), s_activeAccountId);
+}
+
+std::string activeLibraryCachePath() {
+    return auth::AccountStore::libraryCachePath(platform::dataDir(), s_activeAccountId);
+}
+
+void saveActiveAccount(auth::AuthManager& am) {
+    if (!s_accounts || !am.signedIn() || am.profile().xuid.empty()) return;
+    if (!auth::AccountStore::validId(s_activeAccountId)) s_activeAccountId = "legacy";
+    auth::AccountEntry entry{s_activeAccountId, am.profile().gamertag, am.profile().xuid};
+    if (s_accounts->upsert(entry)) {
+        publishAccounts();
+    } else {
+        XC_LOGW("account index could not be saved; token file remains in local storage");
+    }
+}
 
 bool isDnsOrSinkholeError(const std::string& err) {
     return err.find("DNS lookup failed") != std::string::npos ||
@@ -232,6 +258,7 @@ void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
         if (!g_autoplay.title.empty()) XC_LOGI("AUTOPLAY END: sign-in failed");
         return;
     }
+    saveActiveAccount(am);
     if (g_autoplay.consoles || g_autoplay.title == "XHOME") {
         // Remote Play probe: the user's own consoles. Not their names nor
         // full ids in the log.
@@ -291,6 +318,100 @@ void signInAndLoad(auth::AuthManager& am, xcloud::GssvClient& gssv) {
     const xcloud::Region* def = gssv.session().defaultRegion();
     g_ui->setRegions(regions, def ? def->name : std::string());
     loadLibrary(am, gssv);
+}
+
+void clearAccountSessionUi() {
+    trophy::cancelTrophySync();
+    stopHydration();
+    setQueueClient(nullptr);
+    {
+        std::lock_guard<std::mutex> lock(s_libraryMutex);
+        s_library.reset();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_argMutex);
+        g_xblAuth.clear();
+        g_xuid.clear();
+    }
+    setPriceAuth({}, {});
+    g_subscription.clear();
+    s_playtimeRemainingSeconds = -1;
+    g_regionFallback.clear();
+    if (g_ui) {
+        g_ui->setProfile({}, {});
+        g_ui->setConsoles({}, false);
+        g_ui->setRows({});
+        g_ui->setOwned({}, {}, false);
+        g_ui->setSearchPools({}, {});
+        g_ui->setSubscription("");
+        g_ui->setPlaytime(-1, -1);
+        g_ui->setLoading(false, 0, 0);
+    }
+}
+
+void resetAccountClients(xcloud::GssvClient& gssv, xcloud::GssvClient& home) {
+    gssv.stopSession();
+    home.stopSession();
+    gssv = xcloud::GssvClient();
+    home = xcloud::GssvClient("xhome");
+}
+
+void activateSavedAccount(auth::AuthManager& am, xcloud::GssvClient& gssv, xcloud::GssvClient& home,
+                          const std::string& id) {
+    if (!s_accounts || !s_accounts->contains(id)) {
+        if (g_ui) g_ui->showToast(ui::tr(ui::Str::AccountUnavailable));
+        return;
+    }
+    if (!s_accounts->setActive(id)) {
+        if (g_ui) g_ui->showError(ui::tr(ui::Str::AccountStoreWriteFailed));
+        return;
+    }
+    clearAccountSessionUi();
+    resetAccountClients(gssv, home);
+    s_activeAccountId = id;
+    am.useStorePath(auth::AccountStore::tokenPath(platform::dataDir(), id));
+    publishAccounts();
+    if (g_ui) g_ui->showSplash(ui::tr(ui::Str::SigningIn));
+    signInAndLoad(am, gssv);
+    if (!g_quit && am.signedIn()) loadConsoles(am, home);
+}
+
+void beginAdditionalAccount(auth::AuthManager& am, xcloud::GssvClient& gssv, xcloud::GssvClient& home) {
+    const std::string id = auth::AccountStore::newId();
+    if (id.empty()) {
+        if (g_ui) g_ui->showError(ui::tr(ui::Str::AccountIdCreationFailed));
+        return;
+    }
+    clearAccountSessionUi();
+    resetAccountClients(gssv, home);
+    s_activeAccountId = id;
+    am.useStorePath(auth::AccountStore::tokenPath(platform::dataDir(), id));
+    publishAccounts();
+    signInAndLoad(am, gssv);
+    if (!g_quit && am.signedIn()) loadConsoles(am, home);
+}
+
+void removeSavedAccount(auth::AuthManager& am, xcloud::GssvClient& gssv, xcloud::GssvClient& home,
+                        const std::string& id) {
+    if (!s_accounts || id.empty() || id != s_activeAccountId || !s_accounts->contains(id)) {
+        if (g_ui) g_ui->showToast(ui::tr(ui::Str::AccountUnavailable));
+        return;
+    }
+    const std::string removedCache = activeLibraryCachePath();
+    if (!s_accounts->remove(id)) {
+        if (g_ui) g_ui->showError(ui::tr(ui::Str::AccountStoreWriteFailed));
+        return;
+    }
+    clearAccountSessionUi();
+    am.signOut();  // removes the selected account's refresh token from this device
+    ::unlink(removedCache.c_str());
+    s_activeAccountId = s_accounts->activeId().empty() ? "legacy" : s_accounts->activeId();
+    resetAccountClients(gssv, home);
+    am.useStorePath(auth::AccountStore::tokenPath(platform::dataDir(), s_activeAccountId));
+    publishAccounts();
+    if (g_ui) g_ui->showSplash(ui::tr(ui::Str::RequestingCode));
+    signInAndLoad(am, gssv);
+    if (!g_quit && am.signedIn()) loadConsoles(am, home);
 }
 
 }  // namespace
@@ -406,7 +527,7 @@ void loadLibrary(auth::AuthManager& am, xcloud::GssvClient& gssv, bool forceRefr
         }
         s_library = library;
     }
-    library->setCachePath(platform::dataDir() + "/library_cache.json");
+    library->setCachePath(activeLibraryCachePath());
     library->setSubscription(g_subscription);
     {
         std::lock_guard<std::mutex> lock(g_settingsMutex);
@@ -604,7 +725,11 @@ void worker() {
         XC_LOGI("AUTOPLAY END: tls check (date %s)", net::todayText().c_str());
         return;
     }
-    auth::AuthManager am(platform::dataDir() + "/account.json");
+    s_accounts = std::make_unique<auth::AccountStore>(platform::dataDir() + "/accounts.json");
+    if (!s_accounts->load()) XC_LOGI("account index: none or unreadable; using the legacy single-account store if present");
+    s_activeAccountId = s_accounts->activeId().empty() ? "legacy" : s_accounts->activeId();
+    auth::AuthManager am(auth::AccountStore::tokenPath(platform::dataDir(), s_activeAccountId));
+    publishAccounts();
     xcloud::GssvClient gssv, home("xhome");
     for (;;) {
         int cmd = g_command.exchange(kNone);
@@ -635,34 +760,33 @@ void worker() {
                 if (am.signedIn()) loadLibrary(am, gssv, true);
                 else signInAndLoad(am, gssv);
                 break;
-            case kSignOut:
-                // Nothing of this account stays for the next one: its library
-                // stops loading, its cache goes, the lists empty.
-                trophy::cancelTrophySync();
-                stopHydration();
-                setQueueClient(nullptr);
-                am.signOut();
-                ::unlink((platform::dataDir() + "/library.json").c_str());
-                ::unlink((platform::dataDir() + "/library_cache.json").c_str());
-                {
-                    std::lock_guard<std::mutex> lock(s_libraryMutex);
-                    s_library.reset();
-                }
+            case kSwitchAccount: {
+                std::string id;
                 {
                     std::lock_guard<std::mutex> lock(g_argMutex);
-                    g_xblAuth.clear();
-                    g_xuid.clear();
+                    id = g_accountId;
                 }
-                setPriceAuth({}, {});
-                g_ui->setProfile({}, {});
-                g_ui->setConsoles({}, false);
-                g_ui->setRows({});
-                g_ui->setOwned({}, {}, false);
-                g_ui->setSearchPools({}, {});
-                g_ui->setSubscription("");
-                s_playtimeRemainingSeconds = -1;
-                g_ui->setPlaytime(-1, -1);
-                XC_LOGI("signed out: library and its cache cleared");
+                activateSavedAccount(am, gssv, home, id);
+                break;
+            }
+            case kAddAccount:
+                beginAdditionalAccount(am, gssv, home);
+                break;
+            case kRemoveAccount: {
+                std::string id;
+                {
+                    std::lock_guard<std::mutex> lock(g_argMutex);
+                    id = g_accountId;
+                }
+                removeSavedAccount(am, gssv, home, id);
+                break;
+            }
+            case kSignOut:
+                clearAccountSessionUi();
+                am.signOut();
+                ::unlink(activeLibraryCachePath().c_str());
+                XC_LOGI("signed out: active account cache cleared; other account stores are retained");
+                if (g_ui) g_ui->showSplash(ui::tr(ui::Str::RequestingCode));
                 signInAndLoad(am, gssv);
                 if (!g_quit && am.signedIn()) loadConsoles(am, home);
                 break;

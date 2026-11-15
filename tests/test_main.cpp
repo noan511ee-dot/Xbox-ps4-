@@ -39,6 +39,7 @@
 #include "util/json.h"
 #include "util/log.h"
 #include "auth/auth_manager.h"
+#include "auth/account_store.h"
 #include "stream/h264_receiver.h"
 #include "input/kbm.h"
 #include "input/keyboard_nav.h"
@@ -263,6 +264,7 @@ static void testStrings() {
 
 static void testRegions() {
     using xc::xcloud::regionsByExpectedRtt;
+    using xc::xcloud::lowestMeasuredRegion;
     std::vector<std::string> all = {"BRAZILSOUTH", "EASTUS", "WESTEUROPE", "CHILECENTRAL", "JAPANEAST", "UNKNOWN"};
     // Nothing measured: by distance, the unknown region last.
     auto order = regionsByExpectedRtt("BRAZILSOUTH", all, {});
@@ -275,6 +277,29 @@ static void testRegions() {
     CHECK(order.front() == "EASTUS");
     double km = xc::xcloud::regionDistanceKm("brazilsouth", "CHILECENTRAL");
     CHECK(km > 2500 && km < 3000);
+    CHECK(lowestMeasuredRegion("BRAZILSOUTH", all, {{"BRAZILSOUTH", 60}, {"EASTUS", 52}}) == "EASTUS");
+    CHECK(lowestMeasuredRegion("BRAZILSOUTH", all, {{"BRAZILSOUTH", 60}, {"EASTUS", 53}}).empty());
+    CHECK(lowestMeasuredRegion("BRAZILSOUTH", all, {{"EASTUS", 20}}).empty());
+    CHECK(lowestMeasuredRegion("BRAZILSOUTH", {"BRAZILSOUTH", "EASTUS"},
+                               {{"BRAZILSOUTH", 60}, {"EASTUS", 10}, {"WESTEUROPE", 1}}) == "EASTUS");
+    CHECK(lowestMeasuredRegion("BRAZILSOUTH", all,
+                               {{"BRAZILSOUTH", 60}, {"EASTUS", 50}, {"WESTEUROPE", 45}}) == "WESTEUROPE");
+}
+
+static void testAccountStoreIdentifiers() {
+    using xc::auth::AccountStore;
+    CHECK(AccountStore::validId("legacy"));
+    CHECK(AccountStore::validId("0123456789abcdef0123456789abcdef"));
+    CHECK(!AccountStore::validId("../../account"));
+    CHECK(!AccountStore::validId("0123456789ABCDEF0123456789ABCDEF"));
+    CHECK(AccountStore::tokenPath("/data", "legacy") == "/data/account.json");
+    CHECK(AccountStore::tokenPath("/data", "0123456789abcdef0123456789abcdef") ==
+          "/data/account_0123456789abcdef0123456789abcdef.json");
+    CHECK(AccountStore::tokenPath("/data", "../escape").empty());
+    CHECK(AccountStore::libraryCachePath("/data", "legacy") == "/data/library_cache.json");
+    CHECK(AccountStore::libraryCachePath("/data", "0123456789abcdef0123456789abcdef") ==
+          "/data/library_cache_0123456789abcdef0123456789abcdef.json");
+    CHECK(AccountStore::libraryCachePath("/data", "../escape").empty());
 }
 
 static void testPrices() {
@@ -937,7 +962,9 @@ static void testUpdater() {
     CHECK(updatablePath("assets/PSBox_Trophies.elf") && updatablePath("sce_module/libc.prx"));
     CHECK(updatablePath("assets/media_showcase/01_home_screen.png") && updatablePath("licenses/Anime4K-MIT.txt"));
     CHECK(!updatablePath("../eboot.bin") && !updatablePath("/data/x") && !updatablePath("a//b") && !updatablePath("a/./b"));
-    CHECK(!updatablePath("account.json") && !updatablePath("settings.json") && !updatablePath("imgcache/x"));
+    CHECK(!updatablePath("account.json") && !updatablePath("accounts.json") && !updatablePath("settings.json") &&
+          !updatablePath("account_0123456789abcdef0123456789abcdef.json") &&
+          !updatablePath("library_cache_0123456789abcdef0123456789abcdef.json") && !updatablePath("imgcache/x"));
     CHECK(!updatablePath("update.old/eboot.bin") && !updatablePath("update.journal") && !updatablePath("frame.ppm"));
 
     // A signature by a throwaway key (made for this test only).
@@ -9158,6 +9185,7 @@ int main() {
     testSteamDeckDmi();
     testStrings();
     testRegions();
+    testAccountStoreIdentifiers();
     testPrices();
     testJson();
     testUrl();

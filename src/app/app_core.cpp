@@ -22,6 +22,7 @@
 #include "app/stream_screen.h"
 #include "app/web_server.h"
 #include "app/worker_internal.h"
+#include "auth/account_store.h"
 #include "display/display.h"
 #include "input/controller.h"
 #include "input/input_ext.h"
@@ -809,12 +810,11 @@ bool coreStartup() {
                                                                                 : ui::LibrarySort::Recent,
                        g_settings.favorites, g_settings.wishlist);
 
-        // Offline Cache / Instant-Resume: immediately load cached library before network
-        std::string cacheFile = platform::dataDir() + "/library_cache.json";
-        struct stat st;
-        if (::stat(cacheFile.c_str(), &st) != 0) {
-            cacheFile = platform::dataDir() + "/library.json";
-        }
+        // Offline Cache / Instant-Resume: isolate the initial catalog to the active account.
+        auth::AccountStore accounts(platform::dataDir() + "/accounts.json");
+        if (!accounts.load()) XC_LOGI("account index unavailable during instant-resume; using legacy cache");
+        const std::string activeId = accounts.activeId().empty() ? "legacy" : accounts.activeId();
+        const std::string cacheFile = auth::AccountStore::libraryCachePath(platform::dataDir(), activeId);
         auto initialLib = std::make_shared<Library>();
         initialLib->setCachePath(cacheFile);
         initialLib->setPlaytime(g_settings.titlePlaytime);
@@ -881,6 +881,20 @@ void Core::dispatchUiAction(const ui::UiEvent& ev) {
         case ui::Action::SignOut:
             g_cancel = true;
             g_command = kSignOut;
+            break;
+        case ui::Action::SwitchAccount:
+        case ui::Action::RemoveAccount: {
+            {
+                std::lock_guard<std::mutex> lock(g_argMutex);
+                g_accountId = ev.accountId;
+            }
+            g_cancel = true;
+            g_command = ev.action == ui::Action::SwitchAccount ? kSwitchAccount : kRemoveAccount;
+            break;
+        }
+        case ui::Action::AddAccount:
+            g_cancel = true;
+            g_command = kAddAccount;
             break;
         case ui::Action::Retry: g_command = kSignIn; break;
         case ui::Action::ConsolesShown: {

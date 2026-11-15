@@ -126,6 +126,10 @@ public:
     // Returns Authorization header ("XBL3.0 x=...;token") for Microsoft Store calls (rp::kMarketplace).
     bool marketplaceAuthorization(std::string& outAuthHeader, std::string& err);
 
+    // Reuse the worker-owned manager for another saved account. All in-memory
+    // tokens/profile data are cleared before the new store is read.
+    bool useStorePath(std::string storePath);
+
 private:
     bool load();
     bool save() const;

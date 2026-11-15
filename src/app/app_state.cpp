@@ -23,6 +23,7 @@ std::atomic<int> g_command{kSignIn};
 std::atomic<bool> g_cancel{false};
 std::mutex g_argMutex;
 ui::GameTile g_playTile;
+std::string g_accountId;
 std::mutex g_playerMutex;
 StreamPlayer* g_player = nullptr;
 std::mutex g_infoMutex;

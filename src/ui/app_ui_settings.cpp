@@ -504,6 +504,11 @@ std::vector<std::string> AppUi::settingOptions(int row) const {
         out = {tr(Str::Deactivated), tr(Str::Activated)};
     } else if (row == 25) {
         out = {tr(Str::RemoveTrophiesConfirm)};
+    } else if (row == 26) {
+        for (const auto& account : accounts_)
+            out.push_back(account.gamertag.empty() ? tr(Str::AccountFallbackName) : account.gamertag);
+        out.push_back(tr(Str::AddAccount));
+        if (!accounts_.empty()) out.push_back(tr(Str::RemoveAccount));
     } else if (row == 8) {
         out.push_back(loginCountryOffText());
         for (const char* country : kLoginCountries) out.push_back(loginCountryName(country));
@@ -524,6 +529,11 @@ int AppUi::settingSelected(int row) const {
             if (kResolutionOrder[i] == settings_.resolution) return i;
     }
     if (row == 3 || row == 12 || row == 14 || row == 17 || row == 18 || row == 19 || row == 23 || row == 25) return 0;
+    if (row == 26) {
+        for (size_t i = 0; i < accounts_.size(); ++i)
+            if (accounts_[i].id == activeAccountId_) return static_cast<int>(i);
+        return 0;
+    }
     if (row == 4) return settings_.triggerStrength;
     if (row == 5) return settings_.circleConfirms ? 1 : 0;
     if (row == 6) return settings_.lightBarMode;
@@ -571,7 +581,7 @@ void AppUi::applySetting(int row, int index) {
         setLanguage(static_cast<Language>(index));  // the UI switches right away
     } else if (row == 1) {
         settings_.resolution = kResolutionOrder[index];
-    } else if (row == 3 || row == 12 || row == 14 || row == 17 || row == 18 || row == 23 || row == 25) {
+    } else if (row == 3 || row == 12 || row == 14 || row == 17 || row == 18 || row == 23 || row == 25 || row == 26) {
         (void)index;  // the tester sets each stick's, the keys' and buttons' screens theirs
     } else if (row == 24) {
         if (index == 1 && !settings_.syncTrophies) {
@@ -957,7 +967,8 @@ void AppUi::drawSettings(Canvas& c) {
                                         tr(Str::Gyro),          tr(Str::QueueReadyNotification),
                                         tr(Str::CheckSignIn),   tr(Str::NetworkTest),   tr(Str::SupportProject),
                                         tr(Str::VideoDecoder),  tr(Str::AudioHaptics),  tr(Str::PreviewFeatures),
-                                        tr(Str::ResetSettings), tr(Str::SyncTrophies),  tr(Str::RemoveTrophies)};
+                                        tr(Str::ResetSettings), tr(Str::SyncTrophies),  tr(Str::RemoveTrophies),
+                                        tr(Str::AccountManager)};
     constexpr int kRowW = 1140, kRowH = 30, kGap = 2, kGroupGap = 4, kRowPx = 22;
     Rect rows[kSettingRows];  // by row id
     // A value sits in a small pill, as on a console's own settings: soft white
@@ -1082,6 +1093,7 @@ void AppUi::drawSettings(Canvas& c) {
         Str::SettingDescResetSettings,
         Str::SettingDescSyncTrophies,
         Str::SettingDescRemoveTrophies,
+        Str::SettingDescAccounts,
     };
     if (settingsRow_ >= 0 && settingsRow_ < kSettingRows) {
         int dy = std::max(y + 6, 922);
@@ -1136,6 +1148,7 @@ void AppUi::drawSettings(Canvas& c) {
         fonts_.semibold.draw(c, qrUrl, pill.x + (pill.w - urlW) / 2, fonts_.semibold.centeredY(pill.y, pill.h, 20), 20, rgba(140, 230, 160));
     }
 
+    if (removeAccountConfirmOpen_) return drawRemoveAccountConfirmModal(c);
     if (trophyDisclaimerOpen_) return drawTrophyDisclaimerModal(c);
     if (removeTrophiesConfirmOpen_) return drawRemoveTrophiesConfirmModal(c);
     if (pickerOpen_) {
@@ -1745,6 +1758,32 @@ void AppUi::drawRemoveTrophiesConfirmModal(Canvas& c) {
         fonts_.bold.draw(c, label, tx, ty, 24, kWhite);
     }
 
+    c.fillRect({0, kH - 80, kW, 80}, kBg);
+    drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
+}
+
+void AppUi::drawRemoveAccountConfirmModal(Canvas& c) {
+    Rect panel = drawModal(c, 1100, 430, tr(Str::RemoveAccountConfirmTitle));
+    const int textX = panel.x + 56;
+    int textY = panel.y + 112;
+    for (const auto& line : fonts_.regular.wrap(tr(Str::RemoveAccountConfirmBody), 24, panel.w - 112, 5)) {
+        fonts_.regular.draw(c, line, textX, textY, 24, rgba(230, 230, 230));
+        textY += 34;
+    }
+
+    constexpr int kBtnW = 260, kBtnH = 58, kBtnGap = 40;
+    const int btnStartX = panel.x + (panel.w - (2 * kBtnW + kBtnGap)) / 2;
+    const int btnY = panel.y + panel.h - 88;
+    for (int b = 0; b < 2; ++b) {
+        Rect r{btnStartX + b * (kBtnW + kBtnGap), btnY, kBtnW, kBtnH};
+        const bool focused = removeAccountFocus_ == b;
+        c.fillRect(r, b == 0 ? (focused ? rgba(239, 68, 68, 255) : rgba(153, 27, 27, 220))
+                             : (focused ? rgba(255, 255, 255, 45) : rgba(255, 255, 255, 20)), 14);
+        if (focused) c.strokeRect({r.x - 3, r.y - 3, r.w + 6, r.h + 6}, kWhite, 3, 16);
+        const char* label = tr(b == 0 ? Str::RemoveAccountConfirm : Str::TrophiesDisclaimerCancel);
+        fonts_.bold.draw(c, label, r.x + (r.w - fonts_.bold.measure(label, 24)) / 2,
+                         fonts_.bold.centeredY(r.y, r.h, 24), 24, kWhite);
+    }
     c.fillRect({0, kH - 80, kW, 80}, kBg);
     drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
 }

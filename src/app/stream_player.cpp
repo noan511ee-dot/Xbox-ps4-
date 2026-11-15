@@ -1178,6 +1178,11 @@ struct StreamPlayer::Impl {
             std::lock_guard<std::mutex> lock(mutex);
             frames.clear();
         }
+        {
+            std::lock_guard<std::mutex> lock(audioMutex_);
+            audioPackets_.clear();
+        }
+        audioCv.notify_all();
         stream::StreamOptions opts = options;
         opts.connectTimeoutMs = 8000;
         std::shared_ptr<stream::StreamSession> next;

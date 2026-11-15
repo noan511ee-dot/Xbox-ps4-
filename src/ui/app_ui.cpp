@@ -159,6 +159,13 @@ void AppUi::setSubscription(const std::string& plan) {
     dirty_ = true;
 }
 
+void AppUi::setAccounts(std::vector<XboxAccountChoice> accounts, const std::string& activeId) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    accounts_ = std::move(accounts);
+    activeAccountId_ = activeId;
+    dirty_ = true;
+}
+
 void AppUi::setMembership(bool member) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!subscription_.empty() && subscription_ != "GamePass") return;  // the plan is known
