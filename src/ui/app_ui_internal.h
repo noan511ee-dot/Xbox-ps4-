@@ -73,19 +73,27 @@ inline NavSlot homeNavSlot(int i) {
     return {(kW - total) / 2 + i * (w + gap), y, w, h};
 }
 constexpr int kAccountMenuMaxRows = 6;
-constexpr int kAccountMenuRowPitch = 68;
+constexpr int kAccountMenuRowPitch = 76;
 inline int accountMenuItemCount(int accounts) { return accounts + 1 + (accounts > 0 ? 1 : 0); }
 inline int accountMenuVisibleRows(int accounts) {
     return std::min(kAccountMenuMaxRows, accountMenuItemCount(accounts));
 }
-inline Rect accountMenuPanel(int accounts) {
-    constexpr int w = 980;
-    const int h = 162 + accountMenuVisibleRows(accounts) * kAccountMenuRowPitch;
-    return {(kW - w) / 2, (kH - h) / 2 - 30, w, h};
+inline Rect accountMenuPanel(int /*accounts*/) {
+    return {0, 0, 600, kH};
 }
 inline Rect accountMenuRow(Rect panel, int visibleRow) {
-    return {panel.x + 44, panel.y + 104 + visibleRow * kAccountMenuRowPitch,
-            panel.w - 88, kAccountMenuRowPitch - 10};
+    return {panel.x + 32, panel.y + 374 + visibleRow * kAccountMenuRowPitch,
+            panel.w - 64, kAccountMenuRowPitch - 10};
+}
+constexpr int kAccountPickerMaxItems = 5;
+inline int accountPickerItemCount(int accounts) { return accounts + 1; } // Add new, then saved profiles
+inline int accountPickerVisibleItems(int accounts) {
+    return std::min(kAccountPickerMaxItems, accountPickerItemCount(accounts));
+}
+inline Rect accountPickerTile(int visibleIndex, int visibleItems) {
+    constexpr int w = 280, h = 420, gap = 72;
+    const int total = visibleItems * w + std::max(0, visibleItems - 1) * gap;
+    return {(kW - total) / 2 + visibleIndex * (w + gap), 300, w, h};
 }
 constexpr uint64_t kHeroFadeMs = 300;
 

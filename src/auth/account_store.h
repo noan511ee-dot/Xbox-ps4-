@@ -12,6 +12,7 @@ struct AccountEntry {
     std::string id;       // random local identifier; never a token or password
     std::string gamertag; // display-only metadata
     std::string xuid;     // display/account identity; never used as a path
+    std::string gamerpicUrl; // public profile image URL; optional display metadata
 };
 
 // A small, non-secret index. Refresh tokens remain in separate AuthManager

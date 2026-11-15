@@ -157,11 +157,13 @@ std::string g_subscription;
 
 namespace {
 
-void publishAccounts() {
+void publishAccounts(bool includeLegacy = false, const std::string& legacyName = {}) {
     if (!g_ui || !s_accounts) return;
     std::vector<ui::XboxAccountChoice> choices;
     choices.reserve(s_accounts->accounts().size());
-    for (const auto& account : s_accounts->accounts()) choices.push_back({account.id, account.gamertag});
+    for (const auto& account : s_accounts->accounts()) choices.push_back({account.id, account.gamertag, account.gamerpicUrl});
+    if (includeLegacy && !s_accounts->contains("legacy"))
+        choices.push_back({"legacy", legacyName.empty() ? ui::tr(ui::Str::AccountFallbackName) : legacyName, {}});
     g_ui->setAccounts(std::move(choices), s_activeAccountId);
 }
 
@@ -172,7 +174,12 @@ std::string activeLibraryCachePath() {
 void saveActiveAccount(auth::AuthManager& am) {
     if (!s_accounts || !am.signedIn() || am.profile().xuid.empty()) return;
     if (!auth::AccountStore::validId(s_activeAccountId)) s_activeAccountId = "legacy";
-    auth::AccountEntry entry{s_activeAccountId, am.profile().gamertag, am.profile().xuid};
+    std::string gamerpicUrl = am.profile().gamerpicUrl;
+    if (gamerpicUrl.empty()) {
+        for (const auto& saved : s_accounts->accounts())
+            if (saved.id == s_activeAccountId) { gamerpicUrl = saved.gamerpicUrl; break; }
+    }
+    auth::AccountEntry entry{s_activeAccountId, am.profile().gamertag, am.profile().xuid, std::move(gamerpicUrl)};
     if (s_accounts->upsert(entry)) {
         publishAccounts();
     } else {
@@ -349,8 +356,15 @@ void resetAccountClients(xcloud::GssvClient& gssv, xcloud::GssvClient& home) {
 
 void activateSavedAccount(auth::AuthManager& am, xcloud::GssvClient& gssv, xcloud::GssvClient& home,
                           const std::string& id) {
-    if (!s_accounts || !s_accounts->contains(id)) {
+    if (!s_accounts || (!s_accounts->contains(id) && !(id == "legacy" && am.hasStoredAccount()))) {
         if (g_ui) g_ui->showToast(ui::tr(ui::Str::AccountUnavailable));
+        return;
+    }
+    if (id == "legacy" && !s_accounts->contains(id)) {
+        s_activeAccountId = "legacy";
+        if (g_ui) g_ui->showSplash(ui::tr(ui::Str::SigningIn));
+        signInAndLoad(am, gssv);
+        if (!g_quit && am.signedIn()) loadConsoles(am, home);
         return;
     }
     if (!s_accounts->setActive(id)) {
@@ -732,9 +746,23 @@ void worker() {
     }
     s_accounts = std::make_unique<auth::AccountStore>(platform::dataDir() + "/accounts.json");
     if (!s_accounts->load()) XC_LOGI("account index: none or unreadable; using the legacy single-account store if present");
+    const std::string previousActiveId = s_accounts->activeId();
+    auth::AuthManager legacyProbe(auth::AccountStore::tokenPath(platform::dataDir(), "legacy"));
+    if (!s_accounts->contains("legacy") && legacyProbe.hasStoredAccount() && !legacyProbe.profile().xuid.empty()) {
+        const auto& profile = legacyProbe.profile();
+        if (s_accounts->upsert({"legacy", profile.gamertag, profile.xuid, profile.gamerpicUrl}) &&
+            !previousActiveId.empty() && previousActiveId != "legacy")
+            s_accounts->setActive(previousActiveId);
+    }
     s_activeAccountId = s_accounts->activeId().empty() ? "legacy" : s_accounts->activeId();
     auth::AuthManager am(auth::AccountStore::tokenPath(platform::dataDir(), s_activeAccountId));
-    publishAccounts();
+    publishAccounts(s_activeAccountId == "legacy" && am.hasStoredAccount(), am.profile().gamertag);
+    if (g_autoplay.title.empty()) {
+        // Profiles are chosen before sign-in on every normal launch. With no
+        // saved profile, Add Account is the chooser's only first-run action.
+        g_command.store(kNone);
+        if (g_ui) g_ui->showAccountChooser();
+    }
     xcloud::GssvClient gssv, home("xhome");
     for (;;) {
         int cmd = g_command.exchange(kNone);

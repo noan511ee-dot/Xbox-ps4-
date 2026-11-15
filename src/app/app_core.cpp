@@ -1467,11 +1467,8 @@ bool Core::frame() {
         return true;
     }
 
-    if (g_ui->screen() == ui::Screen::Splash) {
-        // Discard controller navigation input while the loading/splash screen is active.
-        nav = ui::NavInput{};
-    }
-
+    // Ordinary Splash screens ignore navigation in AppUi; preserve it here
+    // because the startup account chooser also uses Screen::Splash.
     ui::UiEvent ev = g_ui->handle(nav);
     int strength, hz, resistance, profile = 0;
     bool pulses;

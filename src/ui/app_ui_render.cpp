@@ -2022,7 +2022,8 @@ void AppUi::render(Canvas& c, uint64_t nowMs) {
         case Screen::Updating: drawUpdating(c, nowMs); break;
         case Screen::Streaming: break;
     }
-    if (screen_ == Screen::Home && accountManagerOpen_ && !updatePrompt_ && !quitPrompt_) {
+    if ((screen_ == Screen::Home || (screen_ == Screen::Splash && startupAccountChooser_)) && accountManagerOpen_ &&
+        !updatePrompt_ && !quitPrompt_) {
         if (removeAccountConfirmOpen_) drawRemoveAccountConfirmModal(c);
         else drawAccountManagerModal(c);
     }

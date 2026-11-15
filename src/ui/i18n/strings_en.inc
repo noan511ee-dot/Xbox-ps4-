@@ -452,10 +452,11 @@ constexpr Column kEnglish = {
     "Scan this code with your phone to open the download page.", // UpdateScan
     "Updating is manual and safe: this app never deletes or replaces your installed version by itself.", // UpdateManualNote
     "New version %s - you have %s", // UpdateVersionLine
-    "Xbox accounts", // AccountManager
+    "Profile & system", // AccountManager
+    "Who's playing today?", // AccountChooserTitle
     "Choose a saved account, add another with Microsoft device-code sign-in, or remove the active account. Passwords are never stored; refresh tokens stay on this device.", // SettingDescAccounts
     "Xbox account", // AccountFallbackName
-    "Add another account", // AddAccount
+    "Add new", // AddAccount
     "Remove active account", // RemoveAccount
     "Remove saved account?", // RemoveAccountConfirmTitle
     "This removes the saved Microsoft sign-in token from this device. It does not cancel the account's subscription or delete the Microsoft account.", // RemoveAccountConfirmBody

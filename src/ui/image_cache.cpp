@@ -220,16 +220,34 @@ void ImageCache::loop() {
         std::string cached;
         std::string path = diskDir_.empty() ? std::string() : diskPath(req.url);
         net::Response r;
-        if (!path.empty() && platform::readFile(path, cached) && decodeImage(cached, decoded)) {
+        const bool fromDisk = !path.empty() && platform::readFile(path, cached) && decodeImage(cached, decoded);
+        if (fromDisk) {
             r.status = 200;  // from disk
         } else {
-            r = net::perform(req);
-            if (r.ok() && !path.empty() && decodeImage(r.body, decoded)) {
+            auto download = [&](const std::string& url) {
+                req.url = url;
+                for (int attempt = 0; attempt < 2; ++attempt) {
+                    r = net::perform(req);
+                    if (r.ok()) return decodeImage(r.body, decoded);
+                    const bool transient = r.status == 0 || r.status == 408 || r.status == 429 || r.status >= 500;
+                    if (!transient || attempt != 0) break;
+                    platform::sleepMs(250);
+                }
+                return false;
+            };
+            const std::string sized = req.url;
+            bool decodedOk = download(sized);
+            if (!decodedOk && sized != job.url &&
+                job.url.find("images-eds-ssl.xboxlive.com") != std::string::npos) {
+                std::string original = job.url;
+                if (original.rfind("//", 0) == 0) original = "https:" + original;
+                decoded = {};
+                decodedOk = download(original);
+            }
+            if (decodedOk && !path.empty()) {
                 static std::atomic<bool> warned{false};  // once: a full disk would say it for every image
                 if (!platform::writeFileAtomic(path, r.body) && !warned.exchange(true))
                     XC_LOGW("image cache: could not save to %s", diskDir_.c_str());
-            } else if (r.ok()) {
-                decodeImage(r.body, decoded);
             }
         }
         if (r.ok() && decoded.w > 0) {
@@ -237,8 +255,9 @@ void ImageCache::loop() {
                                                  ? std::move(decoded)
                                                  : coverResize(decoded, job.w, job.h));
         } else {
-            XC_LOGW("image %s: %s", req.url.c_str(), r.status ? ("HTTP " + std::to_string(r.status)).c_str()
-                                                              : r.error.c_str());
+            XC_LOGW("image %s: %s", req.url.c_str(),
+                    r.ok() ? "image data could not be decoded"
+                           : r.status ? ("HTTP " + std::to_string(r.status)).c_str() : r.error.c_str());
         }
         {
             std::lock_guard<std::mutex> lock(mutex_);
@@ -250,7 +269,7 @@ void ImageCache::loop() {
                 evict();
             } else {
                 e.failed = true;
-                bool passing = r.status == 0 || r.status >= 500;
+                bool passing = r.status == 0 || r.status == 408 || r.status == 429 || r.status >= 500;
                 e.retryAt = passing && ++e.failures <= 3 ? platform::nowMs() + 30000u * e.failures : 0;
             }
         }

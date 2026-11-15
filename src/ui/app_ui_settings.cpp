@@ -1790,6 +1790,74 @@ void AppUi::drawRemoveAccountConfirmModal(Canvas& c) {
 
 void AppUi::drawAccountManagerModal(Canvas& c) {
     const int accountCount = static_cast<int>(accounts_.size());
+    if (startupAccountChooser_) {
+        const int itemCount = accountPickerItemCount(accountCount);
+        const int visible = accountPickerVisibleItems(accountCount);
+        accountManagerFocus_ = std::clamp(accountManagerFocus_, 0, itemCount - 1);
+        accountManagerScroll_ = std::clamp(accountManagerScroll_, 0, std::max(0, itemCount - visible));
+        if (accountManagerFocus_ < accountManagerScroll_) accountManagerScroll_ = accountManagerFocus_;
+        if (accountManagerFocus_ >= accountManagerScroll_ + visible)
+            accountManagerScroll_ = accountManagerFocus_ - visible + 1;
+
+        c.gradientV({0, 0, kW, kH}, rgba(38, 41, 46), rgba(11, 14, 18));
+        const std::string title = tr(Str::AccountChooserTitle);
+        fonts_.bold.draw(c, title, (kW - fonts_.bold.measure(title, 48)) / 2, 185, 48, kWhite);
+        for (int localIndex = 0; localIndex < visible; ++localIndex) {
+            const int itemIndex = accountManagerScroll_ + localIndex;
+            const Rect tile = accountPickerTile(localIndex, visible);
+            const int cx = tile.x + tile.w / 2;
+            const int cy = tile.y + 145;
+            const bool focused = itemIndex == accountManagerFocus_;
+            const bool addItem = itemIndex == 0;
+            const XboxAccountChoice* account = addItem ? nullptr : &accounts_[static_cast<size_t>(itemIndex - 1)];
+            const bool active = account && account->id == activeAccountId_;
+            constexpr int avatarSize = 240;
+            const int avatarX = cx - avatarSize / 2, avatarY = cy - avatarSize / 2;
+
+            if (addItem) {
+                c.fillCircle(cx, cy, avatarSize / 2.0f, rgba(0, 183, 225));
+                c.line(cx - 43.0f, cy, cx + 43.0f, cy, 9.0f, kWhite);
+                c.line(cx, cy - 43.0f, cx, cy + 43.0f, 9.0f, kWhite);
+            } else if (auto pic = images_.get(account->gamerpicUrl, avatarSize, avatarSize)) {
+                c.drawImage(*pic, avatarX, avatarY, 255, -1);
+            } else {
+                constexpr Color palette[] = {rgba(34, 108, 171), rgba(142, 91, 43), rgba(29, 132, 125), rgba(128, 73, 145), rgba(88, 114, 61)};
+                const size_t color = static_cast<size_t>((itemIndex - 1) % (sizeof(palette) / sizeof(palette[0])));
+                c.fillCircle(cx, cy, avatarSize / 2.0f, palette[color]);
+                c.fillCircle(cx, cy - 31, 34.0f, rgba(255, 255, 255, 230));
+                c.fillCircle(cx, cy + 49, 72.0f, rgba(255, 255, 255, 230));
+                c.fillCircle(cx, cy + 60, 59.0f, palette[color]);
+            }
+            if (focused) c.strokeCircle(cx, cy, avatarSize / 2.0f + 10.0f, 7.0f, rgba(89, 239, 255));
+            else if (active) c.strokeCircle(cx, cy, avatarSize / 2.0f + 6.0f, 5.0f, kGreen);
+            if (active) {
+                c.fillCircle(cx + 84.0f, cy + 84.0f, 18.0f, kGreen);
+                c.line(cx + 76.0f, cy + 84.0f, cx + 82.0f, cy + 90.0f, 4.0f, kBg);
+                c.line(cx + 82.0f, cy + 90.0f, cx + 94.0f, cy + 76.0f, 4.0f, kBg);
+            }
+
+            const std::string label = addItem ? tr(Str::AddAccount)
+                                              : (account->gamertag.empty() ? tr(Str::AccountFallbackName) : account->gamertag);
+            fonts_.semibold.draw(c, label, cx - fonts_.semibold.measure(label, 25) / 2,
+                                 tile.y + 310, 27, focused ? kWhite : kGray);
+            if (active && !gamerscore_.empty()) {
+                const std::string score = "G " + gamerscore_;
+                fonts_.regular.draw(c, score, cx - fonts_.regular.measure(score, 19) / 2, tile.y + 352, 19, kDim);
+            }
+        }
+        if (accountManagerScroll_ > 0) {
+            c.line(82, 480, 98, 464, 4, kGray);
+            c.line(82, 480, 98, 496, 4, kGray);
+        }
+        if (accountManagerScroll_ + visible < itemCount) {
+            c.line(kW - 98, 464, kW - 82, 480, 4, kGray);
+            c.line(kW - 98, 496, kW - 82, 480, 4, kGray);
+        }
+        c.fillRect({0, kH - 80, kW, 80}, rgba(3, 12, 26));
+        drawHints(c, {{kIconDpadLR, tr(Str::DPad)}, {kIconCross, tr(Str::Select)}});
+        return;
+    }
+
     const int itemCount = accountMenuItemCount(accountCount);
     const int visible = accountMenuVisibleRows(accountCount);
     accountManagerFocus_ = std::clamp(accountManagerFocus_, 0, itemCount - 1);
@@ -1798,8 +1866,35 @@ void AppUi::drawAccountManagerModal(Canvas& c) {
     if (accountManagerFocus_ >= accountManagerScroll_ + visible)
         accountManagerScroll_ = accountManagerFocus_ - visible + 1;
 
-    Rect panel = accountMenuPanel(accountCount);
-    drawModal(c, panel.w, panel.h, tr(Str::AccountManager));
+    const Rect panel = accountMenuPanel(accountCount);
+    c.fillRect({0, 0, kW, kH}, rgba(0, 0, 0, 170));
+    c.fillRect(panel, rgba(31, 32, 36));
+    c.fillRect({panel.w - 2, 0, 2, panel.h}, rgba(255, 255, 255, 35));
+    fonts_.bold.draw(c, tr(Str::AccountManager), 36, 38, 34, kWhite);
+
+    constexpr int avatarSize = 136, avatarX = 42, avatarY = 98;
+    if (auto pic = images_.get(gamerpicUrl_, avatarSize, avatarSize)) {
+        c.drawImage(*pic, avatarX, avatarY, 255, -1);
+    } else {
+        c.fillCircle(avatarX + avatarSize / 2.0f, avatarY + avatarSize / 2.0f, avatarSize / 2.0f, rgba(44, 105, 180));
+        c.fillCircle(avatarX + avatarSize / 2.0f, avatarY + 45.0f, 20.0f, kWhite);
+        c.fillCircle(avatarX + avatarSize / 2.0f, avatarY + 105.0f, 49.0f, kWhite);
+        c.fillCircle(avatarX + avatarSize / 2.0f, avatarY + 101.0f, 40.0f, rgba(44, 105, 180));
+    }
+    c.strokeCircle(avatarX + avatarSize / 2.0f, avatarY + avatarSize / 2.0f, avatarSize / 2.0f + 3.0f, 3.0f, kGreen);
+    const std::string currentName = gamertag_.empty() ? tr(Str::AccountFallbackName) : gamertag_;
+    fonts_.semibold.draw(c, currentName, 198, 116, 25, kWhite);
+    std::string profileInfo;
+    if (!gamerscore_.empty()) profileInfo = "G " + gamerscore_;
+    if (!subscription_.empty()) profileInfo += (profileInfo.empty() ? "" : "  |  ") + subscription_;
+    if (!profileInfo.empty()) fonts_.regular.draw(c, profileInfo, 198, 157, 18, kGray);
+    int descriptionY = 252;
+    for (const auto& line : fonts_.regular.wrap(tr(Str::SettingDescAccounts), 15, panel.w - 72, 3)) {
+        fonts_.regular.draw(c, line, 36, descriptionY, 15, kGray);
+        descriptionY += 21;
+    }
+    c.fillRect({32, 336, panel.w - 64, 2}, rgba(255, 255, 255, 35));
+
     for (int rowIndex = 0; rowIndex < visible; ++rowIndex) {
         const int itemIndex = accountManagerScroll_ + rowIndex;
         if (itemIndex >= itemCount) break;
@@ -1807,12 +1902,14 @@ void AppUi::drawAccountManagerModal(Canvas& c) {
         const bool focused = itemIndex == accountManagerFocus_;
         const bool accountItem = itemIndex < accountCount;
         const bool removeItem = accountCount > 0 && itemIndex == accountCount + 1;
+        const bool addItem = !accountItem && !removeItem;
         const bool active = accountItem && accounts_[static_cast<size_t>(itemIndex)].id == activeAccountId_;
         const Color base = removeItem ? rgba(127, 29, 29, focused ? 210 : 115)
-                                      : rgba(255, 255, 255, focused ? 45 : 18);
+                          : addItem ? rgba(35, 211, 157, focused ? 205 : 65)
+                                    : rgba(255, 255, 255, focused ? 52 : 22);
         c.fillRect(row, base, 14);
         if (focused) c.strokeRect({row.x - 2, row.y - 2, row.w + 4, row.h + 4},
-                                  removeItem ? rgba(248, 113, 113) : kGreen, 3, 16);
+                                  removeItem ? rgba(248, 113, 113) : (addItem ? kWhite : kGreen), 3, 16);
 
         std::string label;
         if (accountItem) {
@@ -1824,34 +1921,46 @@ void AppUi::drawAccountManagerModal(Canvas& c) {
         } else {
             label = tr(Str::RemoveAccount);
         }
-        const Color textColor = removeItem ? rgba(255, 210, 210) : kWhite;
-        fonts_.semibold.draw(c, label, row.x + 72, fonts_.semibold.centeredY(row.y, row.h, 25), 25, textColor);
+        const Color textColor = removeItem ? rgba(255, 210, 210) : (addItem && focused ? kBg : kWhite);
+        fonts_.semibold.draw(c, label, row.x + 88, fonts_.semibold.centeredY(row.y, row.h, 23), 23, textColor);
 
-        const float cx = static_cast<float>(row.x + 38), cy = row.y + row.h / 2.0f;
-        if (active) {
-            c.fillCircle(cx, cy, 14.0f, kGreen);
-            c.line(cx - 7.0f, cy, cx - 1.0f, cy + 6.0f, 3.0f, kBg);
-            c.line(cx - 1.0f, cy + 6.0f, cx + 8.0f, cy - 7.0f, 3.0f, kBg);
-        } else if (!accountItem && !removeItem) {
-            c.strokeCircle(cx, cy, 14.0f, 2.5f, kGreen);
-            c.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.5f, kGreen);
-            c.line(cx, cy - 7.0f, cx, cy + 7.0f, 2.5f, kGreen);
+        const int cx = row.x + 34, cy = row.y + row.h / 2;
+        if (accountItem) {
+            const auto& entry = accounts_[static_cast<size_t>(itemIndex)];
+            if (auto pic = images_.get(entry.gamerpicUrl, 48, 48)) c.drawImage(*pic, cx - 24, cy - 24, 255, -1);
+            else {
+                c.fillCircle(cx, cy, 23.0f, active ? kGreen : rgba(44, 105, 180, 230));
+                c.fillCircle(cx, cy - 7, 6.0f, kWhite);
+                c.fillRect({cx - 11, cy + 1, 22, 15}, kWhite, 10);
+            }
         } else if (removeItem) {
-            c.strokeCircle(cx, cy, 14.0f, 2.5f, rgba(248, 113, 113));
-            c.line(cx - 7.0f, cy, cx + 7.0f, cy, 2.5f, rgba(248, 113, 113));
+            c.fillCircle(cx, cy, 22.0f, rgba(153, 27, 27, 230));
+            c.line(cx - 8.0f, cy - 8.0f, cx + 8.0f, cy + 8.0f, 3.0f, rgba(255, 225, 225));
+            c.line(cx + 8.0f, cy - 8.0f, cx - 8.0f, cy + 8.0f, 3.0f, rgba(255, 225, 225));
+        } else {
+            const Color icon = focused ? kBg : kGreen;
+            c.strokeCircle(cx, cy, 21.0f, 3.0f, icon);
+            c.line(cx - 9.0f, cy, cx + 9.0f, cy, 3.0f, icon);
+            c.line(cx, cy - 9.0f, cx, cy + 9.0f, 3.0f, icon);
+        }
+        if (accountItem && active) {
+            const int activeX = row.x + row.w - 30;
+            c.fillCircle(activeX, cy, 13.0f, kGreen);
+            c.line(activeX - 6.0f, cy, activeX - 1.0f, cy + 5.0f, 3.0f, kBg);
+            c.line(activeX - 1.0f, cy + 5.0f, activeX + 7.0f, cy - 6.0f, 3.0f, kBg);
         }
     }
     if (accountManagerScroll_ > 0) {
-        const int x = panel.x + panel.w - 36;
-        c.line(x - 7.0f, panel.y + 92.0f, x, panel.y + 84.0f, 2.5f, kGreen);
-        c.line(x, panel.y + 84.0f, x + 7.0f, panel.y + 92.0f, 2.5f, kGreen);
+        c.line(panel.w - 45.0f, 360.0f, panel.w - 36.0f, 352.0f, 2.5f, kGreen);
+        c.line(panel.w - 36.0f, 352.0f, panel.w - 27.0f, 360.0f, 2.5f, kGreen);
     }
     if (accountManagerScroll_ + visible < itemCount) {
-        const int x = panel.x + panel.w - 36;
-        const int y = panel.y + panel.h - 30;
-        c.line(x - 7.0f, y - 4.0f, x, y + 4.0f, 2.5f, kGreen);
-        c.line(x, y + 4.0f, x + 7.0f, y - 4.0f, 2.5f, kGreen);
+        const int y = accountMenuRow(panel, visible - 1).y + accountMenuRow(panel, visible - 1).h + 18;
+        c.line(panel.w - 45.0f, y - 4.0f, panel.w - 36.0f, y + 4.0f, 2.5f, kGreen);
+        c.line(panel.w - 36.0f, y + 4.0f, panel.w - 27.0f, y - 4.0f, 2.5f, kGreen);
     }
+    c.fillRect({0, kH - 80, kW, 80}, kBg);
+    drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
 }
 
 void AppUi::drawKeysTester(Canvas& c) {

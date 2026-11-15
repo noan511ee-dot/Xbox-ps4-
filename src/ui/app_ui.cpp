@@ -105,14 +105,37 @@ AppUi::AppUi(const Fonts& fonts, ImageCache& images) : fonts_(fonts), images_(im
 void AppUi::showSplash(const std::string& status) {
     std::lock_guard<std::mutex> lock(mutex_);
     screen_ = Screen::Splash;
+    accountManagerOpen_ = false;
+    startupAccountChooser_ = false;
+    removeAccountConfirmOpen_ = false;
     status_ = status;
     splashSince_ = 0;
+    dirty_ = true;
+}
+
+void AppUi::showAccountChooser() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    screen_ = Screen::Splash;
+    status_ = tr(Str::AccountChooserTitle);
+    splashSince_ = 0;
+    openAccountManager();
+    startupAccountChooser_ = true;
+    int selected = 0; // Add new is the only item on first run.
+    for (size_t i = 0; i < accounts_.size(); ++i) {
+        if (accounts_[i].id == activeAccountId_) {
+            selected = static_cast<int>(i) + 1;
+            break;
+        }
+    }
+    focusAccountManagerItem(selected);
     dirty_ = true;
 }
 
 void AppUi::showSignIn(const std::string& code, const std::string& url) {
     std::lock_guard<std::mutex> lock(mutex_);
     screen_ = Screen::SignIn;
+    accountManagerOpen_ = false;
+    startupAccountChooser_ = false;
     code_ = code;
     codeUrl_ = url;
     dirty_ = true;
@@ -1089,6 +1112,8 @@ void AppUi::showHome(const std::string& toast) {
         syncHeroToRowsLocked(detail_.productId, detail_.titleId, detail_.heroUrl, detail_.description, detail_.publisher, detail_.categories);
     }
     screen_ = Screen::Home;
+    accountManagerOpen_ = false;
+    startupAccountChooser_ = false;
     if (!caps_.console && !toast.empty()) {
         toast_ = toast;
         toastUntil_ = 0;  // set on first render

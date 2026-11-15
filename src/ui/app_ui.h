@@ -80,6 +80,7 @@ struct ConsoleTile {
 struct XboxAccountChoice {
     std::string id;       // local random id; no credential material
     std::string gamertag;
+    std::string gamerpicUrl; // optional cached public avatar URL
 };
 
 struct GameRow {
@@ -301,6 +302,7 @@ public:
 
     // --- Model -------------------------------------------------------------
     void showSplash(const std::string& status);
+    void showAccountChooser();
     void showSignIn(const std::string& code, const std::string& url);
     // The signed-in account, top right; `gamerscore` (digits) under the name.
     void setProfile(const std::string& gamertag, const std::string& gamerpicUrl, const std::string& gamerscore = {});
@@ -712,6 +714,7 @@ private:
     std::string query_;
     std::unordered_map<std::string, Image> tileTrim_;  // home tiles without their bottom strip
     int navFocus_ = -1;  // the header button the pad is on (-1: the rows have the focus)
+    int homeCycleIndex_ = 0;  // last Home header action, for direct L1/R1 cycling
     bool searchOnKeys_ = true;
     int keyRow_ = 0, keyCol_ = 0;
     int resultFocus_ = 0;
@@ -813,6 +816,7 @@ private:
     std::vector<XboxAccountChoice> accounts_;
     std::string activeAccountId_;
     bool accountManagerOpen_ = false;
+    bool startupAccountChooser_ = false;
     int accountManagerFocus_ = 0, accountManagerScroll_ = 0;
     bool dropdownOpen_ = false;  // the list of the focused settings row
     int dropdownIndex_ = 0, dropdownTop_ = 0;

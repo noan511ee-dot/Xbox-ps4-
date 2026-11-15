@@ -462,6 +462,7 @@ enum class Str {
     UpdateManualNote,   // ... the update stays manual and safe
     UpdateVersionLine,  // ... "%s" = the new version, "%s" = the one installed
     AccountManager,
+    AccountChooserTitle,
     SettingDescAccounts,
     AccountFallbackName,
     AddAccount,

@@ -53,7 +53,7 @@ bool AccountStore::load() {
         return false;
 
     for (const auto& item : (*root)["accounts"].items()) {
-        AccountEntry entry{item["id"].str(), item["gamertag"].str(), item["xuid"].str()};
+        AccountEntry entry{item["id"].str(), item["gamertag"].str(), item["xuid"].str(), item["gamerpicUrl"].str()};
         if (!validId(entry.id) || entry.xuid.empty() || contains(entry.id)) continue;
         accounts_.push_back(std::move(entry));
     }
@@ -74,6 +74,7 @@ bool AccountStore::save() const {
         item.set("id", entry.id);
         item.set("gamertag", entry.gamertag);
         item.set("xuid", entry.xuid);
+        item.set("gamerpicUrl", entry.gamerpicUrl);
         list.push(std::move(item));
     }
     root.set("accounts", std::move(list));

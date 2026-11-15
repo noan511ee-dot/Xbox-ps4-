@@ -48,6 +48,7 @@ bool AuthManager::load() {
     tokens_.userId = (*j)["userId"].str();
     profile_.gamertag = (*j)["gamertag"].str();
     profile_.xuid = (*j)["xuid"].str();
+    profile_.gamerpicUrl = (*j)["gamerpicUrl"].str();
     return !tokens_.refreshToken.empty();
 }
 
@@ -59,6 +60,7 @@ bool AuthManager::save() const {
     v.set("userId", tokens_.userId);
     v.set("gamertag", profile_.gamertag);
     v.set("xuid", profile_.xuid);
+    v.set("gamerpicUrl", profile_.gamerpicUrl);
     if (!platform::writeFileAtomic(storePath_, v.dump())) {
         XC_LOGE("could not write token store %s (errno %d)", storePath_.c_str(), errno);
         saved_ = false;
@@ -573,15 +575,29 @@ void AuthManager::fetchGamerpic(const XblToken& xsts) {
     net::Request req;
     req.url = "https://profile.xboxlive.com/users/me/profile/settings?settings=GameDisplayPicRaw,Gamerscore";
     req.headers = {{"Authorization", xsts.authorizationHeader()}, {"x-xbl-contract-version", "2"}};
-    auto r = net::perform(req);
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) {
-        XC_LOGW("gamerpic: %s", r.status ? ("HTTP " + std::to_string(r.status)).c_str() : r.error.c_str());
-        return;
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        auto r = net::perform(req);
+        auto j = json::parse(r.body);
+        if (r.ok() && j) {
+            bool foundPicture = false;
+            for (const auto& setting : (*j)["profileUsers"][0]["settings"].items()) {
+                if (setting["id"].str() == "GameDisplayPicRaw" && !setting["value"].str().empty()) {
+                    profile_.gamerpicUrl = setting["value"].str();
+                    foundPicture = true;
+                } else if (setting["id"].str() == "Gamerscore") {
+                    profile_.gamerscore = setting["value"].str();
+                }
+            }
+            if (!foundPicture) XC_LOGW("gamerpic: profile response did not contain a non-empty image URL");
+            return;
+        }
+        const bool transient = r.status == 0 || r.status == 408 || r.status == 429 || r.status >= 500;
+        if (!transient || attempt != 0) {
+            XC_LOGW("gamerpic: %s", r.status ? ("HTTP " + std::to_string(r.status)).c_str() : r.error.c_str());
+            return;
+        }
+        platform::sleepMs(300);
     }
-    for (const auto& s : (*j)["profileUsers"][0]["settings"].items())
-        if (s["id"].str() == "GameDisplayPicRaw") profile_.gamerpicUrl = s["value"].str();
-        else if (s["id"].str() == "Gamerscore") profile_.gamerscore = s["value"].str();
 }
 
 bool AuthManager::signIn(xcloud::GssvClient& gssv, const DeviceCodeCallback& onCode, std::string& err,
