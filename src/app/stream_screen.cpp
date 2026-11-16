@@ -106,7 +106,8 @@ void StreamScreen::syncFromSettings() {
         std::lock_guard<std::mutex> argLock(g_argMutex);
         tile = g_playTile;
     }
-    std::lock_guard<std::mutex> settingsLock(g_settingsMutex);
+    float micGain = 0.0f;
+    std::unique_lock<std::mutex> settingsLock(g_settingsMutex);
     bool hasCustom = false;
     GameProfile prof = g_settings.profileForGame(tile.productId, tile.titleId, &hasCustom);
     hasCustomProfile_ = hasCustom;
@@ -142,9 +143,7 @@ void StreamScreen::syncFromSettings() {
     media::audioSetRoute(static_cast<media::AudioRoute>(g_settings.audioRoute));
     media::audioSetVoiceRouting(g_settings.voiceRouting);
     media::setPadSpeakerVolume(g_settings.padSpeakerVolume);
-    if (g_player) {
-        g_player->setMicGain(g_settings.micGainFactor());
-    }
+    micGain = g_settings.micGainFactor();
 
     menu_.setProfileValues(streamResolution_, sharpness_, deband_, upscaler_,
                            triggerStrength_, deadzone_, circleConfirms_, hasCustomProfile_);
@@ -152,6 +151,9 @@ void StreamScreen::syncFromSettings() {
     menu_.setTouchpadShortcuts(touchpadShortcuts_);
     menu_.setPadSpeakerVolume(g_settings.padSpeakerVolume);
     overlaySeq_ = 0;
+    settingsLock.unlock();
+    std::lock_guard<std::mutex> playerLock(g_playerMutex);
+    if (g_player) g_player->setMicGain(micGain);
 }
 
 void StreamScreen::executeTouchpadAction_(input::TouchpadAction act, const char* triggerName) {

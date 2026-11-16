@@ -132,6 +132,7 @@ constexpr int kKeysPerColumn = input::kKeyActions / 2;
 // Updates on a desktop: the newest release's page (the app doesn't install it there).
 constexpr const char* kReleasesPage = "https://github.com/noan511ee-dot/Xbox-ps4-/releases/latest";
 constexpr const char* kReleasesTagPage = "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/";  // + the tag
+constexpr const char* kSupportUrl = "https://t.me/pboxps4";
 
 // The rows of `order` that `shown` keeps. A group starts on screen where the
 // row above belongs to another group (a hidden group leaves no gap).

@@ -227,6 +227,7 @@ struct RegionNetStat {
     std::string name;
     int rttMs = -1;
     int jitterMs = -1;
+    bool approximate = false;
 };
 
 struct NetworkTestState {

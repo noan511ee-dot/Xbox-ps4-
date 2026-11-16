@@ -1882,7 +1882,7 @@ void autoplayScreens(const ui::Canvas& canvas, uint64_t now) {
             g_ui->handle(opt);
             ++step;
         } else if (step == 1 && now - since > 4500) {
-            saveCanvas("settings_web_qr.ppm");
+            saveCanvas("settings_without_web_control.ppm");
             ui::NavInput back;
             back.back = true;
             g_ui->handle(back);

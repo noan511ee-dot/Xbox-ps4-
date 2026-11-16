@@ -947,7 +947,7 @@ void AppUi::drawSettings(Canvas& c) {
         // The control centre's glass panel: a deep base, a soft green light from the
         // top, a double hairline (a faint outer glow and a sharper inner line) and an
         // accent that fades out under the title.
-        const Rect panel{kMargin - 20, 148, 1200, 790};
+        const Rect panel{kMargin - 20, 148, kW - 2 * (kMargin - 20), 790};
         c.strokeRect({panel.x - 4, panel.y - 4, panel.w + 8, panel.h + 8}, rgba(35, 211, 157, 26), 6, 28);
         c.fillRect(panel, rgba(11, 18, 29, 228), 24);
         c.gradientV({panel.x + 24, panel.y + 2, panel.w - 48, 170}, rgba(35, 211, 157, 30), rgba(35, 211, 157, 0));
@@ -1104,48 +1104,43 @@ void AppUi::drawSettings(Canvas& c) {
         }
     }
 
-    // Web UI / Remote QR panel on the right side (x = 1310..1850)
-    if (tester_ == Tester::None && !pickerOpen_) {
-        std::string qrUrl = !webUrl_.empty() ? webUrl_ : "http://" + platform::localIPv4() + ":8080";
-        Rect panel{1310, 184, 540, 724};
-        c.fillRect(panel, rgba(11, 18, 29, 200), 20);
-        c.gradientV({panel.x + 20, panel.y + 2, panel.w - 40, 120}, rgba(35, 211, 157, 26), rgba(35, 211, 157, 0));
-        c.strokeRect(panel, rgba(35, 211, 157, 90), 2, 20);
+    // The support row reveals its QR and direct link in the free right-hand
+    // column, so users can scan it without opening another screen.
+    if (settingsRow_ == 19) {
+        const int cardX = kMargin + kRowW + 40;
+        const int cardW = kW - kMargin - cardX;
+        Rect card{cardX, 202, cardW, 690};
+        c.fillRect({card.x + 7, card.y + 9, card.w, card.h}, rgba(0, 0, 0, 90), 22);
+        c.fillRect(card, rgba(11, 18, 29, 238), 22);
+        c.gradientV({card.x + 2, card.y + 2, card.w - 4, 160}, rgba(35, 211, 157, 27), rgba(35, 211, 157, 0));
+        c.strokeRect(card, rgba(35, 211, 157, 110), 2, 22);
+        c.fillRect({card.x + 24, card.y + 25, 5, 34}, kGreen, 3);
+        fonts_.bold.draw(c, tr(Str::SupportTitle), card.x + 44, card.y + 24, 28, kWhite);
 
-        int py = panel.y + 30;
-        int titleW = fonts_.bold.measure(tr(Str::WebControlTitle), 28);
-        fonts_.bold.draw(c, tr(Str::WebControlTitle), panel.x + (panel.w - titleW) / 2, py, 28, kWhite);
-        py += 40;
-
-        auto descLines = fonts_.regular.wrap(tr(Str::WebControlDesc), 17, panel.w - 56, 5);
-        for (const auto& l : descLines) {
-            int lw = fonts_.regular.measure(l, 17);
-            fonts_.regular.draw(c, l, panel.x + (panel.w - lw) / 2, py, 17, kGray);
-            py += 22;
+        const auto lines = fonts_.regular.wrap(tr(Str::SupportMessage), 19, card.w - 52, 5);
+        int textY = card.y + 68;
+        for (const auto& line : lines) {
+            fonts_.regular.draw(c, line, card.x + 26, textY, 19, rgba(230, 230, 230));
+            textY += 26;
         }
 
-        uint8_t qrBuf[qrcodegen_BUFFER_LEN_MAX], tmpBuf[qrcodegen_BUFFER_LEN_MAX];
-        int qrTarget = 260;
-        int qrCardW = 300;
-        if (qrcodegen_encodeText(qrUrl.c_str(), tmpBuf, qrBuf, qrcodegen_Ecc_LOW, qrcodegen_VERSION_MIN, qrcodegen_VERSION_MAX, qrcodegen_Mask_AUTO, true)) {
-            int n = qrcodegen_getSize(qrBuf);
-            int mod = qrTarget / (n + 2);
-            qrCardW = mod * (n + 2) + 40;
+        constexpr int kQrTarget = 300;
+        const int qrTop = card.y + 218;
+        const int qrRight = card.x + card.w / 2 + kQrTarget / 2 + 20;
+        Rect qrBox = drawQr(c, kSupportUrl, qrRight, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
+        if (qrBox.w > 0) {
+            const std::string scanText = tr(Str::ScanToDonate);
+            int tw = fonts_.semibold.measure(scanText, 19);
+            fonts_.semibold.draw(c, scanText, qrBox.x + (qrBox.w - tw) / 2, qrBox.y + qrBox.h + 10, 19, kWhite);
         }
-        int qrRight = panel.x + (panel.w + qrCardW) / 2;
 
-        Rect pill{panel.x + 36, panel.y + panel.h - 42 - 18, panel.w - 72, 42};
-
-        // Center QR vertically in available space between py and pill.y
-        int availH = pill.y - py;
-        int qrTop = py + (availH - qrCardW) / 2;
-        drawQr(c, qrUrl, qrRight, qrTop, qrTarget, qrcodegen_Ecc_LOW);
-
-        c.fillRect(pill, rgba(0, 0, 0, 70), 12);
-        c.strokeRect(pill, rgba(255, 255, 255, 30), 1, 12);
-
-        int urlW = fonts_.semibold.measure(qrUrl, 20);
-        fonts_.semibold.draw(c, qrUrl, pill.x + (pill.w - urlW) / 2, fonts_.semibold.centeredY(pill.y, pill.h, 20), 20, rgba(140, 230, 160));
+        Rect link{card.x + 28, card.y + 628, card.w - 56, 42};
+        c.fillRect(link, rgba(35, 211, 157, 26), 14);
+        c.strokeRect(link, rgba(35, 211, 157, 90), 2, 14);
+        const std::string supportUrl = kSupportUrl;
+        int linkW = fonts_.semibold.measure(supportUrl, 20);
+        fonts_.semibold.draw(c, supportUrl, link.x + (link.w - linkW) / 2,
+                             fonts_.semibold.centeredY(link.y, link.h, 20), 20, rgba(255, 215, 80));
     }
 
     if (removeAccountConfirmOpen_) return drawRemoveAccountConfirmModal(c);
@@ -1623,7 +1618,8 @@ void AppUi::drawNetworkTest(Canvas& c, uint64_t nowMs) {
         std::string val;
         Color valCol = kDim;
         if (reg.rttMs >= 0) {
-            val = "RTT " + std::to_string(reg.rttMs) + " ms   \xC2\xB7   Jitter " +
+            val = reg.approximate ? "~RTT " : "RTT ";
+            val += std::to_string(reg.rttMs) + " ms   \xC2\xB7   Jitter " +
                   std::to_string(std::max(0, reg.jitterMs)) + " ms";
             valCol = reg.rttMs < 60 ? rgba(110, 225, 120) : (reg.rttMs < 120 ? rgba(255, 200, 80) : rgba(255, 120, 120));
         } else {
@@ -1642,6 +1638,7 @@ void AppUi::drawNetworkTest(Canvas& c, uint64_t nowMs) {
 
 void AppUi::drawDonationModal(Canvas& c) {
     Rect panel = drawModal(c, 1260, 680, tr(Str::SupportTitle));
+    c.fillRect({panel.x + 1, panel.y + 24, 6, panel.h - 48}, kGreen, 3);
 
     // Calculate dimensions for QR code (larger target = 420px)
     constexpr int kQrTarget = 420;
@@ -1651,7 +1648,7 @@ void AppUi::drawDonationModal(Canvas& c) {
     int centerY = contentTop + contentH / 2;
 
     int qrTop = centerY - qrTotalH / 2;
-    Rect qrBox = drawQr(c, "https://t.me/pboxps4", panel.x + panel.w - 60, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
+    Rect qrBox = drawQr(c, kSupportUrl, panel.x + panel.w - 60, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
     if (qrBox.w > 0) {
         std::string scanText = tr(Str::ScanToDonate);
         int tw = fonts_.semibold.measure(scanText, 22);
@@ -1663,7 +1660,8 @@ void AppUi::drawDonationModal(Canvas& c) {
     int textX = panel.x + 60;
     auto lines = fonts_.regular.wrap(tr(Str::SupportMessage), 26, textW, 10);
     constexpr int kLineH = 38;
-    int textContentH = static_cast<int>(lines.size()) * kLineH + 24 + 26;
+    constexpr int kLinkW = 460, kLinkH = 52;
+    int textContentH = static_cast<int>(lines.size()) * kLineH + 24 + kLinkH;
     int textY = centerY - textContentH / 2;
 
     for (const auto& line : lines) {
@@ -1672,7 +1670,13 @@ void AppUi::drawDonationModal(Canvas& c) {
     }
 
     textY += 24;
-    fonts_.semibold.draw(c, "https://t.me/pboxps4", textX, textY, 24, rgba(255, 215, 80));
+    Rect link{textX + (textW - kLinkW) / 2, textY, kLinkW, kLinkH};
+    c.fillRect(link, rgba(35, 211, 157, 26), 16);
+    c.strokeRect(link, rgba(35, 211, 157, 100), 2, 16);
+    const std::string supportUrl = kSupportUrl;
+    int linkW = fonts_.semibold.measure(supportUrl, 24);
+    fonts_.semibold.draw(c, supportUrl, link.x + (link.w - linkW) / 2,
+                         fonts_.semibold.centeredY(link.y, link.h, 24), 24, rgba(255, 215, 80));
 
     c.fillRect({0, kH - 80, kW, 80}, kBg);
     drawHints(c, {{kIconCircle, tr(Str::Back)}});

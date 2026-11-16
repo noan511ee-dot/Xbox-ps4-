@@ -620,7 +620,7 @@ struct StreamPlayer::Impl {
             return;
         }
         isHwDecode = decoder->isHardware();
-        const bool useAsyncPresent = display::caps().asyncPresent;
+        bool useAsyncPresent = display::caps().asyncPresent;
         platform::Thread presentThread;
         if (useAsyncPresent) {
             {
@@ -629,7 +629,7 @@ struct StreamPlayer::Impl {
                 consumedPicSeq = 0;
                 presentStop = false;
             }
-            platform::startThread(presentThread, [this] {
+            if (!platform::startThread(presentThread, [this] {
                 try {
                     asyncPresentLoop();
                 } catch (const std::exception& e) {
@@ -639,7 +639,10 @@ struct StreamPlayer::Impl {
                     XC_LOGE("present thread recovered from unknown exception");
                     end("display pipeline failed safely");
                 }
-            }, 512u << 10);
+            }, 512u << 10)) {
+                useAsyncPresent = false;
+                XC_LOGW("could not start the asynchronous display thread; using inline presentation");
+            }
         }
         struct PresentJoinGuard {
             Impl* self;
@@ -947,15 +950,18 @@ struct StreamPlayer::Impl {
                         break;
                     }
                 }
-                std::lock_guard<std::mutex> lock(mutex);
-                if (frames.size() >= kMaxQueuedFrames) {
-                // Hopelessly behind: start over from the next key frame.
-                ++queueResets;
-                frames.clear();
-                keyframeWanted = true;
+                VideoFrame queuedFrame{std::vector<uint8_t>(d, d + n), rtpTimestamp,
+                                       stream::clockMs(), platform::nowUs(), firstPacketUs};
+                {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    if (frames.size() >= kMaxQueuedFrames) {
+                        // Hopelessly behind: start over from the next key frame.
+                        ++queueResets;
+                        frames.clear();
+                        keyframeWanted = true;
+                    }
+                    frames.push_back(std::move(queuedFrame));
                 }
-                frames.push_back(
-                    {std::vector<uint8_t>(d, d + n), rtpTimestamp, stream::clockMs(), platform::nowUs(), firstPacketUs});
                 cv.notify_one();
             } catch (const std::exception& e) {
                 keyframeWanted = true;
@@ -970,20 +976,23 @@ struct StreamPlayer::Impl {
                 if (!d || n == 0) return;
                 if (++audioPackets == 1) XC_LOGI("first audio packet: %zu bytes (timestamp %u)", n, rtpTimestamp);
                 lastAudioProgressMs = platform::nowMs();
-                std::lock_guard<std::mutex> lock(audioMutex_);
-                if (audioPackets_.size() >= 50) {
-                    // Keep the live edge when a mobile burst made the audio
-                    // queue too deep; retaining old packets only adds delay.
-                    audioPackets_.pop_front();
+                QueuedAudioPacket queuedPacket{std::vector<uint8_t>(d, d + n), rtpTimestamp};
+                {
+                    std::lock_guard<std::mutex> lock(audioMutex_);
+                    if (audioPackets_.size() >= 50) {
+                        // Keep the live edge when a mobile burst made the audio
+                        // queue too deep; retaining old packets only adds delay.
+                        audioPackets_.pop_front();
+                    }
+                    auto it = audioPackets_.end();
+                    while (it != audioPackets_.begin()) {
+                        auto prev = it - 1;
+                        int32_t diff = static_cast<int32_t>(rtpTimestamp - prev->rtpTimestamp);
+                        if (diff >= 0) break;
+                        it = prev;
+                    }
+                    audioPackets_.insert(it, std::move(queuedPacket));
                 }
-                auto it = audioPackets_.end();
-                while (it != audioPackets_.begin()) {
-                    auto prev = it - 1;
-                    int32_t diff = static_cast<int32_t>(rtpTimestamp - prev->rtpTimestamp);
-                    if (diff >= 0) break;
-                    it = prev;
-                }
-                audioPackets_.insert(it, {std::vector<uint8_t>(d, d + n), rtpTimestamp});
                 audioCv.notify_one();
             } catch (const std::exception& e) {
                 XC_LOGE("audio callback recovered from exception: %s", e.what());

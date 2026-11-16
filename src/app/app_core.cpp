@@ -685,8 +685,10 @@ bool coreStartup() {
             outFilters.set("language", g_ui->filterSelectedPublic(ui::AppUi::Filter::Language));
         },
         /*isStreaming=*/[]() -> bool {
-            return (g_ui && (g_ui->screen() == ui::Screen::Streaming || g_ui->screen() == ui::Screen::Launching)) ||
-                   (g_player && g_player->running());
+            if (g_ui && (g_ui->screen() == ui::Screen::Streaming || g_ui->screen() == ui::Screen::Launching))
+                return true;
+            std::lock_guard<std::mutex> playerLock(g_playerMutex);
+            return g_player && g_player->running();
         },
         /*injectGamepad=*/nullptr,
         /*getTelemetry=*/[](json::Value& stats) {

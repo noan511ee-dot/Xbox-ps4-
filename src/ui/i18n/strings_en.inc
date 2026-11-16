@@ -337,9 +337,9 @@ constexpr Column kEnglish = {
     "%s joined Game Pass!",                           // WishlistInGamePass
     "Technical support",                              // SupportProject
     "PBOX Technical Support",                         // SupportTitle
-    "For setup, streaming, and troubleshooting help, contact PBOX Technical Support on Telegram. Scan the QR code or use the link below.", // SupportMessage
+    "Need help with PBOX? Scan the code or open Telegram for setup, sign-in, or streaming help. Include your app version and error code; never share passwords or sign-in codes.", // SupportMessage
     "Telegram",                                       // SupportKoFi
-    "Scan to contact support",                         // ScanToDonate
+    "Scan to chat with PBOX support",                  // ScanToDonate
     "Test sound",                                     // TestSound
     "Wishlist is empty",                              // WishlistEmpty
     // Loading tips

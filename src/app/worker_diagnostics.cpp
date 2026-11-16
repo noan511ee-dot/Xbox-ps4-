@@ -329,10 +329,10 @@ void runNetworkTest(xcloud::GssvClient& gssv) {
     XC_LOGI("network test: NAT/STUN -> %s", state.natStatus.c_str());
     g_ui->setNetworkTestState(state);
 
-    std::map<std::string, int> measured;
+    std::map<std::string, int> cachedRtt;
     {
         std::lock_guard<std::mutex> lock(g_settingsMutex);
-        measured = g_settings.regionRtt;
+        cachedRtt = g_settings.regionRtt;
     }
 
     std::string defaultRegion;
@@ -348,7 +348,8 @@ void runNetworkTest(xcloud::GssvClient& gssv) {
         if (s < 2) platform::sleepMs(30);
     }
     int baseRtt = 15, baseJitter = 1;
-    if (!edgeSamples.empty()) {
+    const bool edgeMeasured = !edgeSamples.empty();
+    if (edgeMeasured) {
         auto [minIt, maxIt] = std::minmax_element(edgeSamples.begin(), edgeSamples.end());
         baseRtt = *minIt;
         baseJitter = *maxIt - *minIt;
@@ -360,30 +361,33 @@ void runNetworkTest(xcloud::GssvClient& gssv) {
         const auto& r = regions[i];
         int rtt = -1, jitter = -1;
         bool isDefault = (r.name == defaultRegion) || r.isDefault;
+        bool approximate = !isDefault || !edgeMeasured;
+        const char* source = isDefault ? (edgeMeasured ? "edge probe" : "fallback estimate") : "distance estimate";
         if (isDefault) {
             rtt = baseRtt;
             jitter = baseJitter;
         } else {
-            auto m = measured.find(r.name);
+            auto m = cachedRtt.find(r.name);
             double distKm = xcloud::regionDistanceKm(defaultRegion, r.name);
             int estRtt = (distKm >= 0) ? (baseRtt + static_cast<int>(std::round(distKm / 100.0))) : 120;
-            if (m != measured.end() && m->second > 0) {
+            if (m != cachedRtt.end() && m->second > 0) {
                 rtt = m->second;
                 jitter = std::max(1, baseJitter + 2);
+                source = "cached";
             } else {
                 rtt = estRtt;
                 jitter = std::max(1, baseJitter + (distKm > 4000 ? 3 : 1));
             }
         }
-        measured[r.name] = rtt;
         for (auto& entry : state.regions) {
             if (entry.name == r.name) {
                 entry.rttMs = rtt;
                 entry.jitterMs = jitter;
+                entry.approximate = approximate;
                 break;
             }
         }
-        XC_LOGI("network test: region %s -> rtt=%d ms, jitter=%d ms", r.name.c_str(), rtt, jitter);
+        XC_LOGI("network test: region %s (%s) -> rtt=%d ms, jitter=%d ms", r.name.c_str(), source, rtt, jitter);
         g_ui->setNetworkTestState(state);
         platform::sleepMs(20);
     }
@@ -395,13 +399,10 @@ void runNetworkTest(xcloud::GssvClient& gssv) {
     });
     state.running = false;
     g_ui->setNetworkTestState(state);
-    if (!measured.empty()) {
-        {
-            std::lock_guard<std::mutex> lock(g_settingsMutex);
-            g_settings.regionRtt = measured;
-        }
-        g_ui->setRegionLatency(measured);
-    }
+    // Keep this diagnostic advisory: it probes the shared edge and estimates
+    // other regions. Do not persist its derived values as session RTT; the test
+    // page marks non-default/cached values as approximate.
+    if (!cachedRtt.empty()) g_ui->setRegionLatency(cachedRtt);
 }
 
 }  // namespace xc::app

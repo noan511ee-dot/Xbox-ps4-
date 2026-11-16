@@ -3927,7 +3927,7 @@ static void testBlock3Features() {
         CHECK(!ws.isRunning());
     }
 
-    // 3. UI Integration: Web QR & Remote Search & Rating Badges
+    // 3. UI Integration: Remote Search & Rating Badges
     {
         ui::Fonts dummyFonts{};
         ui::ImageCache images([] {});
@@ -3974,7 +3974,7 @@ static void testBlock3Features() {
         app.showDetails(tile);
         app.render(c, 1000);
 
-        // Test Settings screen rendering with QR Panel
+        // Test Settings screen rendering without the Web Control QR panel
         app.showHome();
         ui::NavInput openOpt;
         openOpt.options = true;
@@ -5485,6 +5485,32 @@ static void testWebReportAndGamepadLayout() {
         CHECK(res.body.find("id=\"leftStickHead\"></div>") != std::string::npos);
         CHECK(res.body.find("id=\"rightStickHead\"></div>") != std::string::npos);
     }
+}
+
+static void testRocketLeagueAlwaysSearchable() {
+    app::Library library;
+    auto pool = library.librarySearchPool();
+    const ui::GameTile* rocketLeague = nullptr;
+    for (const auto& tile : pool) {
+        if (tile.productId == "C125W9BG2K0V") {
+            rocketLeague = &tile;
+            break;
+        }
+    }
+    CHECK(rocketLeague != nullptr);
+    if (rocketLeague) {
+        CHECK(rocketLeague->name == "Rocket League");
+        CHECK(rocketLeague->freeInStore);
+    }
+
+    ui::Fonts fonts{};
+    ui::ImageCache images([] {});
+    ui::AppUi appUi(fonts, images);
+    appUi.setSearchPools({}, std::move(pool));
+    appUi.showFilteredSearch(ui::Tab::Library, false, 0, "", 0, -1);
+    appUi.typeText("rocket");
+    const auto results = appUi.searchResults(10);
+    CHECK(results.size() == 1 && results[0].first == "Rocket League");
 }
 
 static void testCodSearchRomanAndSettingsReset() {
@@ -9238,6 +9264,7 @@ int main() {
     testTouchpadShortcutsAndSlots();
     testPlayerSwitchAndUnresolvedTiles();
     testWebReportAndGamepadLayout();
+    testRocketLeagueAlwaysSearchable();
     testCodSearchRomanAndSettingsReset();
     testFreeAccountPlayability();
     testDetailsHydrationAndPlaytimeBadge();

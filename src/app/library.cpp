@@ -341,7 +341,7 @@ ui::GameTile Library::tile(const std::string& productId, const std::string& titl
             else t.name = productId;
         }
     }
-    t.freeInStore = freeInStore_.count(productId) > 0;
+    t.freeInStore = freeInStore_.count(productId) > 0 || productId == kRocketLeagueProductId;
     if (t.productId == kRocketLeagueProductId &&
         (t.name.empty() || t.name == t.productId || isStoreBigId(t.name))) {
         t.name = "Rocket League";
@@ -600,6 +600,14 @@ std::vector<ui::GameTile> Library::librarySearchPool() const {
     std::vector<Item> items = owned_;
     items.insert(items.end(), purchasable_.begin(), purchasable_.end());
     for (const auto& id : allGames_) items.emplace_back(id, std::string());
+    bool hasRocketLeague = false;
+    for (const auto& item : items) {
+        if (item.first == kRocketLeagueProductId) {
+            hasRocketLeague = true;
+            break;
+        }
+    }
+    if (!hasRocketLeague) items.emplace_back(kRocketLeagueProductId, std::string());
     return tiles(items);
 }
 
