@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "App version, for example 1.6.6"
+        description: "App version, for example 1.6.5"
         required: true
-        default: "1.6.6"
+        default: "1.6.5"
   push:
     tags:
       - "v*"
@@ -83,8 +83,8 @@ jobs:
         id: package
         env:
           XC_PS4_TITLE: "PBOX - PS4"
-          XC_PS4_TITLE_ID: "PSBX00001"
-          XC_PS4_CONTENT_ID: "IV0000-PSBX00001_00-PSBOXCLOUDGAME00"
+          XC_PS4_TITLE_ID: "PBOX10006"
+          XC_PS4_CONTENT_ID: "IV0000-PBOX10006_00-PSBOXCLOUDGAME00"
         run: |
           version="${{ steps.version.outputs.version }}"
           IFS=. read -r major minor patch <<< "$version"

@@ -27,6 +27,10 @@ namespace {
 constexpr uint64_t kRenackMs = 50;
 constexpr int kMaxNacks = 5;
 constexpr size_t kMaxBuffered = 1800;      // packets (within 2048-slot ring)
+// Max sequence-number gap between highest_ and nextSeq_: a tighter limit
+// than kMaxBuffered for the gap check to avoid a false clearRing() on burst
+// NACK delivery. Matches the noteGap() huge-jump threshold (512).
+constexpr size_t kMaxGap = 512;
 
 constexpr uint8_t kStartCode[] = {0, 0, 0, 1};
 
@@ -215,15 +219,15 @@ bool H264Receiver::assemble(int64_t first, int64_t last, std::vector<uint8_t>& o
 }
 
 bool H264Receiver::resync(rtc::message_vector& out) {
-    // Find a frame boundary (the packet before is present and is a marker, or
-    // carries another timestamp) followed by a complete key frame.
+    // Find a frame boundary followed by a complete key frame. A missing
+    // predecessor is also a boundary during resync: after loss, a complete IDR
+    // is the recovery point even when the damaged frame's final packet was lost.
     int64_t startSeq = std::max<int64_t>(0, highest_ - static_cast<int64_t>(kRingSize - 1));
     for (int64_t s = startSeq; s <= highest_; ++s) {
         const auto* cur = getPacket(s);
         if (!cur) continue;
         const auto* prev = getPacket(s - 1);
-        if (!prev) continue;
-        if (!prev->marker && prev->timestamp == cur->timestamp) continue;
+        if (prev && !prev->marker && prev->timestamp == cur->timestamp) continue;
 
         // Walk to the marker of this frame.
         int64_t end = s;
@@ -397,10 +401,19 @@ void H264Receiver::incoming(rtc::message_vector& messages, const rtc::message_ca
     // 300 ms), as the request or the key frame itself may have been lost;
     // otherwise the picture stays frozen until the buffer overflows (seconds).
     if (nextSeq_ < 0 && packetCount_ > 0) askKeyframe(send);
-    if (packetCount_ > kMaxBuffered || (nextSeq_ >= 0 && highest_ - nextSeq_ > static_cast<int64_t>(kMaxBuffered))) {  // stuck: start over
+    // Two independent stuck conditions with separate thresholds:
+    // 1. Total buffered packets exceeded (ring nearly full -> decoder not consuming).
+    // 2. The gap nextSeq_..highest_ is too wide (retransmission storm, decoder wedged).
+    //    Uses kMaxGap (512) so burst NACK delivery after a brief pause does not
+    //    falsely clear the ring; the noteGap() huge-jump guard uses the same value.
+    // Fix C: reset lastKeyframeRequestMs_ before askKeyframe so the 300 ms
+    // rate-limiter does not suppress the PLI that must follow clearRing().
+    if (packetCount_ > kMaxBuffered ||
+        (nextSeq_ >= 0 && highest_ - nextSeq_ > static_cast<int64_t>(kMaxGap))) {  // stuck: start over
         clearRing();
         missing_.clear();
         nextSeq_ = -1;
+        lastKeyframeRequestMs_ = 0;  // allow immediate PLI after a forced reset
         askKeyframe(send);
     }
     messages.swap(out);

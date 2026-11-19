@@ -3,8 +3,10 @@
 // Offline unit tests for the portable core (no network).
 #include "app/auto_deband.h"
 #include "app/library.h"
+#include "app/library_refresh.h"
 #include "app/launch_title_internal.h"
 #include "app/settings.h"
+#include "app/stream_metrics.h"
 #include "app/update_check.h"
 #include "app/updater.h"
 #include "app/web_server.h"
@@ -135,6 +137,10 @@ static void testJson() {
 }
 
 static void testCloudLaunchTitleResolution() {
+    CHECK(xcloud::titleIdText(json::Value(558797228)) == app::kRocketLeagueXboxTitleId);
+    CHECK(xcloud::titleIdText(json::Value("558797228")) == app::kRocketLeagueXboxTitleId);
+    CHECK(xcloud::titleIdText(json::Value(true)).empty());
+
     xcloud::Title title;
     title.titleId = "REAL_GSSV_LAUNCH_ID";
     title.productId = "UNRELATED_PRODUCT";
@@ -142,10 +148,17 @@ static void testCloudLaunchTitleResolution() {
     std::vector<xcloud::Title> titles{title};
 
     CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+    CHECK(app::resolveCloudLaunchTitleId(titles, "c125w9bg2k0v") == "REAL_GSSV_LAUNCH_ID");
     CHECK(app::resolveCloudLaunchTitleId(titles, "DIFFERENT_PRODUCT").empty());
+
+    titles[0].xboxTitleId = app::kRocketLeagueXboxTitleIdAlias;
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+    titles[0].xboxTitleId = app::kRocketLeagueXboxTitleId;
 
     titles[0].xboxTitleId.clear();
     titles[0].productId = app::kRocketLeagueProductId;
+    CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
+    titles[0].productId = " c125w9bg2k0v ";
     CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId) == "REAL_GSSV_LAUNCH_ID");
 
     titles[0].productId = "UNRELATED_PRODUCT";
@@ -154,6 +167,15 @@ static void testCloudLaunchTitleResolution() {
 
     titles[0].titleId = "None";
     CHECK(app::resolveCloudLaunchTitleId(titles, app::kRocketLeagueProductId).empty());
+
+    xcloud::Product catalogProduct;
+    catalogProduct.productId = "c125w9bg2k0v";
+    catalogProduct.xcloudTitleId = "ROCKETLEAGUE_GSSV_ID";
+    std::map<std::string, xcloud::Product> catalog{{catalogProduct.productId, catalogProduct}};
+    CHECK(app::resolveCatalogLaunchTitleId(catalog, app::kRocketLeagueProductId) == "ROCKETLEAGUE_GSSV_ID");
+    catalogProduct.xcloudTitleId = app::kRocketLeagueProductId;
+    catalog[catalogProduct.productId] = catalogProduct;
+    CHECK(app::resolveCatalogLaunchTitleId(catalog, app::kRocketLeagueProductId).empty());
 }
 
 static void testUrl() {
@@ -427,6 +449,7 @@ static void testSettingsChoiceRoundTrip() {
     s.desktopFullscreen = false;
     s.touchpadMouse = true;
     s.queueReadyAlert = false;
+    s.sharePresence = true;
     s.titlePlaytime = {{"game1", 3600}};
     // Not carried by the screen: must survive applyChoice untouched.
     s.keyboardPlayer = 3;
@@ -438,6 +461,7 @@ static void testSettingsChoiceRoundTrip() {
     CHECK(c.resolution == 1 && c.triggerProfile == 2 && c.lightBarColour == 0xFF112233u && !c.fullscreen);
     CHECK(c.videoDecoder == 1);
     CHECK(!c.queueReadyAlert && c.titlePlaytime.at("game1") == 3600);
+    CHECK(c.sharePresence);
 
     xc::app::Settings back;  // defaults, then what the screen carries
     back.keyboardPlayer = 3;
@@ -456,6 +480,7 @@ static void testSettingsChoiceRoundTrip() {
     CHECK(back.sharpness == s.sharpness && back.deband == s.deband && back.upscaler == s.upscaler);
     CHECK(back.videoDecoder == s.videoDecoder);
     CHECK(back.highRefresh == s.highRefresh);
+    CHECK(back.sharePresence == s.sharePresence);
     CHECK(back.maxBitrateMbps == s.maxBitrateMbps && back.gameVolume == s.gameVolume);
     CHECK(back.queueReadyAlert == s.queueReadyAlert && back.titlePlaytime == s.titlePlaytime);
     CHECK(back.keyMap == s.keyMap && back.padMap == s.padMap);
@@ -1536,6 +1561,19 @@ static void testResolveIPv4AndConnectTcp() {
     }
 }
 
+static void testLibraryRefreshSchedule() {
+    constexpr uint64_t startedAt = 1'000;
+    constexpr uint64_t dueAt = startedAt + app::kLibraryAutoRefreshIntervalMs;
+    CHECK(app::libraryRefreshDeadline(startedAt) == dueAt);
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt - 1, dueAt, true, true, true, true));
+    CHECK(app::shouldAutoRefreshLibrary(dueAt, dueAt, true, true, true, true));
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt, dueAt, false, true, true, true));
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt, dueAt, true, false, true, true));
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt, dueAt, true, true, false, true));
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt, dueAt, true, true, true, false));
+    CHECK(!app::shouldAutoRefreshLibrary(dueAt, 0, true, true, true, true));
+}
+
 // The home rows come from the network on every load(): the cache's rows
 // (kept for the instant start) are never added to them, and a cache that
 // holds every row twice heals at the next save.
@@ -1786,6 +1824,68 @@ static void testAudioEncoder() {
 // A burst of loss: a frame lost for good, then a frame with a hole of its
 // own, then a complete key frame. The receiver must resume at that key frame
 // (it used to stop at the frame with the hole: a freeze of seconds).
+// A large outstanding gap should discard stale packets and request a new IDR.
+static void testH264LargeGapForcesKeyframe() {
+    xc::stream::VideoReceiveStats stats;
+    int keyframeAsks = 0;
+    xc::stream::H264Receiver rx([&] { ++keyframeAsks; }, stats, 60);
+    auto packet = [](uint16_t seq, uint32_t ts, bool marker, uint8_t nal) {
+        std::vector<uint8_t> b = {0x80, static_cast<uint8_t>((marker ? 0x80 : 0) | 102),
+                                  static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq),
+                                  static_cast<uint8_t>(ts >> 24), static_cast<uint8_t>(ts >> 16),
+                                  static_cast<uint8_t>(ts >> 8), static_cast<uint8_t>(ts), 0, 0, 0, 7,
+                                  nal, 0xAA, 0xBB};
+        return rtc::make_message(reinterpret_cast<const std::byte*>(b.data()),
+                                 reinterpret_cast<const std::byte*>(b.data()) + b.size());
+    };
+    // Build the backlog before starting the keyframe-request rate limiter.
+    rtc::message_vector backlog;
+    for (uint16_t s = 4; s < 518; ++s)
+        backlog.push_back(packet(s, static_cast<uint32_t>(s) * 1500u, true, 0x41));
+
+    // A non-IDR frame causes the first keyframe request.
+    rtc::message_vector initial{packet(0, 0, true, 0x41)};
+    rx.incoming(initial, [](rtc::message_ptr) { return true; });
+    CHECK(keyframeAsks == 1);
+
+    // Resume from a complete IDR, then leave seq 3 missing while later packets
+    // accumulate. highest_ - nextSeq_ becomes 514, exceeding kMaxGap (512).
+    rtc::message_vector resume{packet(1, 1500, true, 0x65), packet(2, 3000, true, 0x41)};
+    rx.incoming(resume, [](rtc::message_ptr) { return true; });
+    CHECK(keyframeAsks == 1);
+    rx.incoming(backlog, [](rtc::message_ptr) { return true; });
+    CHECK(keyframeAsks == 2);  // reset permits an immediate recovery request
+}
+
+// A 400-sequence backlog after a small hole is below the stuck threshold;
+// preserve it long enough for a retransmission instead of forcing an IDR reset.
+static void testH264ModerateGapDoesNotForceReset() {
+    xc::stream::VideoReceiveStats stats;
+    int keyframeAsks = 0;
+    xc::stream::H264Receiver rx([&] { ++keyframeAsks; }, stats, 500);
+    auto packet = [](uint16_t seq, uint32_t ts, bool marker, uint8_t nal) {
+        std::vector<uint8_t> b = {0x80, static_cast<uint8_t>((marker ? 0x80 : 0) | 102),
+                                  static_cast<uint8_t>(seq >> 8), static_cast<uint8_t>(seq),
+                                  static_cast<uint8_t>(ts >> 24), static_cast<uint8_t>(ts >> 16),
+                                  static_cast<uint8_t>(ts >> 8), static_cast<uint8_t>(ts), 0, 0, 0, 7,
+                                  nal, 0xAA, 0xBB};
+        return rtc::make_message(reinterpret_cast<const std::byte*>(b.data()),
+                                 reinterpret_cast<const std::byte*>(b.data()) + b.size());
+    };
+    // IDR to establish nextSeq_=2.
+    rtc::message_vector seed;
+    seed.push_back(packet(0, 0, true, 0x65));
+    seed.push_back(packet(1, 1500, true, 0x41));
+    rx.incoming(seed, [](rtc::message_ptr) { return true; });
+
+    // Leave seq 2 and 3 missing; highest_ - nextSeq_ is exactly 400.
+    rtc::message_vector laterPackets;
+    for (uint16_t s = 4; s < 403; ++s)
+        laterPackets.push_back(packet(s, static_cast<uint32_t>(s) * 1500u, true, 0x41));
+    rx.incoming(laterPackets, [](rtc::message_ptr) { return true; });
+    CHECK(keyframeAsks == 0);
+}
+
 // The wait for a retransmission follows the round trip: none known keeps
 // the default; a slow connection gets time for a NACK and a second try.
 static void testH264LossWaitFollowsRtt() {
@@ -1836,6 +1936,15 @@ static void testH264Resync() {
     CHECK(framesOut == 3);
     CHECK(stats.framesDropped >= 1);
     CHECK(keyframeAsks >= 1);
+
+    // If the final packet of a damaged P frame is missing, the following
+    // complete IDR is still a valid recovery point even without its predecessor.
+    feed({packet(11, 10500, false, 0x41), packet(13, 12000, true, 0x65), packet(14, 13500, true, 0x41)});
+    CHECK(framesOut == 3);  // waiting for missing seq 12
+    xc::platform::sleepMs(200);
+    feed({});
+    CHECK(framesOut == 5);  // recovered at IDR 13, then emitted P frame 14
+    CHECK(keyframesOut == 3);
 }
 
 // A padding-only RTP packet (payload all padding) inside a frame is skipped,
@@ -2440,21 +2549,21 @@ static void testVisibleSettingsRows() {
     };
     const ui::UiCaps ps5;
     auto all = ui::visibleSettingsRows(ps5);
-    CHECK((ids(all) == std::vector<int>{0, 2, 8, 17, 18, 24, 25, 1, 20, 9, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23}));
-    CHECK((groups(all) == std::vector<bool>{false, false, false, false, false, false, false, true, false, false, false, true, false, false, false, false, false, false, false, false, false, true, false, true}));
+    CHECK((ids(all) == std::vector<int>{0, 2, 8, 17, 18, 24, 25, 1, 20, 9, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 27, 7, 23}));
+    CHECK((groups(all) == std::vector<bool>{false, false, false, true, false, false, false, true, false, false, false, true, false, false, false, false, false, false, false, false, false, true, false, false, true}));
     ui::UiCaps pc;
     pc.lightBar = pc.triggerRumble = pc.adaptiveTriggers = pc.gyro = pc.touchpad = false;
     pc.upscalers = pc.sharpen = pc.deband = pc.highRefresh = pc.console = pc.selfUpdate = false;
     pc.openUrl = true;
     auto desk = ui::visibleSettingsRows(pc);
-    CHECK((ids(desk) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
-    CHECK((groups(desk) == std::vector<bool>{false, false, false, false, false, false, true, false, false, true, false, false, false, false, false, true, false, true}));
+    CHECK((ids(desk) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 9, 10, 14, 12, 3, 5, 16, 22, 19, 27, 7, 23}));
+    CHECK((groups(desk) == std::vector<bool>{false, false, false, true, false, false, true, false, false, false, true, false, false, false, false, false, true, false, false, true}));
     // The desktop app's window: Display mode after the resolution, in the stream's group.
     ui::UiCaps win = pc;
     win.desktopWindow = true;
     auto w = ui::visibleSettingsRows(win);
-    CHECK((ids(w) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 13, 10, 14, 12, 3, 5, 16, 22, 19, 7, 23}));
-    CHECK((groups(w) == std::vector<bool>{false, false, false, false, false, false, true, false, false, false, true, false, false, false, false, false, true, false, true}));
+    CHECK((ids(w) == std::vector<int>{0, 2, 8, 17, 18, 24, 1, 20, 13, 9, 10, 14, 12, 3, 5, 16, 22, 19, 27, 7, 23}));
+    CHECK((groups(w) == std::vector<bool>{false, false, false, true, false, false, true, false, false, false, false, true, false, false, false, false, false, true, false, false, true}));
     ui::UiCaps xbox = pc;  // an Xbox pad: impulse triggers, no light bar
     xbox.triggerRumble = true;
     auto x = ids(ui::visibleSettingsRows(xbox));
@@ -2475,11 +2584,12 @@ static void testVisibleSettingsRows() {
     ps4.deband = false;
     ps4.highRefresh = false;
     auto ps4Rows = ids(ui::visibleSettingsRows(ps4));
-    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 9) == ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 9) != ps4Rows.end());
     CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 4) == ps4Rows.end());
     CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 21) == ps4Rows.end());
     CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 6) != ps4Rows.end());
     CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 15) != ps4Rows.end());
+    CHECK(std::find(ps4Rows.begin(), ps4Rows.end(), 27) != ps4Rows.end());
     auto ps4Game = ids(ui::visibleGameSettingsRows(ps4, true, true));
     CHECK(std::find(ps4Game.begin(), ps4Game.end(), 1) == ps4Game.end());
     CHECK(std::find(ps4Game.begin(), ps4Game.end(), 2) == ps4Game.end());
@@ -2507,9 +2617,10 @@ static void testVisibleSettingsRows() {
     CHECK(ui::settingsRowPosition(ps5, 5) == 17 && ui::settingsRowPosition(ps5, 6) == 18);
     CHECK(ui::settingsRowPosition(ps5, 12) == 12 && ui::settingsRowPosition(ps5, 14) == 11);
     CHECK(ui::settingsRowPosition(ps5, 22) == 20);
-    CHECK(ui::settingsRowPosition(ps5, 7) == 22 && ui::settingsRowPosition(ps5, 19) == 21 && ui::settingsRowPosition(ps5, 2) == 1);
+    CHECK(ui::settingsRowPosition(ps5, 27) == 22 && ui::settingsRowPosition(ps5, 7) == 23 &&
+          ui::settingsRowPosition(ps5, 19) == 21 && ui::settingsRowPosition(ps5, 2) == 1);
     CHECK(ui::settingsRowPosition(ps5, 21) == 16);
-    CHECK(ui::settingsRowPosition(pc, 5) == 12 && ui::settingsRowPosition(pc, 6) == -1 && ui::settingsRowPosition(pc, 4) == -1);
+    CHECK(ui::settingsRowPosition(pc, 5) == 13 && ui::settingsRowPosition(pc, 6) == -1 && ui::settingsRowPosition(pc, 4) == -1);
 }
 
 // The controller's glyphs by pad kind (ui/pad_glyphs.h).
@@ -2599,6 +2710,15 @@ static void testNullBackends() {
     display::DisplayCaps caps = display::caps();
     CHECK(!caps.upscalers && !caps.deband && !caps.sharpen && !caps.highRefreshSwitch && !caps.presentTiming);
     CHECK(!display::canSwitchRefresh() && !display::setHighRefresh(true) && !display::bringUpTest(1));
+}
+
+static void testShownFpsMetric() {
+    CHECK(xc::app::shownFps(60, 0, 1.0) == 60.0);
+    CHECK(xc::app::shownFps(125, 65, 1.0) == 60.0);
+    CHECK(xc::app::shownFps(95, 65, 2.0) == 15.0);
+    CHECK(xc::app::shownFps(10, 10, 1.0) == 0.0);
+    CHECK(xc::app::shownFps(5, 10, 1.0) == 0.0);
+    CHECK(xc::app::shownFps(60, 0, 0.049) == 0.0);
 }
 
 static void testVideoDecoder() {
@@ -3406,6 +3526,22 @@ static void testBlock2Features() {
     ui::applyChoice(bc, bsBack);
     CHECK(bsBack.maxBitrateMbps == 45);
 
+    // The Xbox-style Settings sidebar maps real PBOX rows to six non-empty categories.
+    ui::UiCaps categoryCaps;
+    int categorySeen[28]{};
+    for (int category = 0; category < ui::kSettingsCategoryCount; ++category) {
+        const auto items = ui::settingsCategoryRows(category, categoryCaps);
+        CHECK(!items.empty());
+        for (const auto& item : items) {
+            CHECK(item.row >= 0 && item.row < 28);
+            CHECK(ui::settingsCategoryForRow(item.row) == category);
+            ++categorySeen[item.row];
+        }
+    }
+    CHECK(categorySeen[26] == 1);  // the existing account switcher is exposed in Account.
+    CHECK(ui::settingsCategoryForRow(19) == 5);  // the support QR remains discoverable.
+    CHECK(ui::settingsCardRect(0, 0).x == ui::kSettingsGridX);
+
     // Test settings navigation in AppUi
     app.showHome();
     ui::NavInput openOpt;
@@ -3413,45 +3549,38 @@ static void testBlock2Features() {
     app.handle(openOpt);
     CHECK(app.screen() == ui::Screen::Settings);
 
-    // Navigate down to BitrateCap row (row 10)
+    CHECK(app.settingsFocus() == 1);  // General is the default Settings section.
+    app.onMouseWheel(0.0f, -1.0f);
+    CHECK(app.settingsFocus() == 9);  // scrolling exposes the lower General cards.
+    app.handle(ui::NavInput{.left = true});
+    app.handle(ui::NavInput{.down = true});
+    CHECK(app.settingsFocus() == 26);  // sidebar: General -> Account.
+    app.handle(ui::NavInput{.right = true});
+    app.handle(ui::NavInput{.accept = true});  // account options
+    const ui::UiEvent addAccountEvent = app.handle(ui::NavInput{.accept = true});
+    CHECK(addAccountEvent.action == ui::Action::AddAccount);
+    app.showHome();
+    app.handle(openOpt);
+    CHECK(app.settingsFocus() == 1);
+
+    // Enter the General grid and move across to BitrateCap (row 10).
     ui::NavInput navDownRow;
     navDownRow.down = true;
-    while (app.settingsFocus() != 10) {
-        app.handle(navDownRow);
-    }
+    app.handle(navDownRow);  // row 9, first column of the second card row
+    app.handle(ui::NavInput{.right = true});
     CHECK(app.settingsFocus() == 10);
 
-    // Test inline slider navigation on BitrateCap (row 10)
+    // Cross changes the focused bitrate value; the D-pad now navigates cards.
     CHECK(app.settings().maxBitrateMbps == 0);
-
-    // Pressing left at 0 (Automatic) should clamp at 0
-    ui::NavInput navLeft;
-    navLeft.left = true;
-    app.handle(navLeft);
-    CHECK(app.settings().maxBitrateMbps == 0);
-
-    // Pressing right increases the bitrate in 5 Mbps increments up to 50 Mbps
-    ui::NavInput navRight;
-    navRight.right = true;
+    ui::NavInput acc;
+    acc.accept = true;
     const int expectedMbps[] = {5, 10, 15, 20, 25, 30, 35, 40, 45, 50};
     for (int exp : expectedMbps) {
-        app.handle(navRight);
+        app.handle(acc);
         CHECK(app.settings().maxBitrateMbps == exp);
     }
 
-    // Pressing right at 50 Mbps should clamp at 50 Mbps
-    app.handle(navRight);
-    CHECK(app.settings().maxBitrateMbps == 50);
-
-    // Pressing left reduces the bitrate from 50 to 45 Mbps
-    app.handle(navLeft);
-    CHECK(app.settings().maxBitrateMbps == 45);
-
-    // Pressing accept (Cross) on row 10 cycles/alternates to next option (no dropdown opened)
-    ui::NavInput acc;
-    acc.accept = true;
-    app.handle(acc);
-    CHECK(app.settings().maxBitrateMbps == 50);
+    // Cycling at the upper end wraps back to Automatic, then to 5 Mbps.
     app.handle(acc);
     CHECK(app.settings().maxBitrateMbps == 0); // wrapped to Automatic
     app.handle(acc);
@@ -3462,12 +3591,10 @@ static void testBlock2Features() {
     auto st = app.settings();
     st.maxBitrateMbps = 22;
     app.setSettings(st);
-    app.handle(navRight); // from snapped 20 Mbps -> 25 Mbps
+    app.handle(acc); // from snapped 20 Mbps -> 25 Mbps
     CHECK(app.settings().maxBitrateMbps == 25);
-    app.handle(navLeft);  // 25 -> 20 Mbps
-    CHECK(app.settings().maxBitrateMbps == 20);
-    app.handle(navLeft);  // 20 -> 15 Mbps
-    CHECK(app.settings().maxBitrateMbps == 15);
+    app.handle(acc);  // next card value
+    CHECK(app.settings().maxBitrateMbps == 30);
 
     // Test rendering on row 10 with controller and keyboard hints
     ui::Canvas canvas(1920, 1080);
@@ -4862,7 +4989,7 @@ static void testDesktopMouseNav() {
 
     // 6. Clicking or hovering in the top bar area (y < 140) must not hit cards
     {
-        auto evTop = uiApp.onMouseDown(120.0f, 100.0f, 1);
+        auto evTop = uiApp.onMouseDown(500.0f, 100.0f, 1);  // empty header space, not the avatar shortcut
         CHECK(evTop.action == ui::Action::None);
         CHECK(uiApp.detailWanted(100).empty());
     }
@@ -4873,23 +5000,69 @@ static void testDesktopMouseNav() {
         CHECK(evWheel.action == ui::Action::None);
     }
 
-    // 7. Avatar / profile click opens Settings screen
+    // 7. The Settings slot in the Home navigation opens the Settings screen.
     {
-        auto evClick = uiApp.onMouseDown(1920 - 96 - 20, 60.0f, 1);
+        const ui::NavSlot settingsSlot = ui::homeNavSlot(5);
+        auto evClick = uiApp.onMouseDown(settingsSlot.x + settingsSlot.w / 2.0f,
+                                         settingsSlot.y + settingsSlot.h / 2.0f, 1);
         CHECK(uiApp.screen() == ui::Screen::Settings);
     }
 
     // 8. In Settings, clicking a dropdown setting opens the dropdown
     {
-        // Language row (row 0) at y = 190
-        auto evClick = uiApp.onMouseDown(200.0f, 200.0f, 1);
+        const ui::Rect preferences = ui::settingsCategoryRect(4);
+        uiApp.onMouseDown(preferences.x + preferences.w / 2.0f, preferences.y + preferences.h / 2.0f, 1);
+        const ui::Rect language = ui::settingsCardRect(0, 0);
+        auto evClick = uiApp.onMouseDown(language.x + 40.0f, language.y + 40.0f, 1);
         // First right click closes the dropdown
-        auto evClose = uiApp.onMouseDown(200.0f, 200.0f, 3);
+        auto evClose = uiApp.onMouseDown(language.x + 40.0f, language.y + 40.0f, 3);
         CHECK(uiApp.screen() == ui::Screen::Settings);
         // Second right click exits back to Home
-        auto evBack = uiApp.onMouseDown(200.0f, 200.0f, 3);
+        auto evBack = uiApp.onMouseDown(language.x + 40.0f, language.y + 40.0f, 3);
         CHECK(uiApp.screen() == ui::Screen::Home);
     }
+}
+
+static void testSupportLinkActions() {
+    ui::Fonts dummyFonts{};
+    ui::ImageCache images([] {});
+    auto openSupport = [](ui::AppUi& app) {
+        app.showHome();
+        const ui::NavSlot settings = ui::homeNavSlot(5);
+        app.onMouseDown(settings.x + settings.w / 2.0f, settings.y + settings.h / 2.0f, 1);
+        const ui::Rect supportCategory = ui::settingsCategoryRect(5);
+        app.onMouseDown(supportCategory.x + supportCategory.w / 2.0f,
+                        supportCategory.y + supportCategory.h / 2.0f, 1);
+        const ui::Rect supportCard = ui::settingsCardRect(0, 0);
+        app.onMouseDown(supportCard.x + supportCard.w / 2.0f, supportCard.y + supportCard.h / 2.0f, 1);
+    };
+
+    ui::UiCaps desktopCaps{};
+    desktopCaps.desktopWindow = true;
+    desktopCaps.openUrl = true;
+    ui::AppUi desktop(dummyFonts, images);
+    desktop.setCaps(desktopCaps);
+    openSupport(desktop);
+    const auto openLink = desktop.handle(ui::NavInput{.accept = true});
+    CHECK(openLink.action == ui::Action::OpenUrl);
+    CHECK(openLink.url == "https://t.me/pboxps4");
+    CHECK(desktop.screen() == ui::Screen::Settings);  // the QR remains available
+    desktop.handle(ui::NavInput{.back = true});
+    CHECK(desktop.screen() == ui::Screen::Settings);
+
+    // PS4 has no system browser: Cross must not dismiss the only support QR.
+    ui::UiCaps consoleCaps{};
+    consoleCaps.desktopWindow = true;  // use mouse only to navigate the host test
+    consoleCaps.openUrl = false;
+    ui::AppUi console(dummyFonts, images);
+    console.setCaps(consoleCaps);
+    openSupport(console);
+    const auto noBrowser = console.handle(ui::NavInput{.accept = true});
+    CHECK(noBrowser.action == ui::Action::None);
+    console.handle(ui::NavInput{.back = true});
+    CHECK(console.screen() == ui::Screen::Settings);  // Back closes the QR panel
+    console.handle(ui::NavInput{.back = true});
+    CHECK(console.screen() == ui::Screen::Home);
 }
 
 static void testWebSocketRFC6455() {
@@ -7124,10 +7297,10 @@ void testPhase1BugFixesAndPhase2Optimizations() {
         ui.handle(ui::NavInput{.options = true});
         CHECK(ui.screen() == ui::Screen::Settings);
 
-        // Navigate to row 10 (BitrateCap) and press accept
-        while (ui.settingsFocus() != 10) {
-            ui.handle(ui::NavInput{.down = true});
-        }
+        // Navigate through General's two-column card grid to BitrateCap.
+        ui.handle(ui::NavInput{.down = true});
+        ui.handle(ui::NavInput{.right = true});
+        CHECK(ui.settingsFocus() == 10);
         auto evBitrate = ui.handle(ui::NavInput{.accept = true});
         CHECK(evBitrate.action == ui::Action::SettingsChanged);
 
@@ -9072,19 +9245,16 @@ static void testTrophyModalsAndDesktopInput() {
     CHECK(app.screen() == ui::Screen::Settings);
     CHECK(!app.settings().syncTrophies);
 
-    int y24 = 0, y25 = 0;
-    int curY = 184;
-    for (const auto& [r, groupStart] : ui::visibleSettingsRows(caps)) {
-        if (groupStart) curY += 4;
-        if (r == 24) y24 = curY + 10;
-        if (r == 25) y25 = curY + 10;
-        curY += 32;
-    }
-    CHECK(y24 > 0);
-    CHECK(y25 > 0);
+    const ui::Rect systemTab = ui::settingsCategoryRect(2);
+    app.onMouseDown(systemTab.x + systemTab.w / 2.0f, systemTab.y + systemTab.h / 2.0f, 1);
+    const auto systemRows = ui::settingsCategoryRows(2, caps);
+    const ui::Rect syncCard = ui::settingsCardRect(ui::posOf(systemRows, 24), 0);
+    const ui::Rect removeCard = ui::settingsCardRect(ui::posOf(systemRows, 25), 0);
+    const float syncX = syncCard.x + 40.0f, syncY = syncCard.y + 40.0f;
+    const float removeX = removeCard.x + 40.0f, removeY = removeCard.y + 40.0f;
 
     // 1. Click row 24: opens disclaimer modal
-    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    app.onMouseDown(syncX, syncY, 1);
     ui::Canvas c(1920, 1080);
     app.render(c, 1000);
 
@@ -9100,7 +9270,7 @@ static void testTrophyModalsAndDesktopInput() {
     CHECK(!app.settings().syncTrophies);
 
     // Click row 24 again: opens modal, focus defaults to "Estou ciente" (focus 0)
-    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    app.onMouseDown(syncX, syncY, 1);
     ui::UiEvent evAware = app.handle(accept);
     CHECK(app.settings().syncTrophies);
     CHECK(evAware.action == ui::Action::SyncTrophies);
@@ -9110,7 +9280,7 @@ static void testTrophyModalsAndDesktopInput() {
     CHECK(st.syncTrophies);
 
     // Click row 24 again: turns it off directly
-    ui::UiEvent evOff = app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    ui::UiEvent evOff = app.onMouseDown(syncX, syncY, 1);
     CHECK(!app.settings().syncTrophies);
     CHECK(evOff.action == ui::Action::SettingsChanged);
     CHECK(!evOff.settings.syncTrophies);
@@ -9118,12 +9288,12 @@ static void testTrophyModalsAndDesktopInput() {
     CHECK(!st.syncTrophies);
 
     // 2. Turn sync back on to test removal resets it
-    app.onMouseDown(100.0f, static_cast<float>(y24), 1);
+    app.onMouseDown(syncX, syncY, 1);
     app.handle(accept);
     CHECK(app.settings().syncTrophies);
 
     // Click row 25: opens remove trophies confirm modal
-    app.onMouseDown(100.0f, static_cast<float>(y25), 1);
+    app.onMouseDown(removeX, removeY, 1);
     app.render(c, 1000);
 
     // Default focus is "Cancelar" (focus 1) for safety
@@ -9132,7 +9302,7 @@ static void testTrophyModalsAndDesktopInput() {
     CHECK(app.settings().syncTrophies);
 
     // Click row 25 again, navigate left to "Remover" (focus 0)
-    app.onMouseDown(100.0f, static_cast<float>(y25), 1);
+    app.onMouseDown(removeX, removeY, 1);
     ui::NavInput navLeft;
     navLeft.left = true;
     app.handle(navLeft);
@@ -9208,6 +9378,7 @@ int main() {
     testResolveIPv4AndConnectTcp();
     testStoreLeftovers();
     testLibraryRowsOnce();
+    testLibraryRefreshSchedule();
     testHostPacer();
     testSubscriptionPlan();
     testMicrosoftHost();
@@ -9215,6 +9386,8 @@ int main() {
     testH264LossWaitFollowsRtt();
     testH264Resync();
     testH264PaddingPacket();
+    testH264LargeGapForcesKeyframe();
+    testH264ModerateGapDoesNotForceReset();
     testAudioDecoderEmptyPacket();
     testAudioDecoderPlc();
     testAudioGapLossConcealment();
@@ -9249,6 +9422,7 @@ int main() {
     testPadMap();
     testTeredo();
     testBlock1Features();
+    testShownFpsMetric();
     testVideoDecoder();
     testDrawNv12();
     testWebStreamingAndGamepad();
@@ -9258,6 +9432,7 @@ int main() {
     testUsbPadDescriptors();
     testUsbPadSlots();
     testDesktopMouseNav();
+    testSupportLinkActions();
     testWebSocketRFC6455();
     testAudioToHaptics();
     testLibraryOfflineCache();

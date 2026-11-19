@@ -168,6 +168,8 @@ KeyboardStatus pollSystemKeyboard(std::string& text) {
     int rc = sceImeDialogGetResult(&res);
     sceImeDialogTerm();
     g_open = false;
+    XC_LOGI("keyboard: closed (status %d, result 0x%08x, end %d)",
+            status, static_cast<unsigned>(rc), res.endStatus);
     if (status != 2 || rc != 0 || res.endStatus != 0) return KeyboardStatus::Cancelled;
     utf16ToUtf8(g_buffer.data(), text);
     return KeyboardStatus::Accepted;

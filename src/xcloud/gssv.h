@@ -9,11 +9,16 @@
 #pragma once
 
 #include "auth/xbox_live.h"
+#include "util/json.h"
 
 #include <string>
 #include <vector>
 
 namespace xc::xcloud {
+
+// Xbox title IDs are usually serialized as strings, but some service payloads
+// encode them as JSON numbers. Preserve both forms for title matching.
+std::string titleIdText(const json::Value& value);
 
 struct Region {
     std::string name;
@@ -94,7 +99,8 @@ std::string errorFields(const std::string& body);
 
 class GssvClient {
 public:
-    // `offering` is "xgpuweb" (Game Pass cloud) or "xhome" (own console).
+    // `offering` is "xgpuweb" (Game Pass cloud), "xgpuwebf2p" (free-to-play
+    // cloud), or "xhome" (own console).
     explicit GssvClient(std::string offering = "xgpuweb") : offering_(std::move(offering)) {}
 
     bool login(const auth::XblToken& gssvXsts, std::string& err);
@@ -106,6 +112,7 @@ public:
     // it doesn't say which).
     int loginStatus() const { return loginStatus_; }
     bool loginRefused() const { return loginStatus_ >= 400 && loginStatus_ < 500; }
+    const std::string& loginCountry() const { return loginCountry_; }
     const GssvLogin& session() const { return login_; }
     void setRegion(const Region& r) { region_ = r; }
     void setResolution(Resolution r) { resolution_ = r; }

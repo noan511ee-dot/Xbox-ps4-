@@ -18,7 +18,7 @@ std::vector<SettingsRowPos> visibleSettingsRows(const UiCaps& caps) {
         case 4: return caps.triggerRumble || caps.adaptiveTriggers;  // trigger vibration and its tester
         case 21: return caps.triggerRumble || caps.adaptiveTriggers; // audio-to-haptics
         case 6: return caps.lightBar;
-        case 9: return caps.highRefresh;
+        case 9: return true;  // Keep the Off/On output-pacing preference visible on 60 Hz devices too.
         case 13: return caps.desktopWindow;
         case 15: return caps.gyro;
         case 25: return caps.console;
@@ -1475,6 +1475,7 @@ void AppUi::setCaps(const UiCaps& caps) {
     // focus goes to the row after it, and what the row had open closes.
     const auto rows = visibleSettingsRows(caps_);
     auto shown = [&](int row) {
+        if (row == 26) return true;  // Account is now a real Settings category.
         return std::any_of(rows.begin(), rows.end(), [&](const SettingsRowPos& r) { return r.row == row; });
     };
     if (!shown(settingsRow_)) {
@@ -1486,6 +1487,8 @@ void AppUi::setCaps(const UiCaps& caps) {
         for (int i = pos; i >= 0 && next < 0; --i)
             if (shown(kSettingsOrder[i])) next = kSettingsOrder[i];
         settingsRow_ = next < 0 ? 0 : next;  // the language row is always there
+        settingsSidebarFocus_ = false;
+        settingsGridScrollRow_ = 0;
         dropdownOpen_ = pickerOpen_ = false;
         if (tester_ == Tester::Triggers && !gameSettingsOpen_) tester_ = Tester::None, settings_ = testerBackup_;
     }

@@ -84,7 +84,9 @@ void AppUi::activateNav(int i, UiEvent& ev) {
         openAccountManager();
     } else {
         screen_ = Screen::Settings;
-        settingsRow_ = 0;
+        settingsRow_ = 1;
+        settingsSidebarFocus_ = false;
+        settingsGridScrollRow_ = 0;
         settingsFromError_ = false;
         settingsCountry_ = settings_.loginCountry;
         dropdownOpen_ = false;
@@ -170,7 +172,9 @@ void AppUi::handleHome(const NavInput& in, UiEvent& ev) {
     if (in.options) {
         homeCycleIndex_ = 5;
         screen_ = Screen::Settings;
-        settingsRow_ = 0;
+        settingsRow_ = 1;
+        settingsSidebarFocus_ = false;
+        settingsGridScrollRow_ = 0;
         settingsFromError_ = false;
         settingsCountry_ = settings_.loginCountry;
         dropdownOpen_ = false;
@@ -976,21 +980,13 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
         }
         if (dropdownOpen_) {
             auto options = settingOptions(settingsRow_);
-            constexpr int kItemH = 62, kVisible = 8, kListW = 640;
+            constexpr int kItemH = 62, kVisible = 8;
             int n = static_cast<int>(options.size());
             int visible = std::min(n, kVisible);
-            constexpr int kRowW = 1140, kRowH = 30, kGap = 2, kGroupGap = 4;
-            Rect panel{kMargin + kRowW - kListW, 184, kListW, visible * kItemH + 16};
-            int curY = 184;
-            for (const auto& [i, groupStart] : visibleSettingsRows(caps_)) {
-                if (groupStart) curY += kGroupGap;
-                if (i == settingsRow_) {
-                    panel.y = curY + kRowH + 8;
-                    break;
-                }
-                curY += kRowH + kGap;
-            }
-            if (panel.y + panel.h > kH - 100) panel.y = std::max(120, kH - 100 - panel.h);
+            const auto rows = settingsCategoryRows(settingsCategoryForRow(settingsRow_), caps_);
+            const int position = posOf(rows, settingsRow_);
+            const Rect anchor = settingsCardRect(position, settingsGridScrollRow_);
+            Rect panel = settingsDropdownPanel(anchor, visible);
 
             if (x >= panel.x && x < panel.x + panel.w && y >= panel.y && y < panel.y + panel.h) {
                 for (int k = 0; k < visible; ++k) {
@@ -1030,12 +1026,26 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
                 return ev;
             }
         }
-        constexpr int kRowW = 1140, kRowH = 30, kGap = 2, kGroupGap = 4;
-        int curY = 184;
-        for (const auto& [i, groupStart] : visibleSettingsRows(caps_)) {
-            if (groupStart) curY += kGroupGap;
-            if (x >= kMargin && x < kMargin + kRowW && y >= curY && y < curY + kRowH) {
+        for (int category = 0; category < kSettingsCategoryCount; ++category) {
+            const Rect categoryRect = settingsCategoryRect(category);
+            if (x >= categoryRect.x && x < categoryRect.x + categoryRect.w &&
+                y >= categoryRect.y && y < categoryRect.y + categoryRect.h) {
+                const auto categoryItems = settingsCategoryRows(category, caps_);
+                if (!categoryItems.empty()) {
+                    settingsRow_ = categoryItems.front().row;
+                    settingsSidebarFocus_ = false;
+                    settingsGridScrollRow_ = 0;
+                }
+                return ev;
+            }
+        }
+        const auto categoryItems = settingsCategoryRows(settingsCategoryForRow(settingsRow_), caps_);
+        for (size_t position = 0; position < categoryItems.size(); ++position) {
+            const int i = categoryItems[position].row;
+            const Rect card = settingsCardRect(static_cast<int>(position), settingsGridScrollRow_);
+            if (x >= card.x && x < card.x + card.w && y >= card.y && y < card.y + card.h) {
                 settingsRow_ = i;
+                settingsSidebarFocus_ = false;
                 if (i == 14) {
                     openPadTester();
                     return ev;
@@ -1128,7 +1138,6 @@ UiEvent AppUi::onMouseDown(float x, float y, int button) {
                     return ev;
                 }
             }
-            curY += kRowH + kGap;
         }
     }
     return ev;
@@ -1197,6 +1206,22 @@ UiEvent AppUi::onMouseWheel(float dx, float dy) {
                 }
             }
         }
+    } else if (screen_ == Screen::Settings && dy != 0.0f && !dropdownOpen_ && tester_ == Tester::None && !pickerOpen_) {
+        const auto rows = settingsCategoryRows(settingsCategoryForRow(settingsRow_), caps_);
+        const int totalRows = (static_cast<int>(rows.size()) + 1) / 2;
+        const int maxScroll = std::max(0, totalRows - kSettingsGridVisibleRows);
+        const int delta = dy > 0.0f ? -1 : 1;
+        const int nextScroll = std::clamp(settingsGridScrollRow_ + delta, 0, maxScroll);
+        if (nextScroll != settingsGridScrollRow_ && !rows.empty()) {
+            settingsGridScrollRow_ = nextScroll;
+            const int pos = posOf(rows, settingsRow_);
+            if (pos / 2 < settingsGridScrollRow_)
+                settingsRow_ = rows[static_cast<size_t>(settingsGridScrollRow_ * 2)].row;
+            else if (pos / 2 >= settingsGridScrollRow_ + kSettingsGridVisibleRows)
+                settingsRow_ = rows[static_cast<size_t>(std::min(settingsGridScrollRow_ * 2, static_cast<int>(rows.size()) - 1))].row;
+            settingsSidebarFocus_ = false;
+        }
+        dirty_ = true;
     } else if (screen_ == Screen::Details && achievementsOpen_) {
         achScroll_ = std::max(0, achScroll_ - static_cast<int>(dy * 3));
         dirty_ = true;
@@ -1455,7 +1480,12 @@ UiEvent AppUi::handle(const NavInput& in) {
                 break;
             }
             if (tester_ == Tester::Donation) {
-                if (in.back || in.accept) {
+                if (in.accept && caps_.openUrl) {
+                    // On desktop, Cross opens the support link without closing
+                    // the QR panel. PS4 has no browser, so leave it open to scan.
+                    ev.action = Action::OpenUrl;
+                    ev.url = kSupportUrl;
+                } else if (in.back) {
                     tester_ = Tester::None;
                     dirty_ = true;
                 }
@@ -1498,48 +1528,78 @@ UiEvent AppUi::handle(const NavInput& in) {
                 dirty_ = true;
                 break;
             }
-            if (auto rows = visibleSettingsRows(caps_); true) {  // the rows on screen, in their order
-                int pos = posOf(rows, settingsRow_);
-                if (in.down && pos + 1 < static_cast<int>(rows.size())) {
-                    settingsRow_ = rows[static_cast<size_t>(pos + 1)].row;
-                    resetSettingsHoldStart_ = 0;
-                    dirty_ = true;
-                } else if (in.up && pos > 0) {
-                    settingsRow_ = rows[static_cast<size_t>(pos - 1)].row;
+            {
+            bool settingsNavigationOnly = false;
+            if (settingsSidebarFocus_) {
+                settingsNavigationOnly = true;
+                if (in.up || in.down) {
+                    const int direction = in.down ? 1 : -1;
+                    int category = settingsCategoryForRow(settingsRow_);
+                    for (int step = 0; step < kSettingsCategoryCount; ++step) {
+                        category = (category + direction + kSettingsCategoryCount) % kSettingsCategoryCount;
+                        const auto items = settingsCategoryRows(category, caps_);
+                        if (!items.empty()) {
+                            settingsRow_ = items.front().row;
+                            settingsGridScrollRow_ = 0;
+                            break;
+                        }
+                    }
                     resetSettingsHoldStart_ = 0;
                     dirty_ = true;
                 }
-            }
-            if (settingsRow_ == 23) {
-                if (in.acceptHeld) {
-                    if (!resetSettingsHoldStart_) resetSettingsHoldStart_ = in.nowMs ? in.nowMs : 1;
-                    if (in.nowMs - resetSettingsHoldStart_ >= 5000) {
-                        ev.action = Action::ResetSettings;
-                        resetSettingsHoldStart_ = 0;
-                    }
-                    animating_ = true;
-                    dirty_ = true;
-                } else if (resetSettingsHoldStart_) {
-                    resetSettingsHoldStart_ = 0;
+                if (in.right || in.accept) {
+                    settingsSidebarFocus_ = false;
                     dirty_ = true;
                 }
             } else {
-                resetSettingsHoldStart_ = 0;
-            }
-            if (in.right && settingsRow_ != 23 && settingsRow_ != 25 && settingsRow_ != 26) {
-                changeSetting(+1);
-                if (settingsRow_ != 8) {
-                    ev.action = Action::SettingsChanged;
-                    ev.settings = settings_;
+                const auto rows = settingsCategoryRows(settingsCategoryForRow(settingsRow_), caps_);
+                const int pos = posOf(rows, settingsRow_);
+                int next = pos;
+                if (in.down) {
+                    if (pos + 2 < static_cast<int>(rows.size())) next = pos + 2;
+                    else if (pos + 1 < static_cast<int>(rows.size())) next = pos + 1;
+                } else if (in.up && pos >= 2) {
+                    next = pos - 2;
+                }
+                if (in.left) {
+                    if (pos % 2 == 0) settingsSidebarFocus_ = true;
+                    else next = pos - 1;
+                } else if (in.right && pos % 2 == 0 && pos + 1 < static_cast<int>(rows.size())) {
+                    next = pos + 1;
+                }
+                if (next != pos && next >= 0 && next < static_cast<int>(rows.size())) {
+                    settingsRow_ = rows[static_cast<size_t>(next)].row;
+                    const int focusGridRow = next / 2;
+                    if (focusGridRow < settingsGridScrollRow_) settingsGridScrollRow_ = focusGridRow;
+                    if (focusGridRow >= settingsGridScrollRow_ + kSettingsGridVisibleRows)
+                        settingsGridScrollRow_ = focusGridRow - kSettingsGridVisibleRows + 1;
+                    resetSettingsHoldStart_ = 0;
+                    dirty_ = true;
+                }
+                if (in.left || in.right || in.up || in.down) {
+                    dirty_ = true;
+                    settingsNavigationOnly = true;
                 }
             }
-            if (in.left && settingsRow_ != 23 && settingsRow_ != 25 && settingsRow_ != 26) {
-                changeSetting(-1);
-                if (settingsRow_ != 8) {
-                    ev.action = Action::SettingsChanged;
-                    ev.settings = settings_;
+            if (!settingsNavigationOnly) {
+                if (settingsRow_ == 23) {
+                    if (in.acceptHeld) {
+                        if (!resetSettingsHoldStart_) resetSettingsHoldStart_ = in.nowMs ? in.nowMs : 1;
+                        if (in.nowMs - resetSettingsHoldStart_ >= 5000) {
+                            ev.action = Action::ResetSettings;
+                            resetSettingsHoldStart_ = 0;
+                        }
+                        animating_ = true;
+                        dirty_ = true;
+                    } else if (resetSettingsHoldStart_) {
+                        resetSettingsHoldStart_ = 0;
+                        dirty_ = true;
+                    }
+                } else {
+                    resetSettingsHoldStart_ = 0;
                 }
             }
+            if (!settingsNavigationOnly) {
             if (in.square && settingsRow_ == 16) {
                 ev.action = Action::TestQueueAlert;
             }
@@ -1621,6 +1681,8 @@ UiEvent AppUi::handle(const NavInput& in) {
                 dropdownIndex_ = settingSelected(settingsRow_);
                 dropdownTop_ = 0;
                 dirty_ = true;
+            }
+            }
             }
             if (in.back || in.options) {
                 resetSettingsHoldStart_ = 0;
@@ -1737,6 +1799,8 @@ UiEvent AppUi::handle(const NavInput& in) {
             } else if (regionRefused_ && in.options) {  // Settings, on the sign-in country
                 screen_ = Screen::Settings;
                 settingsRow_ = 8;
+                settingsSidebarFocus_ = false;
+                settingsGridScrollRow_ = 0;
                 settingsFromError_ = true;
                 settingsCountry_ = settings_.loginCountry;
                 dropdownOpen_ = false;

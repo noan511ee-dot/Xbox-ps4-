@@ -473,6 +473,14 @@ enum class Str {
     AccountUnavailable,
     AccountIdCreationFailed,
     AccountStoreWriteFailed,
+    SharePresence,
+    SettingDescSharePresence,
+    SettingsGeneral,
+    SettingsAccount,
+    SettingsSystem,
+    SettingsDevices,
+    SettingsPreferences,
+    SettingsSupport,
     Count
 };
 

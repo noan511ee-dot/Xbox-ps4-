@@ -383,7 +383,7 @@ constexpr Column kEnglish = {
     "Plays a distinctive chime when your wait in the xCloud queue finishes and your game is ready", // SettingDescQueueReady
     "Runs a complete diagnostic on your Xbox Live sign-in, validating access tokens, profile, and subscriptions", // SettingDescCheckSignIn
     "Measures ping (RTT) and jitter to cloud gaming datacenters across multiple global regions", // SettingDescNetworkTest
-    "Opens PBOX Technical Support on Telegram and displays its QR code", // SettingDescSupportProject
+    "PBOX Technical Support QR code and Telegram link are shown directly in Settings", // SettingDescSupportProject
     "What's New",                                     // WhatsNew
     "What's New",                                     // WhatsNewTitle
     "Controller speaker",                             // PadSpeakerVolume
@@ -464,4 +464,12 @@ constexpr Column kEnglish = {
     "This saved account is unavailable. Choose another account or sign in again.", // AccountUnavailable
     "Could not create a local account identifier.", // AccountIdCreationFailed
     "Could not save the account list. No saved account was removed.", // AccountStoreWriteFailed
+    "Share active session count", // SharePresence
+    "When enabled, PBOX sends a temporary session token so the PBOX dashboard can count active sessions. No Xbox account, gamertag, game title or permanent device ID is included. This setting is off by default and can be disabled at any time. The website host still receives the network connection needed to deliver the request.", // SettingDescSharePresence
+    "General", // SettingsGeneral
+    "Account", // SettingsAccount
+    "System", // SettingsSystem
+    "Devices & connections", // SettingsDevices
+    "Preferences", // SettingsPreferences
+    "Help & support", // SettingsSupport
 };

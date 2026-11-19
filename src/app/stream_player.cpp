@@ -97,6 +97,9 @@ struct StreamPlayer::Impl {
         uint64_t firstPacketUs = 0;  // its first packet came (before the retransmission wait), 0 unknown
     };
     std::deque<VideoFrame> frames;
+    // After a queue overrun, inter frames may depend on reference pictures
+    // that were discarded. Do not feed them to the decoder until a fresh IDR.
+    bool waitingForVideoKeyframe = false;  // guarded by mutex
     std::atomic<bool> running{false};
     std::string endReason;
     platform::Thread videoThread, audioThread;
@@ -523,14 +526,12 @@ struct StreamPlayer::Impl {
                 cur.isHw = latestPic.isHw;
                 cur.arrivalUs = latestPic.arrivalUs;
                 cur.seq = latestPic.seq;
-                if (!cur.isHw) {
-                    cur.yPlane.swap(latestPic.yPlane);
-                    cur.uPlane.swap(latestPic.uPlane);
-                    cur.vPlane.swap(latestPic.vPlane);
-                    cur.pic.y = cur.yPlane.data();
-                    cur.pic.u = cur.uPlane.data();
-                    cur.pic.v = cur.pic.format == media::Picture::Format::Nv12 ? nullptr : cur.vPlane.data();
-                }
+                cur.yPlane.swap(latestPic.yPlane);
+                cur.uPlane.swap(latestPic.uPlane);
+                cur.vPlane.swap(latestPic.vPlane);
+                cur.pic.y = cur.yPlane.data();
+                cur.pic.u = cur.uPlane.data();
+                cur.pic.v = cur.pic.format == media::Picture::Format::Nv12 ? nullptr : cur.vPlane.data();
             }
 
             bool screenshot = saveSnapshotIfAsked(cur.pic);
@@ -675,6 +676,9 @@ struct StreamPlayer::Impl {
         uint64_t lastShownId = 0, lastPresentedId = 0;
         uint64_t lastFramePresentUs = 0;
         const uint64_t maxLagUs = uint64_t{display::caps().maxVideoLagMs} * 1000;
+        // Decoder-owned planes may be recycled by the next decode call.
+        // Keep reusable snapshots for the asynchronous presenter.
+        std::vector<uint8_t> asyncY, asyncU, asyncV;
         bool lagAwaitingIdr = false;
         // Display latency: from the frame's arrival (and from its first
         // packet) to the TV, once the GPU says it is on the screen.
@@ -817,6 +821,17 @@ struct StreamPlayer::Impl {
             }
             pictureSize = (static_cast<uint32_t>(pic.width) << 16) | static_cast<uint32_t>(pic.height);
             if (useAsyncPresent) {
+                const size_t yBytes = static_cast<size_t>(pic.strideY) * static_cast<size_t>(pic.height);
+                const size_t uvH = (static_cast<size_t>(pic.height) + 1) / 2;
+                const size_t uBytes = static_cast<size_t>(pic.strideU) * uvH;
+                asyncY.assign(pic.y, pic.y + yBytes);
+                asyncU.assign(pic.u, pic.u + uBytes);
+                if (pic.format != media::Picture::Format::Nv12 && pic.v) {
+                    const size_t vBytes = static_cast<size_t>(pic.strideV) * uvH;
+                    asyncV.assign(pic.v, pic.v + vBytes);
+                } else {
+                    asyncV.clear();
+                }
                 {
                     std::lock_guard<std::mutex> lock(presentMutex);
                     if (latestPic.seq > consumedPicSeq) {
@@ -827,18 +842,13 @@ struct StreamPlayer::Impl {
                     latestPic.known = known;
                     latestPic.isHw = decoder->isHardware();
                     latestPic.arrivalUs = frame.arrivalUs;
+                    latestPic.yPlane.swap(asyncY);
+                    latestPic.uPlane.swap(asyncU);
+                    latestPic.vPlane.swap(asyncV);
+                    latestPic.pic.y = latestPic.yPlane.data();
+                    latestPic.pic.u = latestPic.uPlane.data();
+                    latestPic.pic.v = pic.format == media::Picture::Format::Nv12 ? nullptr : latestPic.vPlane.data();
                     ++latestPic.seq;
-                    if (!latestPic.isHw) {
-                        size_t yBytes = static_cast<size_t>(pic.strideY) * pic.height;
-                        size_t uvH = (pic.height + 1) / 2;
-                        size_t uBytes = static_cast<size_t>(pic.strideU) * uvH;
-                        latestPic.yPlane.assign(pic.y, pic.y + yBytes);
-                        latestPic.uPlane.assign(pic.u, pic.u + uBytes);
-                        if (pic.format != media::Picture::Format::Nv12 && pic.v) {
-                            size_t vBytes = static_cast<size_t>(pic.strideV) * uvH;
-                            latestPic.vPlane.assign(pic.v, pic.v + vBytes);
-                        }
-                    }
                 }
                 presentCv.notify_one();
                 continue;
@@ -952,17 +962,33 @@ struct StreamPlayer::Impl {
                 }
                 VideoFrame queuedFrame{std::vector<uint8_t>(d, d + n), rtpTimestamp,
                                        stream::clockMs(), platform::nowUs(), firstPacketUs};
+                bool queued = false;
                 {
                     std::lock_guard<std::mutex> lock(mutex);
                     if (frames.size() >= kMaxQueuedFrames) {
-                        // Hopelessly behind: start over from the next key frame.
+                        // Hopelessly behind: discard stale compressed data and
+                        // wait for an IDR so decode never resumes from missing references.
                         ++queueResets;
+                        droppedFrames.fetch_add(frames.size());
                         frames.clear();
+                        waitingForVideoKeyframe = true;
                         keyframeWanted = true;
                     }
-                    frames.push_back(std::move(queuedFrame));
+                    if (waitingForVideoKeyframe) {
+                        if (hasIdrSlice(queuedFrame.data)) {
+                            waitingForVideoKeyframe = false;
+                        } else {
+                            ++droppedFrames;
+                            keyframeWanted = true;
+                        }
+                    }
+                    if (!waitingForVideoKeyframe) {
+                        frames.push_back(std::move(queuedFrame));
+                        queued = true;
+                    }
                 }
-                cv.notify_one();
+                if (queued) cv.notify_one();
+                else requestKeyframeIfWanted();
             } catch (const std::exception& e) {
                 keyframeWanted = true;
                 XC_LOGE("video callback recovered from exception: %s", e.what());
@@ -1195,6 +1221,7 @@ struct StreamPlayer::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             frames.clear();
+            waitingForVideoKeyframe = true;
         }
         {
             std::lock_guard<std::mutex> lock(audioMutex_);
@@ -1393,7 +1420,9 @@ struct StreamPlayer::Impl {
 
         constexpr uint64_t kStageRecentMs = 1500;
         constexpr uint64_t kStageSuspectMs = 2000;
-        constexpr uint64_t kStageRecoverMs = 4000;
+        // A confirmed pipeline stall already passed the 2 s suspect window;
+        // shorten the additional wait before recovery without reacting to brief jitter.
+        constexpr uint64_t kStageRecoverMs = 2500;
         PipelineStall stalledAt = PipelineStall::None;
         if (packets > 0 && now - lastVideoRtpProgressMs < kStageRecentMs &&
             ((hasAccessUnits && auAge >= kStageSuspectMs) ||
@@ -1442,7 +1471,11 @@ struct StreamPlayer::Impl {
         }
         // Keep the established packet-silence grace period; the new watchdog
         // acts only when packet, decode, or presentation stages disagree.
-        int limit = audioAlive ? 15 : (videoFrames == 0 ? 10 : 3);
+        // Audio can continue while the game's video track is wedged. Fifteen
+        // seconds leaves the user staring at a frozen frame; allow a short
+        // jitter/network pause, then recover the stream instead of waiting for
+        // the much longer audio-only grace period.
+        int limit = audioAlive ? 6 : (videoFrames == 0 ? 10 : 3);
         if (silentTicks >= limit && !reconnecting.exchange(true))
             XC_LOGW("no video for %d s%s: reconnecting", silentTicks, audioAlive ? " (sound still coming)" : "");
     }
@@ -1539,7 +1572,7 @@ void StreamPlayer::sendInput(const input::ControllerState& p, int index) {
 }
 
 void StreamPlayer::sendKbm(const input::KbmInput& in) {
-    if (!impl_->running) return;
+    if (!impl_->running || (in.keys.empty() && !in.moved)) return;
     {
         std::lock_guard<std::mutex> lock(impl_->inputMutex);
         if (!in.keys.empty()) {

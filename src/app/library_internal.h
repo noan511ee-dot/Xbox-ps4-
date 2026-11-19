@@ -18,6 +18,7 @@ namespace xc::app {
 constexpr int kCacheVersion = 3;
 constexpr char kRocketLeagueProductId[] = "C125W9BG2K0V";
 constexpr char kRocketLeagueXboxTitleId[] = "558797228";
+constexpr char kRocketLeagueXboxTitleIdAlias[] = "2140933132";
 
 inline void ensureRocketLeagueListed(std::vector<std::string>& productIds, size_t limit) {
     auto it = std::find(productIds.begin(), productIds.end(), kRocketLeagueProductId);

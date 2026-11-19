@@ -127,6 +127,7 @@ struct Settings {
     bool queueReadyAlert = true; // Queue-ready chime and rumble alert
     bool previewFeatures = true; // xCloud preview client identification & ad-supported F2P streaming
     bool syncTrophies = false;   // Xbox achievement to PlayStation trophy conversion
+    bool sharePresence = false;  // optional, temporary PBOX active-session count; off by default
     bool usbControllers = true;  // in-app USB controllers driver (OneFamily)
     std::map<std::string, uint64_t> titlePlaytime; // accumulated playtime in seconds (productId or titleId -> seconds)
 

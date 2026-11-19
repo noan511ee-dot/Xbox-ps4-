@@ -15,6 +15,7 @@
 #include "app/crash_guard.h"
 #include "app/intro_video.h"
 #include "app/library.h"
+#include "app/presence.h"
 #include "app/report.h"
 #include "app/settings.h"
 #include "app/shell.h"
@@ -857,6 +858,7 @@ bool coreStartup() {
     } else {
         if (g_autoplay.badCa) XC_LOGI("AUTOPLAY END: missing CA bundle, built-in copy %s", net::usingBuiltinCa() ? "used" : "NOT used");
         if (g_autoplay.testCa) net::addTrustedCa(platform::dataDir() + "/test-ca.pem");
+        startPresenceReporter();
         startWorker();
     }
     g_core->streamScreen.emplace(fonts);
@@ -1534,6 +1536,7 @@ void coreShutdown() {
     stopWebServer();
     const uint64_t start = platform::nowMs();
     requestQuit();
+    stopPresenceReporter();
     trophy::stopTrophyThread(3000);
     bool workerDone = waitForWorker(5000);
     uint64_t spent = platform::nowMs() - start;

@@ -509,6 +509,8 @@ std::vector<std::string> AppUi::settingOptions(int row) const {
             out.push_back(account.gamertag.empty() ? tr(Str::AccountFallbackName) : account.gamertag);
         out.push_back(tr(Str::AddAccount));
         if (!accounts_.empty()) out.push_back(tr(Str::RemoveAccount));
+    } else if (row == 27) {
+        out = {tr(Str::Deactivated), tr(Str::Activated)};
     } else if (row == 8) {
         out.push_back(loginCountryOffText());
         for (const char* country : kLoginCountries) out.push_back(loginCountryName(country));
@@ -546,6 +548,7 @@ int AppUi::settingSelected(int row) const {
     if (row == 21) return std::clamp(settings_.audioHaptics, 0, 3);
     if (row == 22) return settings_.previewFeatures ? 1 : 0;
     if (row == 24) return settings_.syncTrophies ? 1 : 0;
+    if (row == 27) return settings_.sharePresence ? 1 : 0;
     if (row == 10) {
         if (settings_.maxBitrateMbps <= 0) return 0;
         int closest = 1;
@@ -590,6 +593,8 @@ void AppUi::applySetting(int row, int index) {
         } else if (index == 0) {
             settings_.syncTrophies = false;
         }
+    } else if (row == 27) {
+        settings_.sharePresence = index == 1;
     } else if (row == 4) {
         settings_.triggerStrength = index;
     } else if (row == 5) {
@@ -939,208 +944,181 @@ void AppUi::handleGameSettings(const NavInput& in, UiEvent& ev) {
 void AppUi::drawSettings(Canvas& c) {
     drawBackground(c);
     drawTopBar(c);
-    // PBOX settings are intentionally structured like a control centre rather
-    // than the old flat list: a quiet panel keeps the rows readable while the
-    // accent line and section dividers make performance/input options easy to
-    // find with either a pad or the USB mouse/keyboard.
-    {
-        // The control centre's glass panel: a deep base, a soft green light from the
-        // top, a double hairline (a faint outer glow and a sharper inner line) and an
-        // accent that fades out under the title.
-        const Rect panel{kMargin - 20, 148, kW - 2 * (kMargin - 20), 790};
-        c.strokeRect({panel.x - 4, panel.y - 4, panel.w + 8, panel.h + 8}, rgba(35, 211, 157, 26), 6, 28);
-        c.fillRect(panel, rgba(11, 18, 29, 228), 24);
-        c.gradientV({panel.x + 24, panel.y + 2, panel.w - 48, 170}, rgba(35, 211, 157, 30), rgba(35, 211, 157, 0));
-        c.strokeRect(panel, rgba(35, 211, 157, 120), 2, 24);
-        c.gradientH({kMargin, 148, 420, 4}, kGreen, rgba(35, 211, 157, 0));
+
+    constexpr Color xboxBlue = rgba(0, 120, 215);
+    constexpr Color panelBase = rgba(31, 31, 31, 248);
+    constexpr Color cardBase = rgba(47, 47, 47, 255);
+    constexpr Str categoryNames[kSettingsCategoryCount] = {
+        Str::SettingsGeneral, Str::SettingsAccount, Str::SettingsSystem,
+        Str::SettingsDevices, Str::SettingsPreferences, Str::SettingsSupport};
+    static constexpr Str settingDescs[kSettingRows] = {
+        Str::SettingDescLanguage, Str::SettingDescResolution, Str::SettingDescRegion,
+        Str::SettingDescDeadzone, Str::SettingDescTriggerRumble, Str::SettingDescConfirmButton,
+        Str::SettingDescLightBar, Str::SettingDescUpdates, Str::SettingDescLoginCountry,
+        Str::SettingDescHighRefresh, Str::SettingDescBitrateCap, Str::SettingDescGameVolume,
+        Str::SettingDescKeyboardKeys, Str::SettingDescDisplayMode, Str::SettingDescControllerButtons,
+        Str::SettingDescGyro, Str::SettingDescQueueReady, Str::SettingDescCheckSignIn,
+        Str::SettingDescNetworkTest, Str::SettingDescSupportProject, Str::SettingDescVideoDecoder,
+        Str::SettingDescAudioHaptics, Str::SettingDescPreviewFeatures, Str::SettingDescResetSettings,
+        Str::SettingDescSyncTrophies, Str::SettingDescRemoveTrophies, Str::SettingDescAccounts,
+        Str::SettingDescSharePresence};
+    const char* labels[kSettingRows] = {
+        tr(Str::Language), tr(Str::Resolution), tr(Str::Region), tr(Str::Deadzone),
+        tr(Str::TriggerRumble), tr(Str::ConfirmButton), tr(Str::LightBar), tr(Str::Updates),
+        tr(Str::LoginCountry), tr(Str::HighRefresh), tr(Str::BitrateCap), tr(Str::GameVolume),
+        tr(Str::KeyboardKeys), tr(Str::DisplayMode), tr(Str::ControllerButtons), tr(Str::Gyro),
+        tr(Str::QueueReadyNotification), tr(Str::CheckSignIn), tr(Str::NetworkTest),
+        tr(Str::SupportProject), tr(Str::VideoDecoder), tr(Str::AudioHaptics),
+        tr(Str::PreviewFeatures), tr(Str::ResetSettings), tr(Str::SyncTrophies),
+        tr(Str::RemoveTrophies), tr(Str::AccountManager), tr(Str::SharePresence)};
+
+    const Rect sidePanel{50, 146, 350, 856};
+    const Rect mainPanel{426, 146, 1440, 856};
+    c.fillRect({sidePanel.x + 5, sidePanel.y + 8, sidePanel.w, sidePanel.h}, rgba(0, 0, 0, 100), 12);
+    c.fillRect(sidePanel, panelBase, 12);
+    c.fillRect({mainPanel.x + 5, mainPanel.y + 8, mainPanel.w, mainPanel.h}, rgba(0, 0, 0, 100), 12);
+    c.fillRect(mainPanel, panelBase, 12);
+    c.fillRect({410, 184, 2, 778}, rgba(255, 255, 255, 26));
+
+    fonts_.semibold.draw(c, tr(Str::Settings), 78, 172, 25, rgba(230, 230, 230));
+    const int selectedCategory = settingsCategoryForRow(settingsRow_);
+    const auto categoryRows = settingsCategoryRows(selectedCategory, caps_);
+    if (categoryRows.empty()) return;
+    int focusPos = -1;
+    for (size_t i = 0; i < categoryRows.size(); ++i)
+        if (categoryRows[i].row == settingsRow_) focusPos = static_cast<int>(i);
+    if (focusPos < 0) {
+        settingsRow_ = categoryRows.front().row;
+        focusPos = 0;
     }
-    fonts_.bold.draw(c, tr(Str::Settings), kMargin, 96, 48, kWhite);
-    fonts_.semibold.draw(c, "PBOX  /  PERFORMANCE  /  INPUT", kMargin + 300, 110, 17, rgba(35, 211, 157, 230));
-    if (loading_) {
-        drawLoadingBar(c, kW - kMargin - 480, 100, 480, lastRender_);
+    const int gridRows = (static_cast<int>(categoryRows.size()) + 1) / 2;
+    const int maxScroll = std::max(0, gridRows - kSettingsGridVisibleRows);
+    settingsGridScrollRow_ = std::clamp(settingsGridScrollRow_, 0, maxScroll);
+    if (!settingsSidebarFocus_) {
+        const int focusGridRow = focusPos / 2;
+        if (focusGridRow < settingsGridScrollRow_) settingsGridScrollRow_ = focusGridRow;
+        if (focusGridRow >= settingsGridScrollRow_ + kSettingsGridVisibleRows)
+            settingsGridScrollRow_ = focusGridRow - kSettingsGridVisibleRows + 1;
     }
-    const char* labels[kSettingRows] = {tr(Str::Language),      tr(Str::Resolution),    tr(Str::Region),
-                                        tr(Str::Deadzone),      tr(Str::TriggerRumble), tr(Str::ConfirmButton),
-                                        tr(Str::LightBar),      tr(Str::Updates),       tr(Str::LoginCountry),
-                                        tr(Str::HighRefresh),   tr(Str::BitrateCap),    tr(Str::GameVolume),
-                                        tr(Str::KeyboardKeys),  tr(Str::DisplayMode),   tr(Str::ControllerButtons),
-                                        tr(Str::Gyro),          tr(Str::QueueReadyNotification),
-                                        tr(Str::CheckSignIn),   tr(Str::NetworkTest),   tr(Str::SupportProject),
-                                        tr(Str::VideoDecoder),  tr(Str::AudioHaptics),  tr(Str::PreviewFeatures),
-                                        tr(Str::ResetSettings), tr(Str::SyncTrophies),  tr(Str::RemoveTrophies),
-                                        tr(Str::AccountManager)};
-    constexpr int kRowW = 1140, kRowH = 30, kGap = 2, kGroupGap = 4, kRowPx = 22;
-    Rect rows[kSettingRows];  // by row id
-    // A value sits in a small pill, as on a console's own settings: soft white
-    // when idle, green when its row has the focus. `w` is the text's width, the
-    // text is right-aligned at `vx`.
-    auto valueChip = [&](const Rect& r, int vx, int w, bool focused) {
-        Rect chip{vx - w - 18, r.y + 3, w + 36, r.h - 6};
-        c.fillRect(chip, focused ? rgba(35, 211, 157, 92) : rgba(255, 255, 255, 17), chip.h / 2);
-    };
-    int y = 184;
-    for (const auto& [i, groupStart] : visibleSettingsRows(caps_)) {  // what caps_ rules out is hidden
-        if (groupStart) {
-            y += kGroupGap + 8;
-            c.gradientH({kMargin, y - 9, kRowW, 2}, rgba(35, 211, 157, 110), rgba(35, 211, 157, 0));
+
+    constexpr int categoryNamePx = 22;
+    for (int category = 0; category < kSettingsCategoryCount; ++category) {
+        const Rect r = settingsCategoryRect(category);
+        const bool active = category == selectedCategory;
+        const bool focused = active && settingsSidebarFocus_;
+        if (active) c.fillRect(r, rgba(63, 63, 63), 7);
+        if (active) c.fillRect({r.x, r.y + 6, 5, r.h - 12}, xboxBlue, 2);
+        if (focused) c.strokeRect({r.x - 3, r.y - 3, r.w + 6, r.h + 6}, xboxBlue, 2, 9);
+        const char* text = tr(categoryNames[category]);
+        const std::string fitted = fonts_.semibold.fit(text, categoryNamePx, r.w - 34);
+        fonts_.semibold.draw(c, fitted, r.x + 22,
+                             fonts_.semibold.centeredY(r.y, r.h, categoryNamePx), categoryNamePx,
+                             active ? kWhite : rgba(198, 198, 198));
+    }
+
+    fonts_.bold.draw(c, tr(categoryNames[selectedCategory]), kSettingsGridX, 180, 36, kWhite);
+    if (loading_) drawLoadingBar(c, kW - kMargin - 430, 184, 430, lastRender_);
+
+    Rect cardRects[kSettingRows]{};
+    for (int pos = settingsGridScrollRow_ * 2;
+         pos < static_cast<int>(categoryRows.size()) && pos < (settingsGridScrollRow_ + kSettingsGridVisibleRows) * 2;
+         ++pos) {
+        const int row = categoryRows[static_cast<size_t>(pos)].row;
+        if (row < 0 || row >= kSettingRows) continue;
+        const Rect r = settingsCardRect(pos, settingsGridScrollRow_);
+        cardRects[row] = r;
+        const bool focused = !settingsSidebarFocus_ && row == settingsRow_;
+        const bool destructive = row == 23 || row == 25;
+        const Color bg = destructive ? (focused ? rgba(75, 35, 39) : rgba(58, 35, 38))
+                                     : (focused ? rgba(62, 62, 62) : cardBase);
+        c.fillRect(r, bg, 10);
+        if (focused) c.strokeRect({r.x - 3, r.y - 3, r.w + 6, r.h + 6}, xboxBlue, 3, 12);
+        else c.strokeRect(r, rgba(255, 255, 255, 18), 1, 10);
+
+        // A small settings glyph made from basic shapes, so it is present on every platform.
+        const float gx = static_cast<float>(r.x + r.w - 36), gy = static_cast<float>(r.y + 35);
+        const Color glyph = focused ? rgba(120, 190, 255) : rgba(190, 190, 190);
+        c.strokeCircle(gx, gy, 10, 2.2f, glyph);
+        c.fillCircle(gx, gy, 3, glyph);
+        c.line(gx - 15, gy, gx - 12, gy, 2.2f, glyph);
+        c.line(gx + 12, gy, gx + 15, gy, 2.2f, glyph);
+        c.line(gx, gy - 15, gx, gy - 12, 2.2f, glyph);
+        c.line(gx, gy + 12, gx, gy + 15, 2.2f, glyph);
+
+        const int titlePx = 24;
+        const std::string title = fonts_.semibold.fit(labels[row], titlePx, r.w - 92);
+        fonts_.semibold.draw(c, title, r.x + 28,
+                             fonts_.semibold.centeredY(r.y + 14, 38, titlePx), titlePx,
+                             destructive ? rgba(255, 178, 178) : kWhite);
+        const auto description = fonts_.regular.wrap(tr(settingDescs[row]), 17, r.w - 56, 2);
+        int descriptionY = r.y + 64;
+        for (const auto& line : description) {
+            fonts_.regular.draw(c, line, r.x + 28, descriptionY, 17, rgba(190, 190, 190));
+            descriptionY += 21;
         }
-        Rect r{kMargin, y, kRowW, kRowH};
-        rows[i] = r;
-        bool focused = i == settingsRow_;
-        int ty = fonts_.semibold.centeredY(r.y, r.h, kRowPx);
 
-        if (i == 23) {
-            // Restore factory defaults button: red background
-            Color redBg = focused ? rgba(220, 38, 38, 255) : rgba(185, 28, 28, 220);
-            c.fillRect(r, redBg, 12);
-            if (focused && !dropdownOpen_) c.strokeRect({r.x - 4, r.y - 4, r.w + 8, r.h + 8}, kWhite, 3, 16);
-
-            // Progress fill animation when holding Cross/accept
-            if (focused && resetSettingsHoldStart_ > 0) {
-                uint64_t elapsed = (lastRender_ > resetSettingsHoldStart_) ? (lastRender_ - resetSettingsHoldStart_) : 0;
-                float progress = std::min(1.0f, static_cast<float>(elapsed) / 5000.0f);
-                int fillW = static_cast<int>(r.w * progress);
-                if (fillW > 0) {
-                    c.fillRect({r.x, r.y, fillW, r.h}, rgba(255, 255, 255, 70), 12);
-                }
-            }
-            int textW = fonts_.bold.measure(labels[i], kRowPx);
-            int textX = r.x + (r.w - textW) / 2;
-            fonts_.bold.draw(c, labels[i], textX, ty, kRowPx, kWhite);
-        } else {
-            c.fillRect(r, focused ? rgba(35, 211, 157, 40) : rgba(255, 255, 255, 9), 14);
-            if (focused) {
-                c.gradientH({r.x + 14, r.y + 1, r.w / 2, r.h - 2}, rgba(35, 211, 157, 44), rgba(35, 211, 157, 0));
-                c.fillRect({r.x, r.y + 5, 6, r.h - 10}, kGreen, 3);  // the accent bar
-            }
-            if (focused && !dropdownOpen_) c.strokeRect({r.x - 4, r.y - 4, r.w + 8, r.h + 8}, kGreen, 3, 18);
-            (focused ? fonts_.bold : fonts_.semibold).draw(c, labels[i], r.x + 32, ty, kRowPx, kWhite);
-            float cx = static_cast<float>(r.x + r.w - 40), cy = static_cast<float>(r.y + r.h / 2);
-            if (i != 7 && i != 17 && i != 18 && i != 19 && i != 25) {
-                c.line(cx - 8, cy - 3, cx, cy + 4, 2.5f, focused ? kWhite : kGray);
-                c.line(cx, cy + 4, cx + 8, cy - 3, 2.5f, focused ? kWhite : kGray);
-            }
-            int vx = r.x + r.w - 68;
-
-            if (i == 7) {
-                // Updates: the state; Cross updates when there is a newer version.
-                std::string value = updateChecking_ ? tr(Str::UpdateChecking)
-                                    : !updateAvailable_.empty()
-                                        ? trf(caps_.selfUpdate ? Str::UpdateReady : Str::UpdateReadyPc, updateAvailable_)
-                                        : trf(Str::UpToDate, "v" + updateCurrent_);
-                Color color = !updateAvailable_.empty() && !updateChecking_ ? rgba(120, 220, 120) : focused ? kWhite : kGray;
-                int w = fonts_.regular.measure(value, kRowPx);
-                valueChip(r, vx, w, focused);
-                fonts_.regular.draw(c, value, vx - w, fonts_.regular.centeredY(r.y, r.h, kRowPx), kRowPx, color);
-            } else if (i == 17 || i == 18 || i == 19 || i == 25) {
-                // Action items (Check sign-in, Network test, Support, Remove Trophies)
-                std::string label = (i == 17) ? tr(Str::RunCheck) : (i == 18) ? tr(Str::RunTest) : (i == 25) ? tr(Str::RemoveTrophiesConfirm) : tr(Str::SupportKoFi);
-                int w = fonts_.regular.measure(label, kRowPx);
-                valueChip(r, vx, w, focused);
-                fonts_.regular.draw(c, label, vx - w, fonts_.regular.centeredY(r.y, r.h, kRowPx), kRowPx,
-                                    focused ? kWhite : kGray);
-            } else if (i == 5) {
-                // The confirm button, as the button itself.
-                drawFaceButton(c, fonts_.bold, settings_.circleConfirms ? kIconCircle : kIconCross, vx - 16.0f, cy, 16);
-            } else if (i == 24 && (trophySyncing_ || (loading_ && !loadingLabel_.empty()))) {
-                std::string value = tr(Str::SyncingTrophies);
-                if (loadingTotal_ > 0) {
-                    value += " " + std::to_string(loadingDone_) + "/" + std::to_string(loadingTotal_);
-                }
-                int w = fonts_.regular.measure(value, kRowPx);
-                fonts_.regular.draw(c, value, vx - w, fonts_.regular.centeredY(r.y, r.h, kRowPx), kRowPx, rgba(120, 220, 120));
-                drawSpinner(c, vx - w - 20.0f, cy, 8, lastRender_);
-                animating_ = true;
-            } else {
-                auto options = settingOptions(i);
-                int sel = settingSelected(i);
-                std::string value = sel < static_cast<int>(options.size()) ? options[static_cast<size_t>(sel)] : "";
-                int w = fonts_.regular.measure(value, kRowPx);
-                valueChip(r, vx, w, focused);
-                fonts_.regular.draw(c, value, vx - w, fonts_.regular.centeredY(r.y, r.h, kRowPx), kRowPx, focused ? kWhite : kGray);
-                if (i == 6 && settings_.lightBarMode == 1) {  // the colour chosen
-                    c.fillCircle(vx - w - 26.0f, cy, 11, settings_.lightBarColour);
-                    c.strokeArc(vx - w - 26.0f, cy, 11, 2, 0, 6.2832f, rgba(255, 255, 255, 120));
-                }
-            }
+        std::string value;
+        const auto options = settingOptions(row);
+        const int selected = settingSelected(row);
+        if (row == 7) {
+            value = updateChecking_ ? tr(Str::UpdateChecking)
+                    : !updateAvailable_.empty() ? trf(caps_.selfUpdate ? Str::UpdateReady : Str::UpdateReadyPc, updateAvailable_)
+                                                : trf(Str::UpToDate, "v" + updateCurrent_);
+        } else if (row == 17) {
+            value = tr(Str::RunCheck);
+        } else if (row == 18) {
+            value = tr(Str::RunTest);
+        } else if (row == 19) {
+            value = tr(Str::SupportKoFi);
+        } else if (row == 23) {
+            value = tr(Str::HoldToReset);
+        } else if (row == 25) {
+            value = tr(Str::RemoveTrophiesConfirm);
+        } else if (selected >= 0 && selected < static_cast<int>(options.size())) {
+            value = options[static_cast<size_t>(selected)];
         }
-        y += kRowH + kGap;
-    }
-    static constexpr Str kSettingDescs[kSettingRows] = {
-        Str::SettingDescLanguage,
-        Str::SettingDescResolution,
-        Str::SettingDescRegion,
-        Str::SettingDescDeadzone,
-        Str::SettingDescTriggerRumble,
-        Str::SettingDescConfirmButton,
-        Str::SettingDescLightBar,
-        Str::SettingDescUpdates,
-        Str::SettingDescLoginCountry,
-        Str::SettingDescHighRefresh,
-        Str::SettingDescBitrateCap,
-        Str::SettingDescGameVolume,
-        Str::SettingDescKeyboardKeys,
-        Str::SettingDescDisplayMode,
-        Str::SettingDescControllerButtons,
-        Str::SettingDescGyro,
-        Str::SettingDescQueueReady,
-        Str::SettingDescCheckSignIn,
-        Str::SettingDescNetworkTest,
-        Str::SettingDescSupportProject,
-        Str::SettingDescVideoDecoder,
-        Str::SettingDescAudioHaptics,
-        Str::SettingDescPreviewFeatures,
-        Str::SettingDescResetSettings,
-        Str::SettingDescSyncTrophies,
-        Str::SettingDescRemoveTrophies,
-        Str::SettingDescAccounts,
-    };
-    if (settingsRow_ >= 0 && settingsRow_ < kSettingRows) {
-        int dy = std::max(y + 6, 922);
-        const char* desc = tr(kSettingDescs[settingsRow_]);
-        for (const auto& line : fonts_.regular.wrap(desc, 22, kRowW, 3)) {
-            fonts_.regular.draw(c, line, kMargin, dy, 22, kDim);
-            dy += 26;
+        if (!value.empty()) {
+            const int valuePx = 21;
+            const std::string fitted = fonts_.semibold.fit(value, valuePx, r.w - 82);
+            const int valueWidth = fonts_.semibold.measure(fitted, valuePx);
+            const int pillWidth = std::min(r.w - 52, valueWidth + 28);
+            Rect pill{r.x + 24, r.y + r.h - 48, pillWidth, 34};
+            const Color pillBg = focused ? rgba(0, 120, 215, 110) : rgba(255, 255, 255, 20);
+            c.fillRect(pill, pillBg, 8);
+            fonts_.semibold.draw(c, fitted, pill.x + 14,
+                                 fonts_.semibold.centeredY(pill.y, pill.h, valuePx), valuePx,
+                                 focused ? kWhite : rgba(230, 230, 230));
+            if (row == 6 && settings_.lightBarMode == 1)
+                c.fillCircle(static_cast<float>(pill.x + pill.w - 13), static_cast<float>(pill.y + pill.h / 2), 8,
+                             settings_.lightBarColour);
         }
     }
 
-    // The support row reveals its QR and direct link in the free right-hand
-    // column, so users can scan it without opening another screen.
-    if (settingsRow_ == 19) {
-        const int cardX = kMargin + kRowW + 40;
-        const int cardW = kW - kMargin - cardX;
-        Rect card{cardX, 202, cardW, 690};
-        c.fillRect({card.x + 7, card.y + 9, card.w, card.h}, rgba(0, 0, 0, 90), 22);
-        c.fillRect(card, rgba(11, 18, 29, 238), 22);
-        c.gradientV({card.x + 2, card.y + 2, card.w - 4, 160}, rgba(35, 211, 157, 27), rgba(35, 211, 157, 0));
-        c.strokeRect(card, rgba(35, 211, 157, 110), 2, 22);
-        c.fillRect({card.x + 24, card.y + 25, 5, 34}, kGreen, 3);
-        fonts_.bold.draw(c, tr(Str::SupportTitle), card.x + 44, card.y + 24, 28, kWhite);
-
-        const auto lines = fonts_.regular.wrap(tr(Str::SupportMessage), 19, card.w - 52, 5);
-        int textY = card.y + 68;
-        for (const auto& line : lines) {
-            fonts_.regular.draw(c, line, card.x + 26, textY, 19, rgba(230, 230, 230));
-            textY += 26;
+    // Keep the technical-support QR available in its own real Help & support section.
+    if (selectedCategory == 5) {
+        Rect card{settingsCardRect(1, 0).x, kSettingsGridY, kSettingsCardW, 584};
+        c.fillRect(card, rgba(47, 47, 47), 10);
+        c.strokeRect(card, rgba(255, 255, 255, 18), 1, 10);
+        fonts_.semibold.draw(c, tr(Str::SupportTitle), card.x + 28, card.y + 24, 25, kWhite);
+        int messageY = card.y + 66;
+        for (const auto& line : fonts_.regular.wrap(tr(Str::SupportMessage), 17, card.w - 56, 3)) {
+            fonts_.regular.draw(c, line, card.x + 28, messageY, 17, rgba(196, 196, 196));
+            messageY += 22;
         }
-
-        constexpr int kQrTarget = 300;
-        const int qrTop = card.y + 218;
-        const int qrRight = card.x + card.w / 2 + kQrTarget / 2 + 20;
-        Rect qrBox = drawQr(c, kSupportUrl, qrRight, qrTop, kQrTarget, qrcodegen_Ecc_MEDIUM);
+        constexpr int qrSize = 224;
+        // drawQr's x argument is the card's right edge, not its left edge.
+        const int qrRight = card.x + (card.w + qrSize + 40) / 2;
+        Rect qrBox = drawQr(c, kSupportUrl, qrRight, card.y + 158, qrSize, qrcodegen_Ecc_MEDIUM);
         if (qrBox.w > 0) {
             const std::string scanText = tr(Str::ScanToDonate);
-            int tw = fonts_.semibold.measure(scanText, 19);
-            fonts_.semibold.draw(c, scanText, qrBox.x + (qrBox.w - tw) / 2, qrBox.y + qrBox.h + 10, 19, kWhite);
+            const int textWidth = fonts_.semibold.measure(scanText, 17);
+            fonts_.semibold.draw(c, scanText, qrBox.x + (qrBox.w - textWidth) / 2,
+                                 qrBox.y + qrBox.h + 8, 17, kWhite);
         }
-
-        Rect link{card.x + 28, card.y + 628, card.w - 56, 42};
-        c.fillRect(link, rgba(35, 211, 157, 26), 14);
-        c.strokeRect(link, rgba(35, 211, 157, 90), 2, 14);
-        const std::string supportUrl = kSupportUrl;
-        int linkW = fonts_.semibold.measure(supportUrl, 20);
-        fonts_.semibold.draw(c, supportUrl, link.x + (link.w - linkW) / 2,
-                             fonts_.semibold.centeredY(link.y, link.h, 20), 20, rgba(255, 215, 80));
+        Rect link{card.x + 28, card.y + 530, card.w - 56, 38};
+        c.fillRect(link, rgba(0, 120, 215, 36), 8);
+        fonts_.semibold.draw(c, kSupportUrl, link.x + (link.w - fonts_.semibold.measure(kSupportUrl, 17)) / 2,
+                             fonts_.semibold.centeredY(link.y, link.h, 17), 17, rgba(150, 210, 255));
     }
 
     if (removeAccountConfirmOpen_) return drawRemoveAccountConfirmModal(c);
@@ -1158,71 +1136,55 @@ void AppUi::drawSettings(Canvas& c) {
     if (tester_ == Tester::SignInCheck) return drawSignInCheck(c, lastRender_);
     if (tester_ == Tester::NetworkTest) return drawNetworkTest(c, lastRender_);
     if (tester_ == Tester::Donation) return drawDonationModal(c);
-    if (dropdownOpen_) {
-        // The list under (or, near the bottom, over) the row, right-aligned
-        // with it; scrolls past kVisible choices.
+    if (dropdownOpen_ && settingsRow_ >= 0 && settingsRow_ < kSettingRows) {
         auto options = settingOptions(settingsRow_);
-        int sel = settingSelected(settingsRow_);
-        constexpr int kItemH = 62, kVisible = 8, kListW = 640;
-        int n = static_cast<int>(options.size());
-        int visible = std::min(n, kVisible);
-        if (dropdownIndex_ < dropdownTop_) dropdownTop_ = dropdownIndex_;
-        if (dropdownIndex_ >= dropdownTop_ + visible) dropdownTop_ = dropdownIndex_ - visible + 1;
-        const Rect& row = rows[settingsRow_];
-        Rect panel{row.x + row.w - kListW, row.y + row.h + 8, kListW, visible * kItemH + 16};
-        if (panel.y + panel.h > kH - 100) panel.y = std::max(120, kH - 100 - panel.h);
-        c.fillRect({panel.x + 6, panel.y + 10, panel.w, panel.h}, rgba(0, 0, 0, 120), 18);  // shadow
-        c.fillRect(panel, rgba(38, 38, 38), 18);
-        c.strokeRect(panel, rgba(255, 255, 255, 50), 2, 18);
-        for (int k = 0; k < visible; ++k) {
-            int i = dropdownTop_ + k;
-            Rect item{panel.x + 8, panel.y + 8 + k * kItemH, panel.w - 16, kItemH};
-            bool on = i == dropdownIndex_;
-            if (on) c.fillRect(item, kWhite, 12);
-            Color text = on ? kBg : (i == sel ? kWhite : kGray);
-            if (settingsRow_ == 5)
-                drawFaceButton(c, fonts_.bold, i == 1 ? kIconCircle : kIconCross, item.x + 44.0f, item.y + item.h / 2.0f, 20);
-            else
-                fonts_.semibold.draw(c, options[static_cast<size_t>(i)], item.x + 24,
-                                     fonts_.semibold.centeredY(item.y, item.h, 26), 26, text);
-            if (settingsRow_ == 6 && i == 1)
-                c.fillCircle(item.x + item.w - 84.0f, item.y + item.h / 2.0f, 12, settings_.lightBarColour);
-            if (i == sel) {  // a check mark on the current choice
-                float cx = static_cast<float>(item.x + item.w - 36), cy = static_cast<float>(item.y + item.h / 2);
-                c.line(cx - 10, cy, cx - 3, cy + 7, 3, on ? kBg : kGreen);
-                c.line(cx - 3, cy + 7, cx + 10, cy - 7, 3, on ? kBg : kGreen);
+        const int n = static_cast<int>(options.size());
+        const int visible = std::min(n, 8);
+        if (visible > 0 && cardRects[settingsRow_].w > 0) {
+            if (dropdownIndex_ < dropdownTop_) dropdownTop_ = dropdownIndex_;
+            if (dropdownIndex_ >= dropdownTop_ + visible) dropdownTop_ = dropdownIndex_ - visible + 1;
+            const Rect panel = settingsDropdownPanel(cardRects[settingsRow_], visible);
+            c.fillRect({panel.x + 6, panel.y + 10, panel.w, panel.h}, rgba(0, 0, 0, 150), 16);
+            c.fillRect(panel, rgba(38, 38, 38), 14);
+            c.strokeRect(panel, rgba(255, 255, 255, 64), 2, 14);
+            for (int k = 0; k < visible; ++k) {
+                const int index = dropdownTop_ + k;
+                Rect item{panel.x + 8, panel.y + 8 + k * 62, panel.w - 16, 62};
+                const bool active = index == dropdownIndex_;
+                if (active) c.fillRect(item, kWhite, 10);
+                const Color text = active ? kBg : (index == settingSelected(settingsRow_) ? kWhite : kGray);
+                if (settingsRow_ == 5)
+                    drawFaceButton(c, fonts_.bold, index == 1 ? kIconCircle : kIconCross,
+                                   item.x + 44.0f, item.y + item.h / 2.0f, 20);
+                else
+                    fonts_.semibold.draw(c, options[static_cast<size_t>(index)], item.x + 24,
+                                         fonts_.semibold.centeredY(item.y, item.h, 26), 26, text);
+                if (settingsRow_ == 6 && index == 1)
+                    c.fillCircle(item.x + item.w - 84.0f, item.y + item.h / 2.0f, 12, settings_.lightBarColour);
+                if (index == settingSelected(settingsRow_)) {
+                    const float cx = static_cast<float>(item.x + item.w - 36);
+                    const float cy = static_cast<float>(item.y + item.h / 2);
+                    c.line(cx - 10, cy, cx - 3, cy + 7, 3, active ? kBg : xboxBlue);
+                    c.line(cx - 3, cy + 7, cx + 10, cy - 7, 3, active ? kBg : xboxBlue);
+                }
             }
+            drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
         }
-        // Scroll hints: more choices above / below.
-        if (dropdownTop_ > 0) {
-            float cx = static_cast<float>(panel.x + panel.w / 2), cy = static_cast<float>(panel.y - 14);
-            c.line(cx - 10, cy + 4, cx, cy - 4, 3, kGray);
-            c.line(cx, cy - 4, cx + 10, cy + 4, 3, kGray);
-        }
-        if (dropdownTop_ + visible < n) {
-            float cx = static_cast<float>(panel.x + panel.w / 2), cy = static_cast<float>(panel.y + panel.h + 14);
-            c.line(cx - 10, cy - 4, cx, cy + 4, 3, kGray);
-            c.line(cx, cy + 4, cx + 10, cy - 4, 3, kGray);
-        }
+    } else if (settingsSidebarFocus_) {
         drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconCircle, tr(Str::Back)}});
-    } else {
-        if (settingsRow_ == 23) {
-            drawHints(c, {{kIconCross, tr(Str::HoldToReset)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-        } else if (settingsRow_ == 16) {
-            drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconSquare, tr(Str::TestSound)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-        } else if (settingsRow_ == 24) {
-            if (trophySyncing_ || (loading_ && !loadingLabel_.empty())) {
-                drawHints(c, {{kIconCircle, tr(Str::Back)}});
-            } else if (settings_.syncTrophies) {
-                drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconSquare, tr(Str::RunSyncTrophies)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-            } else {
-                drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-            }
-        } else if (settingsRow_ == 10) {
-            drawHints(c, {{kIconDpadLR, tr(Str::Adjust)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-        } else {
+    } else if (settingsRow_ == 23) {
+        drawHints(c, {{kIconCross, tr(Str::HoldToReset)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
+    } else if (settingsRow_ == 16) {
+        drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconSquare, tr(Str::TestSound)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
+    } else if (settingsRow_ == 24) {
+        if (trophySyncing_ || (loading_ && !loadingLabel_.empty()))
+            drawHints(c, {{kIconCircle, tr(Str::Back)}});
+        else if (settings_.syncTrophies)
+            drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconSquare, tr(Str::RunSyncTrophies)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
+        else
             drawHints(c, {{kIconCross, tr(Str::Change)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
-        }
+    } else {
+        drawHints(c, {{kIconCross, tr(Str::Select)}, {kIconTriangle, tr(Str::ReportProblem)}, {kIconCircle, tr(Str::Back)}});
     }
     drawToast(c, lastRender_);
 }

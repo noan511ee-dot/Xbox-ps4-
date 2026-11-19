@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 RafaelNGP
 cmake_minimum_required(VERSION 3.20)
-project(xcloud_ps5 VERSION 1.6.4 LANGUAGES C CXX)
+project(xcloud_ps5 VERSION 1.6.5 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -148,6 +148,7 @@ add_library(xcloud_appcore OBJECT
     src/app/worker.cpp
     src/app/worker_stream.cpp
     src/app/worker_diagnostics.cpp
+    src/app/presence.cpp
     src/app/stream_screen.cpp
     src/app/price_loop.cpp
     src/app/autoplay.cpp

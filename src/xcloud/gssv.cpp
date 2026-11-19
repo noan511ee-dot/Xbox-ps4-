@@ -17,6 +17,15 @@
 
 namespace xc::xcloud {
 
+std::string titleIdText(const json::Value& value) {
+    if (value.isString()) return value.str();
+    if (value.isNumber()) {
+        const int64_t id = value.asInt(-1);
+        if (id >= 0) return std::to_string(id);
+    }
+    return {};
+}
+
 namespace {
 constexpr const char* kClientHeader = "XboxComBrowser";
 constexpr int kLoginTries = 6;  // xCloud login: tries on a 5xx / no answer
@@ -292,7 +301,10 @@ bool GssvClient::login(const auth::XblToken& gssvXsts, std::string& err) {
     loginStatus_ = r.status;
     if (!r.ok() || !j || !(*j)["gsToken"].isString()) {
         err = "xCloud login failed: " + describe(r);
-        if (r.status == 403) err += " (no Game Pass plan with cloud gaming, or xCloud is not available in this region)";
+        if (r.status == 403 && offering_ == "xgpuwebf2p")
+            err += " (Xbox denied access to the free-to-play cloud offering; check account eligibility and service availability for the actual region)";
+        else if (r.status == 403)
+            err += " (no eligible cloud gaming plan, or xCloud is not available in this region)";
         return false;
     }
     if (std::getenv("XC_DUMP_LOGIN")) {
@@ -347,7 +359,7 @@ bool GssvClient::listTitles(std::vector<Title>& out, std::string& err, bool rece
             title.titleId = t["titleId"].str();
             title.productId = t["details"]["productId"].str();
             title.hasEntitlement = t["details"]["hasEntitlement"].asBool();
-            title.xboxTitleId = t["details"]["xboxTitleId"].str();
+            title.xboxTitleId = titleIdText(t["details"]["xboxTitleId"]);
             title.isFreeInStore = t["details"]["isFreeInStore"].asBool();
             for (const auto& alt : t["details"]["alternateProductIds"].items()) {
                 if (alt.isString() && !alt.str().empty()) title.alternateProductIds.push_back(alt.str());

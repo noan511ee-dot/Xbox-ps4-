@@ -8,6 +8,7 @@
 #include "auth/account_store.h"
 #include "app/autoplay.h"
 #include "app/crash_guard.h"
+#include "app/library_refresh.h"
 #include "app/shell.h"
 #include "app/stream_player.h"
 #include "net/http.h"
@@ -764,6 +765,7 @@ void worker() {
         if (g_ui) g_ui->showAccountChooser();
     }
     xcloud::GssvClient gssv, home("xhome");
+    uint64_t nextAutoLibraryRefreshAt = 0;
     for (;;) {
         int cmd = g_command.exchange(kNone);
         g_cancel = false;
@@ -1079,9 +1081,32 @@ void worker() {
                     if (!ok) XC_LOGW("sign-in renewal: %s", err.c_str());
                     nextCheckAt = now + (ok ? 60000 : 300000);  // offline: not every minute
                 }
+                now = platform::nowMs();
+                if (am.signedIn()) {
+                    if (nextAutoLibraryRefreshAt == 0) {
+                        nextAutoLibraryRefreshAt = libraryRefreshDeadline(now);
+                    } else {
+                        const bool onHomeScreen = g_ui && g_ui->screen() == ui::Screen::Home;
+                        const bool hasLibrary = static_cast<bool>(currentLibrary());
+                        const bool commandIdle = g_command.load(std::memory_order_acquire) == kNone &&
+                                                 !g_cancel.load(std::memory_order_acquire) &&
+                                                 !g_quit.load(std::memory_order_acquire);
+                        if (shouldAutoRefreshLibrary(now, nextAutoLibraryRefreshAt, true,
+                                                     onHomeScreen, hasLibrary, commandIdle)) {
+                            XC_LOGI("library: scheduled delta refresh on home screen");
+                            loadLibrary(am, gssv, false);
+                            nextAutoLibraryRefreshAt = libraryRefreshDeadline(platform::nowMs());
+                        }
+                    }
+                } else {
+                    nextAutoLibraryRefreshAt = 0;
+                }
                 platform::sleepMs(50);
                 break;
             }
+        }
+        if (cmd != kNone) {
+            nextAutoLibraryRefreshAt = am.signedIn() ? libraryRefreshDeadline(platform::nowMs()) : 0;
         }
     }
     // Closing: the stream (if any) was stopped and its session closed by

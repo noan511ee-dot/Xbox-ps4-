@@ -81,7 +81,7 @@ constexpr Column kArabic = [] {
     c[static_cast<size_t>(Str::ScanToDonate)] = "امسح الرمز للتواصل مع دعم PBOX";
     c[static_cast<size_t>(Str::SettingDescRegion)] = "يختار منطقة البث. يستخدم «تلقائي» منطقة متاحة قيس زمنها في جلسات اللعب الأخيرة وكانت أسرع من الافتراضية بـ8 مللي ثانية على الأقل؛ وإلا يُبقي الافتراضية. اختيارك اليدوي له الأولوية.";
     c[static_cast<size_t>(Str::TipSupportKofi)] = "تحتاج مساعدة؟ افتح الدعم الفني لـPBOX من الإعدادات.";
-    c[static_cast<size_t>(Str::SettingDescSupportProject)] = "يفتح قناة الدعم الفني لـPBOX على Telegram ويعرض رمز QR.";
+    c[static_cast<size_t>(Str::SettingDescSupportProject)] = "رمز QR ورابط الدعم الفني لـPBOX على Telegram ظاهران مباشرة في الإعدادات.";
     c[static_cast<size_t>(Str::LanguageNoun)] = "العربية";
     c[static_cast<size_t>(Str::AccountManager)] = "الملف الشخصي والنظام";
     c[static_cast<size_t>(Str::AccountChooserTitle)] = "من سيلعب اليوم؟";
@@ -95,5 +95,13 @@ constexpr Column kArabic = [] {
     c[static_cast<size_t>(Str::AccountUnavailable)] = "الحساب المحفوظ غير متاح. اختر حسابًا آخر أو سجّل الدخول مجددًا.";
     c[static_cast<size_t>(Str::AccountIdCreationFailed)] = "تعذر إنشاء معرّف محلي للحساب.";
     c[static_cast<size_t>(Str::AccountStoreWriteFailed)] = "تعذر حفظ قائمة الحسابات؛ لم يُحذف أي حساب محفوظ.";
+    c[static_cast<size_t>(Str::SharePresence)] = "مشاركة عدد الجلسات النشطة";
+    c[static_cast<size_t>(Str::SettingDescSharePresence)] = "عند التفعيل، يرسل PBOX رمز جلسة مؤقتًا كي تعرض لوحة PBOX عدد الجلسات النشطة. لا يُرسل حساب Xbox أو اسم اللاعب أو اللعبة أو معرّف جهاز دائم. الخيار متوقف افتراضيًا ويمكن إيقافه في أي وقت. يستقبل مستضيف الموقع بيانات اتصال الشبكة اللازمة لإيصال الطلب.";
+    c[static_cast<size_t>(Str::SettingsGeneral)] = "عام";
+    c[static_cast<size_t>(Str::SettingsAccount)] = "الحساب";
+    c[static_cast<size_t>(Str::SettingsSystem)] = "النظام";
+    c[static_cast<size_t>(Str::SettingsDevices)] = "الأجهزة والاتصالات";
+    c[static_cast<size_t>(Str::SettingsPreferences)] = "التفضيلات";
+    c[static_cast<size_t>(Str::SettingsSupport)] = "المساعدة والدعم";
     return c;
 }();

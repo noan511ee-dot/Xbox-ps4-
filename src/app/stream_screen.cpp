@@ -248,6 +248,10 @@ void StreamScreen::executeTouchpadAction_(input::TouchpadAction act, const char*
 
 void StreamScreen::update(const input::ControllerState& pad, ui::NavInput nav, bool menuCombo) {
     std::lock_guard<std::mutex> lock(g_playerMutex);
+    // Service the game's ShowVirtualKeyboard request on the main thread.
+    // The handler existed but was only called during idle cleanup, so games
+    // requesting a password or other text never opened the PS4 system keyboard.
+    updateTextInput(g_player);
     if (g_player != overlayPlayer_ || (g_player && g_player->reconnects() != playerReconnects_)) {
         // A new stream, or a new session after a reconnection: the
         // other controllers are announced again.

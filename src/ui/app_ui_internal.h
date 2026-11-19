@@ -113,12 +113,12 @@ constexpr int kResolutionOrder[3] = {1, 0, 2};
 // Settings' rows on screen, alike ones together (the row ids stay what
 // settingsRow_ and the helpers use): language, sign-in country, and sign-in check; the
 // stream (resolution, a desktop's display mode, 120 Hz, bitrate, region, network test);
-// the controller, keyboard and queue-ready alert; support and updates last. A group starts at each
+// the controller, keyboard and queue-ready alert; support, session sharing and updates last. A group starts at each
 // kSettingsGroupStart.
-constexpr int kSettingsCount = 26;
-constexpr int kSettingsOrder[kSettingsCount] = {0, 2, 8, 26, 17, 18, 24, 25, 1, 20, 13, 9, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 7, 23};
+constexpr int kSettingsCount = 27;
+constexpr int kSettingsOrder[kSettingsCount] = {0, 2, 8, 26, 17, 18, 24, 25, 1, 20, 13, 9, 10, 14, 12, 3, 15, 4, 21, 5, 6, 16, 22, 19, 27, 7, 23};
 constexpr bool kSettingsGroupStart[kSettingsCount] = {false, false, false, true, false, false, false, false, true, false, false, false,
-                                                      false, true, false, false, false, false, false, false, false, false, false, true, false, true};
+                                                      false, true, false, false, false, false, false, false, false, false, false, true, false, false, true};
 // The game settings' rows on screen (ids: 0 profile, 1 upscaler, 2
 // sharpness, 3 block smoothing, 4 resolution, 5 dead zone, 6 triggers, 7
 // confirm, 8 120 Hz, 9 keyboard keys, 10 back to the default, 11 controller
@@ -147,6 +147,59 @@ std::vector<SettingsRowPos> filterRows(const int (&order)[N], const bool (&group
         lastGroup = group;
     }
     return out;
+}
+
+// Xbox-style Settings navigation: real PBOX settings are grouped into a
+// sidebar, while the stable row IDs continue to drive the existing actions.
+constexpr int kSettingsCategoryCount = 6;
+constexpr int kSettingsCategoryRowCounts[kSettingsCategoryCount] = {7, 3, 4, 9, 4, 1};
+constexpr int kSettingsCategoryRows[kSettingsCategoryCount][9] = {
+    {1, 2, 9, 10, 18, 20, 27, -1, -1},       // General / streaming and network
+    {26, 8, 17, -1, -1, -1, -1, -1, -1},     // Account
+    {7, 23, 24, 25, -1, -1, -1, -1, -1},     // System
+    {14, 12, 3, 4, 15, 5, 6, 16, 21},         // Devices & connections
+    {0, 11, 13, 22, -1, -1, -1, -1, -1},     // Preferences
+    {19, -1, -1, -1, -1, -1, -1, -1, -1},    // Help & support
+};
+
+inline int settingsCategoryForRow(int row) {
+    for (int category = 0; category < kSettingsCategoryCount; ++category)
+        for (int i = 0; i < kSettingsCategoryRowCounts[category]; ++i)
+            if (kSettingsCategoryRows[category][i] == row) return category;
+    return 0;
+}
+
+inline std::vector<SettingsRowPos> settingsCategoryRows(int category, const UiCaps& caps) {
+    std::vector<SettingsRowPos> out;
+    if (category < 0 || category >= kSettingsCategoryCount) return out;
+    const auto visible = visibleSettingsRows(caps);
+    for (int i = 0; i < kSettingsCategoryRowCounts[category]; ++i) {
+        const int row = kSettingsCategoryRows[category][i];
+        const bool available = row == 26 || std::any_of(visible.begin(), visible.end(), [row](const SettingsRowPos& p) {
+                                   return p.row == row;
+                               });
+        if (available) out.push_back({row, false});
+    }
+    return out;
+}
+
+constexpr int kSettingsGridX = 466, kSettingsGridY = 276;
+constexpr int kSettingsCardW = 666, kSettingsCardH = 184;
+constexpr int kSettingsCardGapX = 22, kSettingsCardGapY = 16;
+constexpr int kSettingsGridVisibleRows = 3;
+inline Rect settingsCategoryRect(int category) { return {72, 222 + category * 72, 306, 56}; }
+inline Rect settingsCardRect(int position, int scrollRow) {
+    const int row = position / 2 - scrollRow;
+    const int col = position % 2;
+    return {kSettingsGridX + col * (kSettingsCardW + kSettingsCardGapX),
+            kSettingsGridY + row * (kSettingsCardH + kSettingsCardGapY), kSettingsCardW, kSettingsCardH};
+}
+inline Rect settingsDropdownPanel(Rect card, int visible) {
+    constexpr int width = 640, itemHeight = 62;
+    const int height = visible * itemHeight + 16;
+    Rect panel{card.x + card.w - width, card.y + card.h + 8, width, height};
+    if (panel.y + panel.h > kH - 100) panel.y = std::max(120, card.y - panel.h - 8);
+    return panel;
 }
 
 // Where `row` is in `rows` (0 when it isn't there).

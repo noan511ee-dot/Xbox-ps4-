@@ -7,6 +7,7 @@
 #include "app/crash_guard.h"
 #include "app/shell.h"
 #include "app/stream_player.h"
+#include "app/stream_metrics.h"
 #include "display/display.h"
 #include "input/controller.h"
 #include "media/audio_out.h"
@@ -241,7 +242,7 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
     // a second is bad when the jitter buffer dropped a frame (lost for good),
     // no video arrived at all, or the round trip went far above the best seen.
     // Not the frame rate: games send fewer frames in some scenes.
-    uint64_t degradedUntil = 0, lastTickAt = 0;
+    uint64_t degradedUntil = 0, lastTickAt = 0, degradedStreakSeconds = 0;
     bool degradedLogged = false;
     bool autoResolutionReduced = false;
     uint64_t lastAutoResolutionChangeMs = 0;
@@ -455,11 +456,7 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
                 ui::StreamInfo info;
                 info.region = ui::prettyRegion(gssv.region().name);
                 info.rttMs = st.rttMs;
-                info.fps = dt > 0.05
-                               ? std::max(0.0, static_cast<double>(st.decodedFrames - last.decodedFrames -
-                                                                   (st.droppedFrames - last.droppedFrames)) /
-                                                   dt)
-                               : 60.0;
+                info.fps = shownFps(st.shownFrames, last.shownFrames, dt);
                 info.mbps = st.rtpKbps / 1000.0;
                 uint64_t lost = st.rtpLost - last.rtpLost, got = st.rtpPackets - last.rtpPackets;
                 info.lossPct = got + lost ? 100.0 * lost / (got + lost) : 0;
@@ -479,6 +476,7 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
                     reconnectsSeen = player.reconnects();
                     bool slow = st.rttMs > 0 && bestRtt > 0 && st.rttMs > bestRtt + 60;
                     if (dropped || stalled || slow) {
+                        ++degradedStreakSeconds;
                         if (!degradedLogged)  // once per episode
                             XC_LOGW("connection degraded: %llu frame(s) lost, %s, rtt %d ms (best %d)",
                                     static_cast<unsigned long long>(dropped), stalled ? "no video for a second" : "video arriving",
@@ -491,15 +489,16 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
                         // accumulate old 1080 frames. This uses the existing
                         // userRequestedResolutionUpdate protocol and is rate-limited.
                         if (!autoResolutionReduced && gssv.resolution() != xcloud::Resolution::P720 &&
-                            session.badSeconds >= 3 && now - lastAutoResolutionChangeMs >= 15000) {
+                            degradedStreakSeconds >= 3 && now - lastAutoResolutionChangeMs >= 15000) {
                             player.requestResolution("720");
                             autoResolutionReduced = true;
                             lastAutoResolutionChangeMs = now;
-                            XC_LOGW("adaptive resolution: network degraded for %llu s; requested 720 tier",
-                                    static_cast<unsigned long long>(session.badSeconds));
+                            XC_LOGW("adaptive resolution: network degraded for %llu consecutive s; requested 720 tier",
+                                    static_cast<unsigned long long>(degradedStreakSeconds));
                         }
-                    } else if (now >= degradedUntil) {
-                        degradedLogged = false;
+                    } else {
+                        degradedStreakSeconds = 0;
+                        if (now >= degradedUntil) degradedLogged = false;
                     }
                     info.degraded = now < degradedUntil;
                     lastTickAt = tickNow;
@@ -610,8 +609,8 @@ std::string stream(xcloud::GssvClient& gssv, const auth::CloudTimeQuery& cloudQu
 
 }  // namespace
 
-std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::GameTile& game, bool& failed,
-                 const std::string& regionName) {
+static std::string playUsingClient(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::GameTile& game,
+                                   bool& failed, const std::string& regionName) {
     failed = true;
     // A home session's id is the console's: only its start in the log.
     XC_LOGI("starting %s (%s)", gssv.isHome() ? "own Xbox" : game.name.c_str(),  // not the console's name
@@ -635,9 +634,28 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
         } else {
             XC_LOGW("could not resolve cloud launch ID for product %s: %s", game.productId.c_str(), lookupErr.c_str());
         }
+        // Some products expose an XCloudTitleId in the public catalog; use it
+        // only when present and never infer a GSSV ID from the game name.
         if (launchTitleId.empty() || launchTitleId == "None") {
-            const std::string reason = "Xbox Cloud did not provide a launch ID for " + game.name;
-            XC_LOGW("%s (product %s); refusing to start with an empty titleId", reason.c_str(), game.productId.c_str());
+            std::map<std::string, xcloud::Product> catalogProducts;
+            std::string catalogErr;
+            const std::string market = gssv.session().market.empty() ? "US" : gssv.session().market;
+            if (xcloud::fetchProducts({game.productId}, market, ui::catalogLanguage(), catalogProducts,
+                                      catalogErr, false)) {
+                launchTitleId = resolveCatalogLaunchTitleId(catalogProducts, game.productId);
+                if (!launchTitleId.empty()) {
+                    XC_LOGI("resolved missing cloud launch ID from Xbox catalog for product %s", game.productId.c_str());
+                }
+            } else {
+                XC_LOGW("Xbox catalog could not resolve cloud launch ID for product %s: %s",
+                        game.productId.c_str(), catalogErr.c_str());
+            }
+        }
+        if (launchTitleId.empty() || launchTitleId == "None") {
+            const std::string reason = "Xbox Cloud and the Xbox catalog did not return a launch ID for " + game.name +
+                ". Refresh the game library and try again; if it still fails, send the app log to PBOX Technical Support.";
+            XC_LOGW("%s; the authenticated cloud title list contained %zu entries; refusing to start with an empty titleId",
+                    reason.c_str(), titles.size());
             return "ERROR: " + ui::trf(ui::Str::StreamFailed, reason);
         }
     }
@@ -734,20 +752,9 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
         }
         return err;
     }
-    if (game.heroUrl.empty() && !game.productId.empty()) {
-        // Picked before the background hydration reached it: fetch the hero
-        // art for the loading screen while the session queues.
-        std::map<std::string, xcloud::Product> full;
-        std::string e;
-        if (xcloud::fetchProducts({game.productId}, gssv.session().market.empty() ? "US" : gssv.session().market,
-                                  ui::catalogLanguage(), full, e, true) &&
-            full.count(game.productId)) {
-            ui::GameTile withArt = game;
-            withArt.heroUrl = full[game.productId].heroUrl;
-            XC_LOGI("launch art: %s", withArt.heroUrl.empty() ? "(none)" : withArt.heroUrl.c_str());
-            g_ui->showLaunching(withArt, ui::tr(ui::Str::Connecting));
-        }
-    }
+    // Do not make launch progress wait on an optional hero-art HTTP request.
+    // Library hydration can populate artwork before the next launch; the live
+    // session status is more useful here than a late image on the loading UI.
     bool connected = false;
     bool wasInQueue = false;
     std::string result = "timed out waiting for the session";
@@ -839,6 +846,39 @@ std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::Game
     }
     gssv.stopSession();
     return result;
+}
+
+std::string play(auth::AuthManager& am, xcloud::GssvClient& gssv, const ui::GameTile& game, bool& failed,
+                 const std::string& regionName) {
+    // Microsoft serves free-to-play cloud titles from a separate GSSV
+    // offering. The normal xgpuweb title list does not reliably contain them,
+    // which caused Rocket League to fail before session provisioning.
+    if (!game.homeConsole && game.freeInStore && !gssv.isHome()) {
+        std::string err;
+        if (!keepSignedIn(am, gssv, err)) {
+            failed = true;
+            return "ERROR: Could not refresh Xbox sign-in before free-to-play launch: " + err;
+        }
+        xcloud::GssvClient f2p("xgpuwebf2p");
+        f2p.setLoginCountry(gssv.loginCountry());
+        f2p.setResolution(gssv.resolution());
+        f2p.setPreviewFeatures(gssv.previewFeatures());
+        if (!am.loginOffering(f2p, err)) {
+            if (f2p.loginStatus() == 403 && !gssv.isHome()) {
+                XC_LOGW("xCloud denied the free-to-play offering (403); trying the standard offering, which still requires Xbox entitlement");
+                const std::string freeError = err;
+                std::string fallback = playUsingClient(am, gssv, game, failed, regionName);
+                if (!failed) return fallback;
+                return fallback + "\nFree-to-play offering was also denied: " + freeError;
+            }
+            failed = true;
+            XC_LOGW("free-to-play xCloud offering sign-in failed: %s", err.c_str());
+            return "ERROR: Could not sign in to the Xbox free-to-play cloud service: " + err;
+        }
+        XC_LOGI("using xCloud free-to-play offering for %s", game.name.c_str());
+        return playUsingClient(am, f2p, game, failed, regionName);
+    }
+    return playUsingClient(am, gssv, game, failed, regionName);
 }
 
 }  // namespace xc::app

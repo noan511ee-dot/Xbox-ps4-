@@ -151,6 +151,7 @@ struct SettingsChoice {
     input::TouchpadShortcuts touchpadShortcuts = input::defaultTouchpadShortcuts();
     int voiceRouting = 0;      // 0 Auto (DualSense pad speaker if available), 1 Always TV/Headset
     bool syncTrophies = false; // Xbox achievement to PlayStation trophy conversion
+    bool sharePresence = false; // optional, temporary active-session count; off by default
     std::map<std::string, uint64_t> titlePlaytime; // accumulated playtime in seconds
 };
 
@@ -205,11 +206,12 @@ std::vector<SettingsRowPos> visibleGameSettingsRows(const UiCaps& caps, bool cus
 
 // The largest stick dead zone Settings offers, in percent of the travel.
 constexpr int kMaxDeadzone = 30;
-constexpr int kSettingRows = 27;  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
+constexpr int kSettingRows = 28;  // language, resolution, region, dead zone, triggers, confirm, light bar, updates,
                                   // sign-in country, 120 Hz output, bitrate cap, game volume, keyboard keys,
                                   // display mode (a desktop's window), controller buttons, gyro aiming, queue chime,
                                   // check sign-in, network test, support project, video decoder, audio-to-haptics,
-                                  // touchpad shortcuts, restore defaults, sync trophies, remove trophies
+                                  // touchpad shortcuts, restore defaults, sync trophies, remove trophies,
+                                  // account management, optional active-session sharing
 
 struct SignInStage {
     std::string name;
@@ -814,6 +816,8 @@ private:
     std::vector<uint32_t> wheel_;  // the wheel's pixels at wheelValue_
     float wheelValue_ = -1;
     int settingsRow_ = 0;
+    bool settingsSidebarFocus_ = false;
+    int settingsGridScrollRow_ = 0;
     std::vector<XboxAccountChoice> accounts_;
     std::string activeAccountId_;
     bool accountManagerOpen_ = false;

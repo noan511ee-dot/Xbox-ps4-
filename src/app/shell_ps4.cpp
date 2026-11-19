@@ -42,6 +42,8 @@ namespace xc::app::shell {
 void beforeSettings() {
     installSignalHandlers();
     if (recoverUpdate(platform::appDir())) platform::restartApp();
+    importStoreLeftovers(platform::dataDir(), "/data/pkg/previous/PBOX10006");
+    importStoreLeftovers(platform::dataDir(), "/data/pkg/previous/PBOX00001");
     importStoreLeftovers(platform::dataDir(), "/data/pkg/previous/PSBX00001");
 }
 
