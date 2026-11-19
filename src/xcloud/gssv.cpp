@@ -26,22 +26,22 @@ constexpr int kLoginTries = 6;  // xCloud login: tries on a 5xx / no answer
 const std::string& deviceInfo(Resolution res, bool preview = true) {
     auto build = [](bool hd, bool prev, int w = 1920, int h = 1080) {
         json::Value env = json::Value::object();
-        env.set("clientAppId", prev ? "play.xbox.com" : "Microsoft.GamingApp");
-        env.set("clientAppType", prev ? "browser" : "native");
-        env.set("clientAppVersion", prev ? "26.1.97" : "2203.1001.4.0");
-        env.set("clientSdkVersion", prev ? "10.3.7" : "8.5.2");
+        env.set("clientAppId", "Microsoft.GamingApp");
+        env.set("clientAppType", "console");
+        env.set("clientAppVersion", "26.1.97");
+        env.set("clientSdkVersion", "10.3.7");
         env.set("httpEnvironment", "prod");
         env.set("sdkInstallId", "");
         json::Value app = json::Value::object();
         app.set("env", env);
         json::Value hw = json::Value::object();
-        hw.set("make", hd ? "Microsoft" : "Google");
-        hw.set("model", hd ? "Surface Pro" : "Pixel");
-        hw.set("sdktype", prev ? "web" : "native");
+        hw.set("make", "Microsoft");
+        hw.set("model", "Xbox Series X");
+        hw.set("sdktype", "native");
         json::Value os = json::Value::object();
-        os.set("name", hd ? "Windows 11" : "Android");
-        os.set("ver", hd ? "22631.2715" : "14");
-        os.set("platform", hd ? "desktop" : "phone");
+        os.set("name", "xbox");
+        os.set("ver", "10.0");
+        os.set("platform", "console");
         json::Value dims = json::Value::object();
         dims.set("widthInPixels", hd ? w : 1280);
         dims.set("heightInPixels", hd ? h : 720);
