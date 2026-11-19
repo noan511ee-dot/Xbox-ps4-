@@ -36,7 +36,7 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
         app.set("env", env);
         json::Value hw = json::Value::object();
         hw.set("make", "Microsoft");
-        hw.set("model", "Xbox Series X");
+        hw.set("model", "Xbox One S");
         hw.set("sdktype", "native");
         json::Value os = json::Value::object();
         os.set("name", "xbox");
