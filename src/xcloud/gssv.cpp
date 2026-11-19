@@ -17,15 +17,6 @@
 
 namespace xc::xcloud {
 
-std::string titleIdText(const json::Value& value) {
-    if (value.isString()) return value.str();
-    if (value.isNumber()) {
-        const int64_t id = value.asInt(-1);
-        if (id >= 0) return std::to_string(id);
-    }
-    return {};
-}
-
 namespace {
 constexpr const char* kClientHeader = "XboxComBrowser";
 constexpr int kLoginTries = 6;  // xCloud login: tries on a 5xx / no answer
@@ -36,7 +27,6 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
     auto build = [](bool hd, bool prev, int w = 1920, int h = 1080) {
         json::Value env = json::Value::object();
         env.set("clientAppId", "Microsoft.GamingApp");
-         env.set("clientAppId", "Microsoft.GamingApp");
         env.set("clientAppType", "console");
         env.set("clientAppVersion", "26.1.97");
         env.set("clientSdkVersion", "10.3.7");
@@ -46,7 +36,7 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
         app.set("env", env);
         json::Value hw = json::Value::object();
         hw.set("make", "Microsoft");
-        hw.set("model", "Xbox Series S");
+        hw.set("model", "Xbox One");
         hw.set("sdktype", "native");
         json::Value os = json::Value::object();
         os.set("name", "xbox");
@@ -302,10 +292,7 @@ bool GssvClient::login(const auth::XblToken& gssvXsts, std::string& err) {
     loginStatus_ = r.status;
     if (!r.ok() || !j || !(*j)["gsToken"].isString()) {
         err = "xCloud login failed: " + describe(r);
-        if (r.status == 403 && offering_ == "xgpuwebf2p")
-            err += " (Xbox denied access to the free-to-play cloud offering; check account eligibility and service availability for the actual region)";
-        else if (r.status == 403)
-            err += " (no eligible cloud gaming plan, or xCloud is not available in this region)";
+        if (r.status == 403) err += " (no Game Pass plan with cloud gaming, or xCloud is not available in this region)";
         return false;
     }
     if (std::getenv("XC_DUMP_LOGIN")) {
@@ -360,7 +347,7 @@ bool GssvClient::listTitles(std::vector<Title>& out, std::string& err, bool rece
             title.titleId = t["titleId"].str();
             title.productId = t["details"]["productId"].str();
             title.hasEntitlement = t["details"]["hasEntitlement"].asBool();
-            title.xboxTitleId = titleIdText(t["details"]["xboxTitleId"]);
+            title.xboxTitleId = t["details"]["xboxTitleId"].str();
             title.isFreeInStore = t["details"]["isFreeInStore"].asBool();
             for (const auto& alt : t["details"]["alternateProductIds"].items()) {
                 if (alt.isString() && !alt.str().empty()) title.alternateProductIds.push_back(alt.str());
@@ -477,200 +464,4 @@ bool GssvClient::listConsoles(std::vector<Console>& out, std::string& err) {
     return true;
 }
 
-bool GssvClient::startSession(const std::string& titleId, const std::string& locale, std::string& err, int* status) {
-    json::Value settings = json::Value::object();
-    settings.set("nanoVersion", "V3;WebrtcTransport.dll");
-    settings.set("enableTextToSpeech", false);
-    settings.set("magnifier", false);
-    settings.set("highContrast", 0);
-    settings.set("locale", locale);
-    settings.set("useIceConnection", false);
-    settings.set("timezoneOffsetMinutes", 0);
-    settings.set("sdkType", "web");
-    settings.set("osName", resolution_ == Resolution::P720       ? "android"
-                           : resolution_ == Resolution::P1080HQ ? "tizen"
-                                                                : "windows");
-    settings.set("enableOptionalDataCollection", false);
-
-    json::Value body = json::Value::object();
-    bool home = offering_ == "xhome";
-    body.set("clientSessionId", [] {  // a new id per session, as the web client sends
-        uint8_t b[16];
-        platform::randomBytes(b, sizeof b);
-        b[6] = static_cast<uint8_t>((b[6] & 0x0f) | 0x40);
-        b[8] = static_cast<uint8_t>((b[8] & 0x3f) | 0x80);
-        char id[37];
-        std::snprintf(id, sizeof id, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x", b[0], b[1], b[2],
-                      b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-        return std::string(id);
-    }());
-    body.set("titleId", home ? "" : titleId);
-    body.set("systemUpdateGroup", "");
-    body.set("settings", settings);
-    body.set("serverId", home ? titleId : "");
-    body.set("fallbackRegionNames", json::Value::array());
-
-    std::string kind = offering_ == "xhome" ? "home" : "cloud";
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "POST", url("/v5/sessions/" + kind + "/play"), body.dump()));
-    if (status) *status = r.status;
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j || !(*j)["sessionPath"].isString()) {
-        err = "session start failed: " + describe(r);
-        return false;
-    }
-    sessionPath_ = (*j)["sessionPath"].str();
-    XC_LOGI("session created");  // not its id
-    return true;
-}
-
-bool GssvClient::sessionState(SessionStatus& out, std::string& err) {
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", sessionUrl("/state")));
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) {
-        err = "session state failed: " + describe(r);
-        return false;
-    }
-    out.raw = (*j)["state"].str();
-    out.state = parseState(out.raw);
-    out.errorCode = (*j)["errorDetails"]["code"].str();
-    out.errorMessage = (*j)["errorDetails"]["message"].str();
-    return true;
-}
-
-int GssvClient::titleWaitSeconds(const std::string& titleId) {
-    if (titleId.empty() || login_.gsToken.empty()) return -1;
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", url("/v1/waittime/" + titleId)));
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) return -1;
-    return static_cast<int>((*j)["estimatedTotalWaitTimeInSeconds"].asInt(-1));
-}
-
-bool GssvClient::connect(const std::string& msaTransferToken, std::string& err) {
-    json::Value body = json::Value::object();
-    body.set("userToken", msaTransferToken);
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "POST", sessionUrl("/connect"), body.dump()));
-    if (!r.ok()) {
-        err = "session connect failed: " + describe(r);
-        return false;
-    }
-    return true;
-}
-
-bool GssvClient::sendSdpOffer(const std::string& sdp, std::string& err) {
-    auto ver = [](int lo, int hi) {
-        json::Value v = json::Value::object();
-        v.set("minVersion", lo);
-        v.set("maxVersion", hi);
-        return v;
-    };
-    json::Value chatCfg = json::Value::object();
-    chatCfg.set("bytesPerSample", 2);
-    chatCfg.set("expectedClipDurationMs", 20);
-    json::Value fmt = json::Value::object();
-    fmt.set("codec", "opus");
-    fmt.set("container", "webm");
-    chatCfg.set("format", fmt);
-    chatCfg.set("numChannels", 1);
-    chatCfg.set("sampleFrequencyHz", 24000);
-
-    json::Value cfg = json::Value::object();
-    cfg.set("chatConfiguration", chatCfg);
-    cfg.set("chat", ver(1, 1));
-    cfg.set("control", ver(1, 3));
-    cfg.set("input", ver(1, 9));
-    cfg.set("message", ver(1, 1));
-
-    json::Value body = json::Value::object();
-    body.set("messageType", "offer");
-    body.set("sdp", sdp);
-    body.set("requestId", "1");
-    body.set("configuration", cfg);
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "POST", sessionUrl("/sdp"), body.dump()));
-    if (!r.ok()) {
-        err = "SDP offer failed: " + describe(r);
-        return false;
-    }
-    return true;
-}
-
-bool GssvClient::pollSdpAnswer(std::string& answer, std::string& err) {
-    answer.clear();
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", sessionUrl("/sdp")));
-    if (r.status == 204) return true;  // not ready yet
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) {
-        err = "SDP answer failed: " + describe(r);
-        return false;
-    }
-    auto payload = exchangePayload(*j);
-    if (!payload) return true;
-    if ((*payload)["status"].str("success") != "success") {
-        err = "SDP negotiation rejected: " + errorFields(payload->dump());
-        return false;
-    }
-    answer = (*payload)["sdp"].str();
-    return true;
-}
-
-bool GssvClient::sendIceCandidates(const std::vector<IceCandidate>& candidates, std::string& err) {
-    json::Value list = json::Value::array();
-    for (const auto& c : candidates) {
-        json::Value v = json::Value::object();
-        v.set("candidate", c.candidate);
-        v.set("sdpMid", c.sdpMid);
-        v.set("sdpMLineIndex", c.sdpMLineIndex);
-        list.push(v);
-    }
-    json::Value body = json::Value::object();
-    body.set("messageType", "iceCandidate");
-    body.set("candidate", list);
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "POST", sessionUrl("/ice"), body.dump()));
-    if (!r.ok()) {
-        err = "ICE upload failed: " + describe(r);
-        return false;
-    }
-    return true;
-}
-
-bool GssvClient::pollIceCandidates(std::vector<IceCandidate>& out, std::string& err) {
-    out.clear();
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", sessionUrl("/ice")));
-    if (r.status == 204) return true;
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) {
-        err = "ICE poll failed: " + describe(r);
-        return false;
-    }
-    auto payload = exchangePayload(*j);
-    if (!payload) return true;
-    for (const auto& c : payload->items()) {
-        IceCandidate ic;
-        ic.candidate = c["candidate"].str();
-        ic.sdpMid = c["sdpMid"].str();
-        ic.sdpMLineIndex = static_cast<int>(c["sdpMLineIndex"].asInt());
-        if (!ic.candidate.empty()) out.push_back(std::move(ic));
-    }
-    return true;
-}
-
-bool GssvClient::keepalive(std::string& err) {
-    auto req = authed(resolution_, previewFeatures_, login_, "POST", sessionUrl("/keepalive"));
-    req.timeoutMs = 5000;
-    auto r = net::perform(req);
-    if (!r.ok()) {
-        err = "keepalive failed: " + describe(r);
-        return false;
-    }
-    return true;
-}
-
-void GssvClient::stopSession() {
-    if (sessionPath_.empty()) return;
-    auto req = authed(resolution_, previewFeatures_, login_, "DELETE", sessionUrl(""));
-    req.timeoutMs = 3000;
-    auto r = net::perform(req);
-    XC_LOGI("session stopped (%s)", r.ok() ? "ok" : describe(r).c_str());
-    sessionPath_.clear();
-}
-
-}  // namespace xc::xcloud
+bool GssvClient::startSession(const std::stri
