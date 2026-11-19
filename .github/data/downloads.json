@@ -1,13 +1,25 @@
 {
-  "generated_at": "2026-11-19T12:52:28.726Z",
-  "total_downloads": 136,
+  "generated_at": "2026-11-19T14:08:54.380Z",
+  "total_downloads": 142,
   "releases": [
+    {
+      "tag_name": "v1.6.5",
+      "name": "PBOX 1.6.5 — Official Release",
+      "published_at": "2026-11-19T13:49:56Z",
+      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.5",
+      "downloads": 5,
+      "pkg": {
+        "name": "PBOX-PS4-test-v1.6.5-diagnostics.pkg",
+        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.5/PBOX-PS4-test-v1.6.5-diagnostics.pkg"
+      },
+      "checksum": null
+    },
     {
       "tag_name": "v1.6.4",
       "name": "PBOX v1.6.4",
       "published_at": "2026-11-16T12:27:06Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.4",
-      "downloads": 111,
+      "downloads": 112,
       "pkg": {
         "name": "PBOX-PS4-v1.6.4.pkg",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.4/PBOX-PS4-v1.6.4.pkg"
@@ -49,7 +61,7 @@
       "name": "PBOX v1.6.1 — Restored Project Package",
       "published_at": "2026-11-13T06:40:19Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.1",
-      "downloads": 3,
+      "downloads": 4,
       "pkg": {
         "name": "PBOX-PS4-v1.6.1.pkg",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg"
@@ -58,18 +70,6 @@
         "name": "PBOX-PS4-v1.6.1.pkg.sha256",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.1/PBOX-PS4-v1.6.1.pkg.sha256"
       }
-    },
-    {
-      "tag_name": "v1.6.5",
-      "name": "1.6.5",
-      "published_at": "2026-11-19T12:30:48Z",
-      "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.5",
-      "downloads": 1,
-      "pkg": {
-        "name": "PBOX-PS4-test-v1.6.5-diagnostics.pkg",
-        "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.5/PBOX-PS4-test-v1.6.5-diagnostics.pkg"
-      },
-      "checksum": null
     }
   ]
 }
