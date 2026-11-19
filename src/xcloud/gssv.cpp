@@ -36,6 +36,7 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
     auto build = [](bool hd, bool prev, int w = 1920, int h = 1080) {
         json::Value env = json::Value::object();
         env.set("clientAppId", "Microsoft.GamingApp");
+         env.set("clientAppId", "Microsoft.GamingApp");
         env.set("clientAppType", "console");
         env.set("clientAppVersion", "26.1.97");
         env.set("clientSdkVersion", "10.3.7");
@@ -45,7 +46,7 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
         app.set("env", env);
         json::Value hw = json::Value::object();
         hw.set("make", "Microsoft");
-        hw.set("model", "Xbox Series X");
+        hw.set("model", "Xbox Series S");
         hw.set("sdktype", "native");
         json::Value os = json::Value::object();
         os.set("name", "xbox");
