@@ -146,8 +146,8 @@ void dedupeByTitle(std::vector<ui::GameTile>& tiles) {
     std::vector<ui::GameTile> out;
 
     for (auto& t : tiles) {
-        if (t.productId.empty() || t.name.empty()) continue;
-        if (isStoreBigId(t.name) || (t.name == t.productId && isStoreBigId(t.productId))) continue;
+        if (t.productId.empty()) continue;
+        if (t.name.empty()) t.name = !t.titleId.empty() ? t.titleId : t.productId;
 
         std::string norm = xcloud::normalizeBaseTitle(t.name);
         std::string tid = t.titleId;
@@ -337,8 +337,8 @@ ui::GameTile Library::tile(const std::string& productId, const std::string& titl
             t.languages = lang->second;  // in the app's language
     } else {
         if (t.name.empty()) {
-            if (isStoreBigId(productId)) t.name.clear();
-            else t.name = productId;
+         t.name = !t.titleId.empty() ? t.titleId : productId;
+
         }
     }
     t.freeInStore = freeInStore_.count(productId) > 0 || productId == kRocketLeagueProductId;
