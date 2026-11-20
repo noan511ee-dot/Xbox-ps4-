@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-11-20T08:09:03.911Z",
-  "total_downloads": 257,
+  "generated_at": "2026-11-20T09:27:42.455Z",
+  "total_downloads": 277,
   "releases": [
     {
       "tag_name": "v1.6.5",
       "name": "PBOX 1.6.5 — Official Release",
       "published_at": "2026-11-19T13:49:56Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.5",
-      "downloads": 110,
+      "downloads": 119,
       "pkg": {
         "name": "PBOX-PS4-test-v1.6.5-diagnostics.pkg",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.5/PBOX-PS4-test-v1.6.5-diagnostics.pkg"
@@ -19,7 +19,7 @@
       "name": "PBOX v1.6.4",
       "published_at": "2026-11-16T12:27:06Z",
       "html_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/tag/v1.6.4",
-      "downloads": 118,
+      "downloads": 129,
       "pkg": {
         "name": "PBOX-PS4-v1.6.4.pkg",
         "browser_download_url": "https://github.com/noan511ee-dot/Xbox-ps4-/releases/download/v1.6.4/PBOX-PS4-v1.6.4.pkg"
