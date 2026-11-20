@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 RafaelNGP
+#include <cstdint>
 #include "xcloud/gssv.h"
 
 #include "auth/msa.h"
@@ -14,6 +15,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <map>
+#include <optional>
 
 namespace xc::xcloud {
 
@@ -28,8 +30,8 @@ const std::string& deviceInfo(Resolution res, bool preview = true) {
         json::Value env = json::Value::object();
         env.set("clientAppId", "Microsoft.GamingApp");
         env.set("clientAppType", "console");
-        env.set("clientAppVersion", "26.1.97");
-        env.set("clientSdkVersion", "10.3.7");
+        env.set("clientAppVersion", prev ? "26.1.97" : "2203.1001.4.0");
+        env.set("clientSdkVersion", prev ? "10.3.7" : "8.5.2");
         env.set("httpEnvironment", "prod");
         env.set("sdkInstallId", "");
         json::Value app = json::Value::object();
@@ -332,15 +334,29 @@ bool GssvClient::listTitles(std::vector<Title>& out, std::string& err, bool rece
     do {
         std::string path = recentOnly ? "/v2/titles/mru?mr=25" : "/v2/titles?mr=200";
         if (!continuation.empty()) path += "&ct=" + net::urlEncode(continuation);
-        auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", url(path)));
-        auto j = json::parse(r.body);
+        // A page that fails for a moment (5xx, a timeout, "slow down") is asked again with the same
+        // token: one bad answer in a list of fifteen pages no longer throws the whole list away.
+        net::Response r;
+        std::optional<json::Value> j;
+        constexpr int kTries = 3;
+        for (int attempt = 1; attempt <= kTries; ++attempt) {
+            r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", url(path)));
+            j = json::parse(r.body);
+            bool transient = r.status == 0 || r.status == 408 || r.status == 429 || r.status >= 500 || (r.ok() && !j);
+            if ((r.ok() && j) || !transient || attempt == kTries) break;
+            XC_LOGW("title list: page %d: %s, asking again (%d/%d)", pages + 1, describe(r).c_str(), attempt + 1, kTries);
+            platform::sleepMs(1000u << (attempt - 1));
+        }
         if (!r.ok() || !j) {
             err = "title list failed: " + describe(r);
             return false;
         }
+        std::string().swap(r.body);
         // Debugging: XC_DUMP_TITLES="ID1,ID2" prints those entries as sent.
         static const char* dump = std::getenv("XC_DUMP_TITLES");
-        for (const auto& t : (*j)["results"].items()) {
+        const auto& results = (*j)["results"].items();
+        out.reserve(out.size() + results.size());
+        for (const auto& t : results) {
             if (dump && ("," + std::string(dump) + ",").find("," + t["titleId"].str() + ",") != std::string::npos)
                 std::printf("%s\n", t.dump().c_str());
             Title title;
@@ -359,10 +375,18 @@ bool GssvClient::listTitles(std::vector<Title>& out, std::string& err, bool rece
                 ++inputTypes[input.str()];
                 if (input.str() == "MKB") title.mouseKeyboard = true;
             }
+            for (const auto& d : t["details"]["allowedDeviceTypes"].items())
+                if (d.isString() && !d.str().empty()) title.allowedDeviceTypes.push_back(d.str());
             // What lets this account play it: a subscription's program
-            // (CALLISTO for Game Pass in the cloud) or F2P; none when bought.
-            for (const auto& program : t["details"]["userPrograms"].items())
-                if (program.str() != "F2P") title.viaSubscription = true;
+            // (CALLISTO for Game Pass in the cloud), F2P, or FERDINAND, the
+            // free tier with ads (an account with no subscription has it:
+            // counting it as one showed the whole Game Pass catalog as
+            // playable to a free account); none when bought.
+            for (const auto& program : t["details"]["userPrograms"].items()) {
+                if (program.str() == "FERDINAND") title.freeTier = true;
+                else if (program.str() != "F2P") title.viaSubscription = true;
+            }
+            title.maxSessionSeconds = static_cast<int>(t["details"]["maxSessionLengthInSeconds"].asInt(0));
             if (!title.titleId.empty() && !isNonGameAddon(title.titleId)) out.push_back(std::move(title));
         }
         // The next page; a token that repeats, an empty page or too many
@@ -418,50 +442,4 @@ bool GssvClient::hydrateTitles(std::vector<Title>& titles, const std::string& ma
             std::string image;
             for (const char* purpose : {"Poster", "BoxArt", "Tile"}) {
                 for (const auto& img : loc["Images"].items()) {
-                    if (img["ImagePurpose"].str() == purpose) {
-                        image = img["Uri"].str();
-                        break;
-                    }
-                }
-                if (!image.empty()) break;
-            }
-            if (image.rfind("//", 0) == 0) image = "https:" + image;
-            for (Title* t : it->second) {
-                t->name = name;
-                t->imageUrl = image;
-            }
-        }
-    }
-    return true;
-}
-
-bool GssvClient::listConsoles(std::vector<Console>& out, std::string& err) {
-    out.clear();
-    auto r = net::perform(authed(resolution_, previewFeatures_, login_, "GET", url("/v6/servers/home")));
-    auto j = json::parse(r.body);
-    if (!r.ok() || !j) {
-        err = "console list failed: " + describe(r);
-        return false;
-    }
-    for (const auto& c : (*j)["results"].items()) {
-        static bool keysLogged = false;  // which fields the service sends (names only)
-        if (!keysLogged) {
-            keysLogged = true;
-            std::string keys;
-            for (const auto& [k, v] : c.members()) keys += k + (v.isString() ? "" : "*") + " ";
-            XC_LOGI("console fields: %s", keys.c_str());
-        }
-        Console con;
-        con.serverId = c["serverId"].str();
-        con.deviceName = c["deviceName"].str();
-        con.consoleType = c["consoleType"].str();
-        con.powerState = c["powerState"].str();
-        con.playPath = c["playPath"].str();
-        con.outOfHomeWarning = c["outOfHomeWarning"].asBool();
-        con.wirelessWarning = c["wirelessWarning"].asBool();
-        if (!con.serverId.empty()) out.push_back(std::move(con));
-    }
-    return true;
-}
-
-bool GssvClient::startSession(const std::stri
+                    if (img["ImagePurpose"].st
